@@ -1,0 +1,9 @@
+name: grounder
+version: 0.1.0
+requires_hermes: ">=0.18.1"
+license: Apache-2.0
+description: "Licensed, live sources for Hermes Agent's web_search. One call reaches the search providers a query needs (Exa, Brave, Tavily, Perplexity and more) and live data for scores, prices, odds and flights, and returns one deduplicated list. Every result is licensed: no site's robots.txt, license or AI opt-out refuses the provider that found it, and a search is never filled with unlicensed results. 50 free searches a day; sign in with `hermes grounder login`, no key to copy. Search only: pair it with any extract backend for web_extract. Disclosure: each query is sent to api.grounder.net and recorded under your Grounder account; tokens are kept with mode 0600 under $HERMES_HOME/grounder."
+author: Grounder
+kind: backend
+provides_web_providers:
+  - grounder

@@ -1,0 +1,23 @@
+{
+  "query": "What is the capital of Freedonia?",
+  "early": {
+    "whole_chars": 3263,
+    "text": "The capital of Freedonia is Fredville, a port city on the northern coast. The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging schedules. The harbour board met on day 7 to discuss mooring fees and dredging schedules. The harbour board met on day 8 to discuss mooring fees and dredging"
+  },
+  "late": {
+    "whole_chars": 6453,
+    "text": "The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging … The harbour board met on day 39 to discuss mooring fees and dredging schedules. The capital of Freedonia is Fredville, a port city on the northern coast. The harbour board met on day 0 to discuss mooring fees and dredging schedules."
+  },
+  "none": {
+    "whole_chars": 6379,
+    "text": "The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging schedules. The harbour board met on day 7 to discuss mooring fees and dredging schedules. The harbour board met on day 8 to discuss mooring fees and dredging schedules. The harbour board met on day 9 to discuss mooring fees and dredging schedules. The harbou"
+  },
+  "short": {
+    "whole_chars": 38,
+    "text": "Fredville is the capital of Freedonia."
+  },
+  "long": {
+    "whole_chars": 100000,
+    "text": "The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging … The harbour board met on day 39 to discuss mooring fees and dredging schedules. The capital of Freedonia is Fredville, a port city on the northern coast. The harbour board met on day 0 to discuss mooring fees and dredging schedules."
+  }
+}
