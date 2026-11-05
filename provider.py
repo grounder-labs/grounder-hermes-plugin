@@ -10,9 +10,11 @@ position) and reports every failure as a ``{"success": False, "error": ...}``
 result, never an exception. Search only: pair it with any extract backend for
 ``web_extract``.
 
-Select it with ``web.search_backend: grounder``. Credentials come from
-``hermes grounder login`` (see ``auth``) or, ahead of that, an existing Grounder
-search key in ``GROUNDER_API_KEY``.
+Select it with ``web.search_backend: grounder``. A search uses the Grounder search
+key in ``GROUNDER_API_KEY`` when one is set, and otherwise the sign-in Hermes keeps
+for the ``oauth:`` client in ``plugin.yaml`` (``hermes auth add grounder:grounder``):
+Hermes signs in, stores and refreshes that grant and attaches its token to the
+request, so this plugin never holds a token.
 """
 
 from __future__ import annotations
@@ -23,12 +25,20 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
-from agent.web_search_provider import WebSearchProvider, get_provider_env
+import httpx
 
-from . import auth
+from agent.secret_scope import get_secret
+from agent.web_search_provider import WebSearchProvider
+from hermes_cli.auth_constants import AuthError
+from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
 
 logger = logging.getLogger(__name__)
 
+ORIGIN = "https://api.grounder.net"
+SEARCH_URL = f"{ORIGIN}/v1/search"
+OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
+SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
+USER_AGENT = "grounder-hermes/0.2.0"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 MAX_RESULTS = 20  # most results one search asks Grounder for
 MAX_QUERY_CHARS = 2000  # Grounder's limit on a query
@@ -41,35 +51,40 @@ def _fail(error: str) -> dict[str, Any]:
     return {"success": False, "error": error}
 
 
-def _post_search(token: str, query: str, limit: int) -> tuple[int, Any]:
-    """Send one search; return the HTTP status and the parsed JSON body (None when an error body is not JSON)."""
-    # Grounder fills each result's text with the passages that best match the query, within the budget.
-    body = json.dumps({"query": query[:MAX_QUERY_CHARS],
-                       "top_k": max(1, min(int(limit), MAX_RESULTS)),
-                       "text_max_chars": DESCRIPTION_CHARS})
+def _key() -> str:
+    """The search key from this profile's secrets, or "" when none is set."""
+    return str(get_secret(KEY_ENV) or "").strip()
+
+
+def _post_with_key(key: str, payload: dict[str, Any]) -> tuple[int, bytes]:
+    """Send one search with the user's own search key; return the HTTP status and the body."""
     request = urllib.request.Request(
-        f"{auth.ORIGIN}/v1/search", body.encode(),
-        {"Authorization": f"Bearer {token}",
-         "Content-Type": "application/json", "Accept": "application/json",
-         "User-Agent": auth.USER_AGENT})
+        SEARCH_URL, json.dumps(payload).encode(),
+        {"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+         "Accept": "application/json", "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
-            return response.status, json.load(response)
+            return response.status, response.read()
     except urllib.error.HTTPError as error:
-        try:
-            return error.code, json.load(error)
-        except ValueError:
-            return error.code, None
+        return error.code, error.read()
 
 
-def _error_message(status: int, body: Any) -> str:
+def _post_signed_in(payload: dict[str, Any]) -> tuple[int, bytes]:
+    """Send one search through Hermes, which attaches the signed-in token; return the HTTP status and the body."""
+    response = credentialed_provider_request(
+        OAUTH_ID, "POST", SEARCH_URL, json=payload,
+        headers={"Accept": "application/json", "User-Agent": USER_AGENT}, timeout=TIMEOUT_S)
+    return response.status, response.body
+
+
+def _error_message(status: int, body: Any, signed_in: bool) -> str:
     """A one-line message for a failed search, with Grounder's own reason when it gave one."""
     detail: Optional[str] = None
     if isinstance(body, dict) and isinstance(body.get("error"), dict):
         detail = body["error"].get("message")
     if status == 401:
-        return ("Grounder rejected the credentials. "
-                "Run `hermes grounder login`.")
+        return (f"Grounder rejected the sign-in. Run `{SIGN_IN}`." if signed_in
+                else f"Grounder rejected the search key in {KEY_ENV}.")
     if status == 429:
         return f"Grounder rate limit reached: {detail or 'try again later'}"
     return f"Grounder returned HTTP {status}" + (f": {detail}" if detail else "")
@@ -102,8 +117,13 @@ class GrounderWebSearchProvider(WebSearchProvider):
         return "Grounder"
 
     def is_available(self) -> bool:
-        """True with a key in the environment or a saved sign-in; checks no network."""
-        return bool(get_provider_env(KEY_ENV)) or auth.token_path().is_file()
+        """True with a search key; checks no network.
+
+        A sign-in alone does not count: Hermes offers a plugin no way to see
+        its grant without a request, so a signed-in user selects Grounder
+        (``web.search_backend: grounder``), which Hermes honours either way.
+        """
+        return bool(_key())
 
     def supports_search(self) -> bool:
         return True
@@ -112,26 +132,31 @@ class GrounderWebSearchProvider(WebSearchProvider):
         return False
 
     def search(self, query: str, limit: int = 5) -> dict[str, Any]:
-        """Search Grounder for up to ``limit`` results (1 to ``MAX_RESULTS``).
-
-        A signed-in search whose access token is refused is refreshed and sent
-        once more; a key from the environment is never refreshed.
-        """
-        key = get_provider_env(KEY_ENV)
+        """Search Grounder for up to ``limit`` results (1 to ``MAX_RESULTS``)."""
+        # Grounder fills each result's text with the passages that best match the query, within the budget.
+        payload = {"query": query[:MAX_QUERY_CHARS],
+                   "top_k": max(1, min(int(limit), MAX_RESULTS)),
+                   "text_max_chars": DESCRIPTION_CHARS}
+        key = _key()
         try:
-            token = key or auth.access_token()
-            status, body = _post_search(token, query, limit)
-            if status == 401 and not key:
-                status, body = _post_search(auth.refresh(token), query, limit)
-        except auth.AuthError as error:
-            return _fail(str(error))
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            status, raw = _post_with_key(key, payload) if key else _post_signed_in(payload)
+        except ProviderNotSignedIn:
+            return _fail(f"Not signed in to Grounder. Run `{SIGN_IN}`.")
+        except AuthError as error:
+            return _fail(f"Grounder sign-in failed: {error}")
+        except PermissionError as error:
+            return _fail(f"Hermes refused the Grounder sign-in: {error}")
+        except (httpx.HTTPError, urllib.error.URLError, TimeoutError, OSError) as error:
             logger.warning("Grounder request error: %s", error)
             return _fail(f"Could not reach Grounder: {error}")
+        try:
+            body = json.loads(raw)
         except ValueError:
-            return _fail("Could not parse the Grounder response as JSON")
+            if status == 200:
+                return _fail("Could not parse the Grounder response as JSON")
+            body = None
         if status != 200 or not isinstance(body, dict):
-            return _fail(_error_message(status, body))
+            return _fail(_error_message(status, body, signed_in=not key))
         results = body.get("results") or []
         rows = [
             {"title": str(r.get("title", "")), "url": str(r.get("url", "")),
@@ -143,11 +168,10 @@ class GrounderWebSearchProvider(WebSearchProvider):
         return {"success": True, "data": {"web": rows}}
 
     def get_setup_schema(self) -> dict[str, Any]:
-        """The entry ``hermes tools`` shows: sign-in, so no key to ask for."""
+        """The entry ``hermes tools`` shows. It asks for no key, since signing in needs none; the tag names both ways in."""
         return {
             "name": "Grounder", "badge": "account",
             "tag": "Licensed, live sources: many search providers in one call, "
-                   "one deduplicated list. Search only; sign in with "
-                   "`hermes grounder login`.",
+                   f"one deduplicated list. Search only; a search key in {KEY_ENV}, or sign in with `{SIGN_IN}`.",
             "env_vars": [],
         }

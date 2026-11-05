@@ -1,9 +1,26 @@
 name: grounder
-version: 0.1.0
-requires_hermes: ">=0.18.1"
+version: 0.2.0
+requires_hermes: ">=0.22.3"
 license: Apache-2.0
-description: "Licensed, live sources for Hermes Agent's web_search. One call reaches the search providers a query needs (Exa, Brave, Tavily, Perplexity and more) and live data for scores, prices, odds and flights, and returns one deduplicated list. Every result is licensed: no site's robots.txt, license or AI opt-out refuses the provider that found it, and a search is never filled with unlicensed results. 50 free searches a day; sign in with `hermes grounder login`, no key to copy. Search only: pair it with any extract backend for web_extract. Disclosure: each query is sent to api.grounder.net and recorded under your Grounder account; tokens are kept with mode 0600 under $HERMES_HOME/grounder."
+description: "Licensed, live sources for Hermes Agent's web_search. One call reaches the search providers a query needs (Exa, Brave, Tavily, Perplexity and more) and live data for scores, prices, odds and flights, and returns one deduplicated list. Every result is licensed: no site's robots.txt, license or AI opt-out refuses the provider that found it, and a search is never filled with unlicensed results. 50 free searches a day. Connect your account with a Grounder search key in GROUNDER_API_KEY, or sign in with `hermes auth add grounder:grounder`, which Hermes stores and refreshes. Search only: pair it with any extract backend for web_extract. Disclosure: each query is sent to api.grounder.net and recorded under your Grounder account."
 author: Grounder
 kind: backend
 provides_web_providers:
   - grounder
+optional_env:
+  - name: GROUNDER_API_KEY
+    description: "A Grounder search key: one way to connect your account, used ahead of the sign-in when set"
+    url: "https://grounder.net/account/keys"
+    secret: true
+  - name: GROUNDER_OAUTH_CLIENT_ID
+    description: "For the sign-in: Grounder's public client for Hermes, not a secret. Set it to https://api.grounder.net/oauth/clients/hermes-agent"
+    url: "https://github.com/grounder-labs/grounder-hermes-plugin#by-signing-in"
+oauth:
+  - id: grounder
+    authorize_url: https://api.grounder.net/oauth/authorize
+    token_url: https://api.grounder.net/oauth/token
+    scopes: [search]
+    client_id_env: GROUNDER_OAUTH_CLIENT_ID
+    hosts: [api.grounder.net]
+    authorize_params:
+      resource: https://api.grounder.net/v1/search
