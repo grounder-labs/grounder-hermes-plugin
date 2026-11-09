@@ -1,14 +1,14 @@
 # Grounder for Hermes Agent
 
-Licensed, live sources for Hermes Agent's `web_search`. With Grounder as the web search backend, one search reaches the
+Licensed, live sources for Hermes Agent's `web_search` and `web_extract`. With Grounder as the web search backend, one search reaches the
 providers the query needs, such as Exa, Brave, Tavily and Perplexity, and live data for scores, prices, odds and flights,
 and comes back as one deduplicated list.
 
 Every result is licensed: no site's robots.txt, license or AI opt-out refuses the provider that found it. A search can
 return fewer results than asked for, and is never filled with unlicensed ones.
 
-An account gets 50 free searches a day, with no card needed ([pricing](https://grounder.net/pricing)). Grounder is search
-only: pair it with any extract backend for `web_extract`.
+An account gets 50 free searches a day, with no card needed ([pricing](https://grounder.net/pricing)). A `web_extract` call
+counts as one search, however many pages it reads.
 
 ## Install
 
@@ -67,15 +67,18 @@ sign-in now, so that command is gone: connect again as above and delete the old 
 
 ```sh
 hermes config set web.search_backend grounder
+hermes config set web.extract_backend grounder
 ```
 
-Or choose Grounder under web search in `hermes tools`, or set it in `config.yaml` beside an extract backend:
+Or choose Grounder under web search in `hermes tools`, or set it in `config.yaml`:
 
 ```yaml
 web:
   search_backend: grounder
-  extract_backend: firecrawl
+  extract_backend: grounder
 ```
+
+Each setting names its own backend, so leave `extract_backend` on another backend to have that one read pages instead.
 
 With a search key set, Hermes can also pick Grounder by itself. With the sign-in alone it cannot, since a plugin has no way
 to see Hermes's grant without a request, so select it as above.
@@ -90,6 +93,18 @@ Each search returns up to 20 rows (Hermes asks for 5 unless told otherwise), in 
 | `url` | The result's address |
 | `description` | Its summary, or its text on one line: the passages that best match your search, chosen by Grounder to fit 800 characters |
 | `position` | Its rank, from 1 |
+
+`web_extract` reads up to 5 pages in a call and returns one entry for each, in the order asked:
+
+| Field | From Grounder |
+|---|---|
+| `url` | The address you asked for |
+| `title` | The page's title, or its address when it has none |
+| `content` | What in the page best answers the `web_search` that found it, in the page's own order, at most 6,000 characters. A page that fits comes back whole, and one no search led to comes back from its start |
+| `error` | Only on a page that could not be read. The other pages still return |
+
+A `web_extract` keeps less than a whole page on purpose, to spare your model the tokens. Run a `web_search` first to get the
+parts that matter.
 
 A failed search returns `success: false` and one of these errors. Hermes then retries the search on its own keyless free
 tier and, if that answers, returns those results with `rescued_from: grounder` and the error in `backend_error`. If it
@@ -113,9 +128,14 @@ access token Hermes attaches, and a user agent naming this plugin and its versio
 model's other output or what other tools returned. When a search fails, Hermes may send the same query to its keyless
 free tier, as "What Hermes gets" says; that is Hermes's own behaviour, not Grounder's.
 
+Each `web_extract` sends the addresses of its pages, the 6,000 characters of text it wants for each, the same credential and
+user agent, and the query of the `web_search` that found them, when one did. The plugin keeps that query in memory only, for
+the last 500 pages found. With no such search, the addresses are sent as the query, and are recorded as a search's query
+is.
+
 Searches are recorded under your Grounder account, as Grounder's [privacy policy](https://grounder.net/privacy) and
 [data use](https://grounder.net/docs/data-use) pages describe. The plugin logs how many results a search
-returned, never the query.
+returned or pages an extract read, never the query or an address.
 
 ## Development
 

@@ -22,7 +22,7 @@ def _searches(stub):
 def test_without_sign_in_search_asks_for_hermes_sign_in_and_sends_nothing(plugin, stub, hermes):
     provider = plugin.GrounderWebSearchProvider()
     assert provider.name == "grounder" and provider.display_name == "Grounder"
-    assert provider.supports_search() and not provider.supports_extract()
+    assert provider.supports_search() and provider.supports_extract()
     assert not provider.is_available()
     assert provider.search("q") == {"success": False, "error": SIGN_IN}
     assert stub.requests == []
@@ -268,4 +268,126 @@ def test_setup_entry_asks_for_no_key_and_names_both_ways_in(plugin):
     assert entry["name"] == "Grounder" and entry["badge"] == "account"
     assert entry["env_vars"] == []
     assert "`hermes auth add grounder:grounder`" in entry["tag"] and "GROUNDER_API_KEY" in entry["tag"]
-    assert "Search only" in entry["tag"]
+    assert "Search only" not in entry["tag"] and "page reading" in entry["tag"]
+
+
+# --- web_extract ---------------------------------------------------------------------------------------------------
+
+PAGE_A, PAGE_B, PAGE_C = "https://example.com/a", "https://example.com/b", "https://example.com/c"
+
+
+def _page(url, text="page text", title="T"):
+    return {"url": url, "title": title, "text": text, "rank": 1, "provenance": {"found_by": ["reader"]}}
+
+
+def test_extract_is_one_search_for_the_pages_at_the_6k_cap_with_no_question_when_no_search_found_them(plugin, stub, hermes):
+    hermes.token = "t"
+    stub.search_body = {"results": [_page(PAGE_B), _page(PAGE_A)]}
+    rows = plugin.GrounderWebSearchProvider().extract([PAGE_A, PAGE_B], format="markdown", include_raw=True, max_chars=99)
+    assert len(_searches(stub)) == 1
+    assert json.loads(_searches(stub)[0]["body"]) == {"query": f"{PAGE_A} {PAGE_B}", "urls": [PAGE_A, PAGE_B], "top_k": 2,
+                                                      "text_max_chars": 6000, "features": ["page-text"]}
+    # In the order asked, whatever order Grounder answered in.
+    assert rows == [{"url": PAGE_A, "title": "T", "content": "page text", "raw_content": "page text"},
+                    {"url": PAGE_B, "title": "T", "content": "page text", "raw_content": "page text"}]
+
+
+def test_extract_ranks_pages_against_the_search_that_found_them(plugin, stub, hermes):
+    hermes.token = "t"
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_body = {"results": [{**RESULT, "url": PAGE_A}, {**RESULT, "url": PAGE_B}]}
+    provider.search("offshore wind costs")
+    stub.search_body = {"results": [{**RESULT, "url": PAGE_C}]}
+    provider.search("something else")
+    stub.search_body = {"results": [_page(PAGE_A)]}
+    # Two of the three pages came from the first search: its query wins, and a page never found by a search takes nothing from it.
+    provider.extract(["https://www.example.com/a/?utm_source=x", PAGE_B, PAGE_C, "https://other.example/z"])
+    assert json.loads(_searches(stub)[-1]["body"])["query"] == "offshore wind costs"
+
+
+def test_remembered_searches_are_bounded_and_leave_nothing_on_disk(plugin, stub, hermes, tmp_path):
+    hermes.token = "t"
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_body = {"results": [{**RESULT, "url": f"https://example.com/{i}"} for i in range(5)]}
+    for turn in range(120):
+        stub.search_body = {"results": [{**RESULT, "url": f"https://example.com/{turn}/{i}"} for i in range(5)]}
+        provider.search(f"q{turn}")
+    assert len(provider._found_by) == plugin.provider.REMEMBERED_PAGES
+    assert "example.com/0/0" not in provider._found_by and "example.com/119/4" in provider._found_by
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_page_no_reader_read_gets_its_own_error_and_the_others_still_return(plugin, stub, hermes):
+    hermes.token = "t"
+    stub.search_body = {"results": [_page(PAGE_A), _page(PAGE_C, text="   "), _page("https://example.com/not-asked")]}
+    rows = plugin.GrounderWebSearchProvider().extract([PAGE_A, PAGE_B, PAGE_C])
+    assert [row.get("error") is None for row in rows] == [True, False, False]
+    assert rows[0]["content"] == "page text"
+    assert rows[1] == {"url": PAGE_B, "title": "", "content": "", "raw_content": "",
+                       "error": "Grounder could not read this page, or its site does not allow it."}
+
+
+def test_extract_finds_a_page_under_the_address_grounder_returned_it_at(plugin, stub, hermes):
+    hermes.token = "t"
+    asked = ["http://www.example.com/a/?utm_source=x#top", "https://example.com/p?id=2", "https://example.com/p?id=1"]
+    stub.search_body = {"results": [_page("https://example.com/a", text="A"), _page("https://example.com/p?id=1", text="one"),
+                                    _page("https://example.com/p?id=2", text="two")]}
+    rows = plugin.GrounderWebSearchProvider().extract(asked)
+    assert [row["content"] for row in rows] == ["A", "two", "one"]
+    assert [row["url"] for row in rows] == asked
+
+
+def test_a_response_that_ignored_the_budget_is_capped_at_6000(plugin, stub, hermes):
+    hermes.token = "t"
+    stub.search_body = {"results": [_page(PAGE_A, text="w" * 9000)]}
+    row = plugin.GrounderWebSearchProvider().extract([PAGE_A])[0]
+    assert len(row["content"]) == plugin.provider.EXTRACT_CHARS == 6000 and row["content"].endswith("…")
+
+
+def test_a_whole_request_failure_is_every_pages_error_never_an_exception_and_never_retried(plugin, stub, hermes):
+    hermes.token = "t"
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_status = 429
+    stub.search_body = {"error": {"code": "rate_limited", "message": "60 per minute"}}
+    rows = provider.extract([PAGE_A, PAGE_B])
+    assert [row["url"] for row in rows] == [PAGE_A, PAGE_B]
+    assert {row["error"] for row in rows} == {"Grounder rate limit reached: 60 per minute"}
+    assert len(_searches(stub)) == 1
+    hermes.raises = httpx.ConnectTimeout("timed out")
+    assert provider.extract([PAGE_A])[0]["error"] == "Could not reach Grounder: timed out"
+    hermes.raises = plugin.provider.ProviderNotSignedIn("grant revoked")
+    assert provider.extract([PAGE_A])[0]["error"] == SIGN_IN
+
+
+def test_extract_goes_with_a_key_when_one_is_set(plugin, stub, hermes, keyed):
+    stub.search_body = {"results": [_page(PAGE_A)]}
+    assert plugin.GrounderWebSearchProvider().extract([PAGE_A])[0]["content"] == "page text"
+    assert hermes.calls == [] and _searches(stub)[0]["headers"]["Authorization"] == f"Bearer {keyed}"
+
+
+def test_extract_with_no_pages_sends_nothing_and_past_the_limit_sends_ten(plugin, stub, hermes):
+    hermes.token = "t"
+    provider = plugin.GrounderWebSearchProvider()
+    assert provider.extract([]) == [] and stub.requests == []
+    many = [f"https://example.com/{i}" for i in range(12)]
+    stub.search_body = {"results": [_page(url) for url in many[:10]]}
+    rows = provider.extract([*many, many[0]])
+    sent = json.loads(_searches(stub)[0]["body"])
+    assert sent["urls"] == many[:10] and sent["top_k"] == 10 and len(rows) == 13
+    assert rows[10]["error"] and rows[12]["content"] == "page text"
+
+
+def test_a_query_of_addresses_stays_whole_addresses_within_the_limit(plugin):
+    pages = [f"https://example.com/{'x' * 900}/{i}" for i in range(3)]
+    query = plugin.provider._addresses(pages)
+    assert len(query) <= 2000 and query.split() == pages[:2]
+    assert plugin.provider._addresses(["https://example.com/" + "y" * 3000]) == ("https://example.com/" + "y" * 3000)[:2000]
+
+
+def test_extract_logs_the_page_count_and_never_an_address(plugin, stub, hermes, caplog):
+    hermes.token = "t"
+    stub.search_body = {"results": [_page(PAGE_A)]}
+    with caplog.at_level("DEBUG"):
+        plugin.GrounderWebSearchProvider().extract([PAGE_A, PAGE_B])
+    assert any("1 of 2 pages read" in record.getMessage() for record in caplog.records)
+    assert not [r for r in caplog.records if "example.com" in r.getMessage()]
