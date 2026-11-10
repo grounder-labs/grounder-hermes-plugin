@@ -12,10 +12,12 @@ characters; a page no search led to comes back from its start. Every failure is
 reported, never raised: ``{"success": False, "error": ...}`` for a search, the
 page's own ``error`` for an extract.
 
-A result Grounder served asks the model to cite what it uses, as Grounder's MCP
-server does, and an answer that searched ends with the line Grounder's card shows
-(``after_tool`` and ``after_answer``, Hermes's result and reply hooks). Both work on
-what is already on this machine and send nothing.
+A result Grounder served asks the model to cite what it uses by number, and an
+answer ends with the Sources list of what it cites and, when it searched, the line
+Grounder's card shows (``after_tool`` and ``after_answer``, Hermes's result and reply
+hooks). Both work on what is already on this machine and send nothing. A
+``web_search`` whose query holds a page's address reads that page for the rest of
+the query, so a model can ask for another part of a page.
 
 The plugin selects itself the first time it loads in a profile (``__init__.py``), by
 setting ``web.search_backend: grounder`` and ``web.extract_backend: grounder``.
@@ -54,7 +56,7 @@ SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.6"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.7"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -69,14 +71,27 @@ REMEMBERED_TURNS = 200  # how many searches and unfinished turns it remembers fo
 # about 420 characters a search, and an answer needs them once. `after_tool` adds them, as the result's last fields, so the citation request is
 # the last thing read; a host that names no turn gets them on every result.
 CITE_KEY = "cite_sources"
-# The first sentence is word for word what Grounder's MCP server ends every search's notes with (CITE_REMINDER in routes/mcp.ts).
-CITE_REQUEST = ("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first. "
-                "End the answer with a Sources list: one line per result used, with its title and its link.")
+# The model cites by number and `after_answer` writes the Sources list from what Grounder served (GRO-701): a list of titles and links was a third of an
+# answer, in the model's slowest and dearest tokens, and the plugin already holds every word of it. A result's `position` is its number across the turn.
+CITE_REQUEST = ("Cite every result your answer uses by its position in square brackets, like [3], in this answer and in every later one in this chat, "
+                "not only the first. Positions run on across this answer's searches and page reads, so each number names one result. "
+                "Write no Sources list: one with each cited result's title and link is added under the answer.")
+# For a host that names no turn the plugin cannot tell which answer a result serves, so the model writes the list itself. The first sentence is word for
+# word what Grounder's MCP server ends every search's notes with (CITE_REMINDER in routes/mcp.ts).
+CITE_REQUEST_LISTED = ("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first. "
+                       "End the answer with a Sources list: one line per result used, with its title and its link.")
 # Hermes's web_extract tells the model a large page's full text is saved to a file for read_file. Grounder sends only the part that answers and saves
-# nothing, so a model that wanted more guessed file names (GRO-688: `Asian_Latin_Americans.md` in two folders, then a 32-second search of the disk).
+# nothing, so a model that wanted more guessed file names (GRO-688: `Asian_Latin_Americans.md` in two folders, then a 32-second search of the disk), and
+# one that wanted another part of a page fetched it with its own tools (GRO-691). A web_search whose query holds a page's address reads that page for
+# the query's other words, so the model can ask for the part it lacks.
 FILES_KEY = "pages"
-FILES_NOTE = ("Each text is the part of its page that answers the query, and web_extract reads more of a search's result. "
-              "Grounder saves no page to a file, so read_file finds none.")
+FILES_NOTE = ("Each text is the part of its page that answers the query. For another part of a page, web_search its address and what you need, "
+              "like \"https://example.com/page early life\". Grounder saves no page to a file, so read_file finds none.")
+ADDRESS = re.compile(r"https?://[^\s<>\"'`]+", re.I)
+# A heading or label that starts a Sources list the model wrote itself, so the plugin adds none.
+LISTED = re.compile(r"^[ \t>]*(?:#{1,6}[ \t]*|\*\*|__)?(?:sources|references|citations)\b", re.I | re.M)
+# A citation: [3], [3, 5] or [3-5].
+CITED = re.compile(r"\[(\d{1,3}(?:\s*[,–-]\s*\d{1,3})*)\]")
 SEARCH_TOOL = "grounder_search"
 LIST_PROVIDERS_TOOL = "grounder_list_providers"
 TOOLSET = "grounder"
@@ -171,6 +186,31 @@ def _card_line(searches: list[dict[str, Any]]) -> str:
     if total:
         parts.append(_duration(total))
     return " · ".join(parts)
+
+
+def _cited(text: str) -> set[int]:
+    """The numbers an answer cites in square brackets, a range counting each number in it."""
+    numbers: set[int] = set()
+    for group in CITED.findall(text):
+        for part in re.split(r"\s*,\s*", group):
+            bounds = [int(bound) for bound in re.split(r"\s*[–-]\s*", part) if bound.isdigit()]
+            if len(bounds) == 2 and bounds[0] <= bounds[1] <= bounds[0] + 50:
+                numbers.update(range(bounds[0], bounds[1] + 1))
+            elif len(bounds) == 1:
+                numbers.add(bounds[0])
+    return numbers
+
+
+def _sources_list(text: str, sources: dict[str, dict[str, Any]]) -> str:
+    """The Sources list under an answer: each result it cites by number, with its title and link. None when it wrote its own or cites none."""
+    if not sources or LISTED.search(text):
+        return ""
+    cited = _cited(text)
+    used = sorted((source for source in sources.values() if source["n"] in cited), key=lambda source: source["n"])
+    if not used:
+        return ""
+    lines = [f"- [{source['n']}] {source['title'] or source['url']} — {source['url']}" for source in used]
+    return "Sources:\n" + "\n".join(lines)
 
 
 def _fail(error: str) -> dict[str, Any]:
@@ -414,6 +454,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
         # The searches of each turn not yet answered, by session and turn, and the turns whose model has read the notes.
         self._turns: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._noted: dict[tuple[str, str], bool] = {}
+        # Each turn's results Grounder served, by page, with the number the model cites it by and its title and link.
+        self._sources: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         self._lock = threading.Lock()
 
     @property
@@ -441,7 +483,10 @@ class GrounderWebSearchProvider(WebSearchProvider):
         return True
 
     def search(self, query: str, limit: int = 5) -> dict[str, Any]:
-        """Search Grounder for up to ``limit`` results (1 to ``MAX_RESULTS``)."""
+        """Search Grounder for up to ``limit`` results (1 to ``MAX_RESULTS``), or read the pages a query names (``_read_part``)."""
+        pages = list(dict.fromkeys(address.rstrip(".,;:!?)]}") for address in ADDRESS.findall(query)))[:MAX_PAGES]
+        if pages:
+            return self._read_part(query, pages)
         # Grounder fills each result's text with the passages that best match the query, within the budget.
         payload = {"query": query[:MAX_QUERY_CHARS],
                    "top_k": max(1, min(int(limit), MAX_RESULTS)),
@@ -479,10 +524,40 @@ class GrounderWebSearchProvider(WebSearchProvider):
             _bounded(self._read, REMEMBERED_PAGES)
         return [_page_row(url, found.get(url)) for url in asked]
 
-    def after_tool(self, tool_name: str = "", args: Any = None, result: Any = None, session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
-        """Hermes's ``transform_tool_result``: note a search for the line under the answer, and add the notes to the turn's first result Grounder served.
+    def _read_part(self, query: str, pages: list[str]) -> dict[str, Any]:
+        """A ``web_search`` whose query holds pages' addresses: read those pages for the query's other words, in ``web_search``'s shape (GRO-691).
 
-        Hermes keeps only a page's url, title, content and error from an extract, so the notes are added here, after that trim, and never inside a page's text.
+        Hermes's ``web_extract`` takes only addresses, and answers a repeated read from its own cache, so a model that needed another part of a page
+        fetched it with its own tools. Hermes keys its search cache by the query, so a new question reaches Grounder. A query of addresses alone is
+        ranked as an extract is, against the search that found the pages.
+        """
+        question = " ".join(ADDRESS.sub(" ", query).split())[:MAX_QUERY_CHARS] or self._question(pages)
+        body, error = _send({"query": question, "urls": pages, "top_k": len(pages),
+                             "text_max_chars": EXTRACT_CHARS, "features": ["page-text"]})
+        if body is None:
+            return _fail(error or "Grounder returned no answer")
+        found = _pages_found(pages, body.get("results") or [])
+        logger.info("Grounder read by search: %d of %d pages read", len(found), len(pages))
+        if not found:
+            return _fail("Grounder could not read " + ("this page" if len(pages) == 1 else "these pages") + ", or its site does not allow it.")
+        rows = []
+        for page in pages:
+            if page in found:
+                entry = _page_row(page, found[page])
+                rows.append({"title": entry["title"], "url": page, "description": entry["content"], "position": len(rows) + 1})
+        with self._lock:
+            for page in found:
+                self._read[_page_key(page)] = True
+            _bounded(self._read, REMEMBERED_PAGES)
+        self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows)), found_by=False)
+        return {"success": True, "data": {"web": rows}}
+
+    def after_tool(self, tool_name: str = "", args: Any = None, result: Any = None, session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
+        """Hermes's ``transform_tool_result``: note a search for the line under the answer, number each result Grounder served across the turn, and add
+        the notes to the turn's first one.
+
+        Hermes keeps only a page's url, title, content and error from an extract, so its number and the notes are added here, after that trim, and never
+        inside a page's text.
         """
         if tool_name not in ("web_search", SEARCH_TOOL, "web_extract"):
             return None
@@ -490,33 +565,50 @@ class GrounderWebSearchProvider(WebSearchProvider):
             data = json.loads(result)
         except (TypeError, ValueError):
             data = None
+        data = data if isinstance(data, dict) else {}
         turn = (session_id, turn_id)
+        # A host that names no turn cannot say which answer a result serves: positions stay the search's own, and every result gets the notes.
+        named = all(turn)
         with self._lock:
             if tool_name == "web_extract":
-                pages = data.get("results") if isinstance(data, dict) else None
-                served = isinstance(pages, list) and any(
-                    isinstance(page, dict) and page.get("content") and _page_key(str(page.get("url", ""))) in self._read for page in pages)
+                entries = data.get("results") if isinstance(data.get("results"), list) else []
+                served = [entry for entry in entries if isinstance(entry, dict) and entry.get("content") and entry.get("url")
+                          and _page_key(str(entry["url"])) in self._read]
             else:
                 summary = self._searched.get(str((args or {}).get("query", ""))[:MAX_QUERY_CHARS])
-                served = summary is not None and bool(summary["sources"])
-                if served:
+                searched = summary is not None and bool(summary["sources"])
+                if searched:
                     self._turns.setdefault(turn, []).append(summary)
                     _bounded(self._turns, REMEMBERED_TURNS)
-                rows = ((data or {}).get("data") or {}).get("web") if isinstance(data, dict) else None
-                served = served and isinstance(rows, list) and bool(rows)
-            # A host that names no turn cannot say which result is its first: every one gets the notes.
-            if not served or (all(turn) and turn in self._noted):
+                rows = (data.get("data") or {}).get("web") if isinstance(data.get("data"), dict) else None
+                served = [row for row in rows if isinstance(row, dict) and row.get("url")] if searched and isinstance(rows, list) else []
+            if not served:
                 return None
-            if all(turn):
+            if named:
+                sources = self._sources.setdefault(turn, {})
+                _bounded(self._sources, REMEMBERED_TURNS)
+                for entry in served:
+                    key = _page_key(str(entry["url"]))
+                    if key not in sources:
+                        sources[key] = {"n": len(sources) + 1, "title": " ".join(str(entry.get("title") or "").split()), "url": str(entry["url"])}
+                    entry["position"] = sources[key]["n"]
+            notes = not named or turn not in self._noted
+            if named and notes:
                 self._noted[turn] = True
                 _bounded(self._noted, REMEMBERED_TURNS)
-        return json.dumps({**data, FILES_KEY: FILES_NOTE, CITE_KEY: CITE_REQUEST}, indent=2, ensure_ascii=False)
+        extra = {FILES_KEY: FILES_NOTE, CITE_KEY: CITE_REQUEST if named else CITE_REQUEST_LISTED} if notes else {}
+        return json.dumps({**data, **extra}, indent=2, ensure_ascii=False)
 
     def after_answer(self, response_text: str = "", session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
-        """Hermes's ``transform_llm_output``: end an answer that searched with Grounder's card line. Appends only, so Hermes keeps streaming the answer."""
+        """Hermes's ``transform_llm_output``: end an answer with the Sources list of what it cites and, when it searched, Grounder's card line.
+        Appends only, so Hermes keeps streaming the answer."""
         with self._lock:
             searches = self._turns.pop((session_id, turn_id), None)
-        return f"{response_text.rstrip()}\n\n{_card_line(searches)}" if searches and response_text else None
+            sources = self._sources.pop((session_id, turn_id), None)
+        if not response_text:
+            return None
+        tail = [part for part in (_sources_list(response_text, sources or {}), _card_line(searches) if searches else "") if part]
+        return f"{response_text.rstrip()}\n\n" + "\n\n".join(tail) if tail else None
 
     def search_tool(self, args: dict[str, Any], **_: Any) -> str:
         """The ``grounder_search`` tool: one search with every option Grounder's MCP search takes, answered in ``web_search``'s shape."""
@@ -543,10 +635,11 @@ class GrounderWebSearchProvider(WebSearchProvider):
             return json.dumps(_fail(f"Could not reach Grounder: {error}"))
         return json.dumps({"success": True, "data": {"features": [_feature(f) for f in body.get("features") or [] if isinstance(f, dict)]}}, ensure_ascii=False)
 
-    def _remember(self, query: str, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
-        """Note the query that found each of a search's pages, for the extract that may read them next, and the search's summary."""
+    def _remember(self, query: str, rows: list[dict[str, Any]], summary: dict[str, Any], found_by: bool = True) -> None:
+        """Note the query that found each of a search's pages, for the extract that may read them next, and the search's summary.
+        A read by search names its pages rather than finding them, so it leaves the query that found them in place."""
         with self._lock:
-            for row in rows:
+            for row in rows if found_by else []:
                 key = _page_key(row["url"])
                 self._found_by.pop(key, None)  # a page found again moves to the newest place
                 self._found_by[key] = query

@@ -94,17 +94,17 @@ Each search returns up to 20 rows (Hermes asks for 5 unless told otherwise), in 
 | `title` | The result's title |
 | `url` | The result's address |
 | `description` | Its summary, or its text on one line: the passages that best match your search, chosen by Grounder to fit 800 characters |
-| `position` | Its rank, from 1 |
+| `position` | The number the answer cites it by. The results of one answer are numbered on from 1 across its searches and reads, and a page found twice keeps its first number |
 | `date` | When it was published, when Grounder knows |
 
 Where each result came from (whose it is, the feature and provider that found it, why it may be served) stays in Grounder's
 records and in its API response; the model does not read it row by row, and the line under the answer names the providers.
 
 The first result Grounder serves in a turn, a search or a read, ends with two notes the model then has for its answer: `pages`,
-which says each text is part of its page, that `web_extract` reads more and that Grounder saves no page to a file (Hermes's own
+which says each text is part of its page, how to ask for another part and that Grounder saves no page to a file (Hermes's own
 `web_extract` saves a long page's text for `read_file`, and a model expecting that guessed file names), then `cite_sources`, which
-asks the model to cite each result it uses with its link and to end the answer with a Sources list. The turn's later results
-carry neither, which saves about 420 characters on each.
+asks the model to cite each result it uses by its number in square brackets, like `[3]`, and to write no Sources list, since
+the plugin adds one. The turn's later results carry neither, which saves about 420 characters on each.
 
 `web_extract` reads up to 5 pages in a call and returns one entry for each, in the order asked:
 
@@ -117,11 +117,20 @@ carry neither, which saves about 420 characters on each.
 
 A `web_extract` keeps less than a whole page on purpose, to spare your model the tokens. Run a `web_search` first to get the
 parts that matter. A read that is the turn's first Grounder result carries the two notes too.
+
+For another part of a page, a `web_search` whose query holds the page's address reads that page for the query's other words,
+for example `https://en.wikipedia.org/wiki/Jamie_Oliver books`. It returns the part that answers, at most 6,000 characters,
+as the result's `description`, and counts as one search. Hermes's `web_extract` takes only addresses and answers a repeated read
+from its own cache, so without this a model that needed more of a page fetched it with its own tools.
 The pages you ask for always lead what Grounder returns, ahead of anything its search found beside them.
 
-An answer that searched ends with one line saying who answered, how many sources came back and how long it took, for example
-`Searched with Grounder · via Exa, Brave · 8 sources · 1.4 s`. Whether the Sources list appears is up to your model, as it is
-in any client. The line is added by the plugin. Hermes keeps it with the answer, so it is also in the history later turns send.
+An answer that cites a Grounder result ends with a Sources list the plugin writes: one line for each result the answer cites
+by number, with its title and link. The model writes only the numbers, which spares it the slowest tokens it makes; an
+answer that wrote its own list, under a Sources or References heading, gets none added. Then an answer that searched ends with
+one line saying who answered, how many sources came back and how long it took, for example
+`Searched with Grounder · via Exa, Brave · 8 sources · 1.4 s`. Both are added by the plugin. Hermes keeps them with the answer,
+so they are also in the history later turns send. A host that does not say which answer a search serves gets no list: there
+the model is asked to write its own, as in any client.
 
 A failed search returns `success: false` and one of these errors. Hermes then retries the search on its own keyless free
 tier and, if that answers, returns those results with `rescued_from: grounder` and the error in `backend_error`. If it
@@ -168,8 +177,8 @@ when the user stated one. `grounder_list_providers` reads Grounder's public feat
 
 Searches are recorded under your Grounder account, as Grounder's [privacy policy](https://grounder.net/privacy) and
 [data use](https://grounder.net/docs/data-use) pages describe. The plugin logs how many results a search
-returned or pages an extract read, never the query or an address. To add `cite_sources` and the line under an answer it reads
-its own results and the finished answer on your machine, and sends neither.
+returned or pages an extract read, never the query or an address. To add `cite_sources`, the Sources list and the line under an
+answer it reads its own results and the finished answer on your machine, and sends neither.
 
 ## Development
 

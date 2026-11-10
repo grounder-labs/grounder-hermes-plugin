@@ -512,8 +512,9 @@ def test_a_search_asks_for_citations_last_and_only_with_results(plugin, stub, ke
     provider = plugin.GrounderWebSearchProvider()
     first = json.loads(provider.after_tool("web_search", {"query": "q"}, json.dumps(provider.search("q")), session_id="s", turn_id="t"))
     assert list(first)[-2:] == ["pages", "cite_sources"]
-    assert "saves no page to a file" in first["pages"] and "web_extract" in first["pages"]
-    assert first["cite_sources"].startswith("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first.")
+    assert "saves no page to a file" in first["pages"] and "web_search its address" in first["pages"]
+    assert first["cite_sources"].startswith("Cite every result your answer uses by its position in square brackets, like [3], in this answer and in every later one")
+    assert "Write no Sources list" in first["cite_sources"]
     stub.search_body = {"query": "q", "results": []}
     empty = plugin.GrounderWebSearchProvider().search("q")
     assert "cite_sources" not in empty and "pages" not in empty
@@ -584,18 +585,19 @@ def test_the_notes_come_once_a_turn_on_its_first_result_grounder_served(plugin, 
     provider = plugin.GrounderWebSearchProvider()
     searched = lambda query, turn: provider.after_tool("web_search", {"query": query}, json.dumps(provider.search(query)), session_id="s", turn_id=turn)
     assert json.loads(searched("one", "t1"))["cite_sources"] == plugin.provider.CITE_REQUEST
-    assert searched("two", "t1") is None
+    # Later results of the turn carry their numbers and no notes (GRO-701).
+    assert "cite_sources" not in json.loads(searched("two", "t1"))
     provider.extract([url])
     page = json.dumps({"results": [{"url": url, "title": "A", "content": "page text", "error": None}]})
-    assert provider.after_tool("web_extract", {"urls": [url]}, page, session_id="s", turn_id="t1") is None
+    assert list(json.loads(provider.after_tool("web_extract", {"urls": [url]}, page, session_id="s", turn_id="t1"))) == ["results"]
     # The next turn, and a read that comes first in its turn, get them again.
     assert json.loads(provider.after_tool("web_extract", {"urls": [url]}, page, session_id="s", turn_id="t2"))["pages"] == plugin.provider.FILES_NOTE
-    assert searched("three", "t2") is None
+    assert "cite_sources" not in json.loads(searched("three", "t2"))
     assert "cite_sources" in json.loads(searched("four", "t3"))
     # A tool's own search, and a host that names no turn, which gets them every time.
     tool = provider.after_tool(plugin.provider.SEARCH_TOOL, {"query": "five"}, provider.search_tool({"query": "five"}), session_id="s", turn_id="t4")
     assert list(json.loads(tool))[-2:] == ["pages", "cite_sources"]
-    assert "cite_sources" in json.loads(searched("six", "")) and "cite_sources" in json.loads(searched("seven", ""))
+    assert json.loads(searched("six", ""))["cite_sources"] == json.loads(searched("seven", ""))["cite_sources"] == plugin.provider.CITE_REQUEST_LISTED
     # A search that found nothing, or another backend's, gets none and does not use the turn's notes up.
     stub.search_body = {"query": "q", "results": []}
     assert searched("eight", "t5") is None
@@ -604,6 +606,108 @@ def test_the_notes_come_once_a_turn_on_its_first_result_grounder_served(plugin, 
     stub.search_body = {"query": "q", "results": [{**RESULT, "url": url, "text": "page text"}]}
     assert "cite_sources" in json.loads(searched("nine", "t5"))
 
+
+
+# --- citations by number (GRO-701) -----------------------------------------------------------------------------------
+
+def _routed(*urls):
+    return {**ROUTED, "results": [{**RESULT, "url": url, "title": f"Title {url[-1]}"} for url in urls]}
+
+
+def test_results_are_numbered_across_the_turn_and_a_page_keeps_its_number(plugin, stub, keyed):
+    provider = plugin.GrounderWebSearchProvider()
+    searched = lambda query, turn="t": json.loads(provider.after_tool("web_search", {"query": query}, json.dumps(provider.search(query)),
+                                                                      session_id="s", turn_id=turn))
+    stub.search_body = _routed(PAGE_A, PAGE_B)
+    assert [row["position"] for row in searched("one")["data"]["web"]] == [1, 2]
+    stub.search_body = _routed(PAGE_C, "https://www.example.com/a/")
+    # A page the turn already numbered keeps its number, under any form of its address.
+    assert [row["position"] for row in searched("two")["data"]["web"]] == [3, 1]
+    stub.search_body = {"results": [_page(PAGE_B), _page("https://example.com/d")]}
+    provider.extract([PAGE_B, "https://example.com/d"])
+    pages = json.dumps({"results": [{"url": PAGE_B, "title": "T", "content": "x", "error": None},
+                                    {"url": "https://example.com/d", "title": "T", "content": "x", "error": None},
+                                    {"url": "https://example.com/e", "title": "", "content": "", "error": "could not read"}]})
+    read = json.loads(provider.after_tool("web_extract", {}, pages, session_id="s", turn_id="t"))["results"]
+    assert [page.get("position") for page in read] == [2, 4, None]
+    # The next turn starts again at 1.
+    stub.search_body = _routed(PAGE_C)
+    assert searched("three", "t2")["data"]["web"][0]["position"] == 1
+
+
+def test_the_plugin_writes_the_sources_list_of_what_the_answer_cites_then_the_card_line(plugin, stub, keyed):
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_body = _routed(PAGE_A, PAGE_B, PAGE_C)
+    provider.after_tool("web_search", {"query": "q"}, json.dumps(provider.search("q")), session_id="s", turn_id="t")
+    answer = provider.after_answer("Wind is cheap [3], and cheaper still [1, 3].\n", session_id="s", turn_id="t")
+    assert answer == ("Wind is cheap [3], and cheaper still [1, 3].\n\nSources:\n"
+                      f"- [1] Title a — {PAGE_A}\n- [3] Title c — {PAGE_C}\n\n"
+                      "Searched with Grounder · via Exa, xAI +1 · 3 sources · 1.4 s")
+    # A range counts each number in it, and a number no result has is left alone.
+    provider.after_tool("web_search", {"query": "q"}, json.dumps(provider.search("q")), session_id="s", turn_id="t2")
+    assert "- [2] Title b" in provider.after_answer("See [2-3] and [9].", session_id="s", turn_id="t2")
+
+
+def test_no_list_is_added_to_an_answer_that_wrote_its_own_or_cites_none(plugin, stub, keyed):
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_body = _routed(PAGE_A)
+    card = "Searched with Grounder · via Exa, xAI +1 · 1 source · 1.4 s"
+    for turn, text in (("t1", "It is so [1].\n\n**Sources**\n1. A — https://example.com/a"), ("t2", "It is so [1].\n## References\n- a"),
+                       ("t3", "It is so, as Example says.")):
+        provider.after_tool("web_search", {"query": "q"}, json.dumps(provider.search("q")), session_id="s", turn_id=turn)
+        assert provider.after_answer(text, session_id="s", turn_id=turn) == f"{text}\n\n{card}"
+    # A turn that only read a page gets its list and no card line.
+    stub.search_body = {"results": [_page(PAGE_A)]}
+    provider.extract([PAGE_A])
+    page = json.dumps({"results": [{"url": PAGE_A, "title": "T", "content": "x", "error": None}]})
+    provider.after_tool("web_extract", {}, page, session_id="s", turn_id="t4")
+    assert provider.after_answer("Read [1].", session_id="s", turn_id="t4") == f"Read [1].\n\nSources:\n- [1] T — {PAGE_A}"
+
+
+def test_a_host_that_names_no_turn_keeps_the_searchs_positions_and_the_model_writes_the_list(plugin, stub, keyed):
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_body = _routed(PAGE_A, PAGE_B)
+    for query in ("one", "two"):
+        data = json.loads(provider.after_tool("web_search", {"query": query}, json.dumps(provider.search(query))))
+        assert [row["position"] for row in data["data"]["web"]] == [1, 2]
+        assert data["cite_sources"] == plugin.provider.CITE_REQUEST_LISTED and "Sources list" in data["cite_sources"]
+
+
+# --- another part of a page (GRO-691) --------------------------------------------------------------------------------
+
+def test_a_search_that_names_a_page_reads_it_for_the_rest_of_the_query(plugin, stub, keyed):
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_body = {"results": [_page(PAGE_A, text="Books\n* 2020: 7 Ways\n* 2021: Together", title="Jamie Oliver")]}
+    result = provider.search(f"{PAGE_A}, books section list")
+    assert json.loads(_searches(stub)[-1]["body"]) == {"query": "books section list", "urls": [PAGE_A], "top_k": 1,
+                                                       "text_max_chars": 6000, "features": ["page-text"]}
+    # The page's text as Grounder read it, its lines kept, in web_search's shape; served, so it is numbered and noted.
+    assert result == {"success": True, "data": {"web": [{"title": "Jamie Oliver", "url": PAGE_A, "description": "Books\n* 2020: 7 Ways\n* 2021: Together",
+                                                           "position": 1}]}}
+    noted = json.loads(provider.after_tool("web_search", {"query": f"{PAGE_A}, books section list"}, json.dumps(result), session_id="s", turn_id="t"))
+    assert noted["data"]["web"][0]["position"] == 1 and noted["cite_sources"] == plugin.provider.CITE_REQUEST
+    assert provider.after_answer("Two [1].", session_id="s", turn_id="t").startswith("Two [1].\n\nSources:\n- [1] Jamie Oliver — ")
+
+
+def test_a_search_of_addresses_alone_reads_them_against_the_search_that_found_them(plugin, stub, keyed):
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_body = {"results": [{**RESULT, "url": PAGE_A}]}
+    provider.search("offshore wind costs")
+    stub.search_body = {"results": [_page(PAGE_A)]}
+    provider.search(f"{PAGE_A}")
+    assert json.loads(_searches(stub)[-1]["body"])["query"] == "offshore wind costs"
+    # The read names the page rather than finding it: a later extract still ranks against the search that found it.
+    provider.search(f"{PAGE_A} turbines")
+    provider.extract([PAGE_A])
+    assert json.loads(_searches(stub)[-1]["body"])["query"] == "offshore wind costs"
+
+
+def test_a_page_read_by_search_that_fails_says_so_and_sends_one_search(plugin, stub, keyed):
+    stub.search_body = {"results": []}
+    result = plugin.GrounderWebSearchProvider().search(f"what is on {PAGE_A} and {PAGE_B}?")
+    assert result == {"success": False, "error": "Grounder could not read these pages, or its site does not allow it."}
+    body = json.loads(_searches(stub)[-1]["body"])
+    assert body["urls"] == [PAGE_A, PAGE_B] and body["query"] == "what is on and" and len(_searches(stub)) == 1
 
 def test_a_read_grounder_did_not_serve_is_left_alone(plugin, stub, keyed):
     provider = plugin.GrounderWebSearchProvider()
