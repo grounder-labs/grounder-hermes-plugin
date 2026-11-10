@@ -19,7 +19,7 @@ import logging
 from agent.secret_scope import get_secret
 from hermes_cli.config import is_managed, save_config, save_env_value
 
-from .provider import LIST_PROVIDERS_SCHEMA, SEARCH_SCHEMA, TOOLSET, CLIENT_ENV, CLIENT_ID, KEY_ENV, GrounderWebSearchProvider, note_model, note_turn
+from .provider import LIST_PROVIDERS_SCHEMA, SEARCH_SCHEMA, TOOLSET, CLIENT_ENV, CLIENT_ID, KEY_ENV, GrounderWebSearchProvider, note_message, note_model, note_turn
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ def register(ctx) -> None:
         logger.warning("Could not add Grounder's search tools: %s", error)
     ctx.register_hook("pre_tool_call", note_turn)
     ctx.register_hook("post_api_request", note_model)
+    ctx.register_hook("pre_llm_call", note_message)
     try:
         _select_once(ctx)
     except Exception as error:  # a config that cannot be written must not take the plugin down with it

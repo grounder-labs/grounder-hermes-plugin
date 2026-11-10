@@ -56,7 +56,7 @@ SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.10"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.11"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -309,6 +309,41 @@ def note_model(**request: Any) -> None:
         _MODELS.pop(next(iter(_MODELS)), None)
 
 
+# The latest message the user sent in each live session, as Hermes's ``pre_llm_call`` hook gave it: the question a page no search found is read for
+# (GRO-672, Harlan, 2026-11-10: "send the message"). A page read with no question comes back from its start, and on a long page the answer is further down.
+_ASKS: dict[str, str] = {}
+
+
+def _message_text(message: Any) -> str:
+    """The words of a user message: a string, or the text parts of a list of content parts."""
+    if isinstance(message, str):
+        return message
+    if isinstance(message, list):
+        return " ".join(str(part.get("text") or "") for part in message if isinstance(part, dict) and part.get("type") == "text")
+    return ""
+
+
+def note_message(**call: Any) -> None:
+    """``pre_llm_call`` hook: remember the user's latest message in this session. Injects nothing and changes nothing about the call."""
+    session = str(call.get("session_id") or "")
+    text = " ".join(_message_text(call.get("user_message")).split())[:MAX_QUERY_CHARS]
+    if not session or not text:
+        return
+    _ASKS.pop(session, None)
+    _ASKS[session] = text
+    while len(_ASKS) > _TURNS_KEPT:
+        _ASKS.pop(next(iter(_ASKS)), None)
+
+
+def _session() -> str:
+    """The Hermes session this call runs in, or "" outside one."""
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env("HERMES_SESSION_ID", "")
+    except ImportError:
+        return os.environ.get("HERMES_SESSION_ID", "")
+
+
 def _token(*parts: str) -> str:
     return hashlib.sha256(_SALT + "\0".join(parts).encode()).hexdigest()[:32]
 
@@ -316,11 +351,7 @@ def _token(*parts: str) -> str:
 def _context() -> dict[str, Any]:
     """A random token for this session and one for this user prompt, so Grounder can tell one prompt from the next, and the model that asked for the search.
     Neither token carries a Hermes id or a message."""
-    try:
-        from gateway.session_context import get_session_env
-        session = get_session_env("HERMES_SESSION_ID", "")
-    except ImportError:
-        session = os.environ.get("HERMES_SESSION_ID", "")
+    session = _session()
     if not session:
         return {}
     conversation, turn = _TURNS.get(session, (session, ""))
@@ -688,11 +719,14 @@ class GrounderWebSearchProvider(WebSearchProvider):
             _bounded(self._searched, REMEMBERED_TURNS)
 
     def _question(self, pages: list[str]) -> str:
-        """What to rank the pages against: the web_search that found the most of them, else their addresses, which ask nothing."""
+        """What to rank the pages against: the web_search that found the most of them, else the user's latest message, else their addresses, which ask
+        nothing."""
         with self._lock:
             found = [self._found_by.get(_page_key(page)) for page in pages]
         counts = Counter(query for query in found if query)
-        return counts.most_common(1)[0][0] if counts else _addresses(pages)
+        if counts:
+            return counts.most_common(1)[0][0]
+        return _ASKS.get(_session()) or _addresses(pages)
 
     def get_setup_schema(self) -> dict[str, Any]:
         """The entry ``hermes tools`` shows. It asks for no key, since signing in needs none; the tag names both ways in."""

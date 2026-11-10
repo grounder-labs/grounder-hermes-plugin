@@ -266,7 +266,8 @@ def test_register_adds_the_backend_and_no_command(plugin):
     plugin.register(Context())
     assert calls["provider"].name == "grounder"
     assert "command" not in calls
-    assert calls["hooks"] == {"transform_tool_result": calls["provider"].after_tool, "transform_llm_output": calls["provider"].after_answer, "pre_tool_call": plugin.provider.note_turn, "post_api_request": plugin.provider.note_model}
+    assert calls["hooks"] == {"transform_tool_result": calls["provider"].after_tool, "transform_llm_output": calls["provider"].after_answer, "pre_tool_call": plugin.provider.note_turn, "post_api_request": plugin.provider.note_model,
+                              "pre_llm_call": plugin.provider.note_message}
 
 
 def test_setup_entry_asks_for_no_key_and_names_both_ways_in(plugin):
@@ -296,6 +297,24 @@ def test_extract_is_one_search_for_the_pages_at_the_6k_cap_with_no_question_when
     # In the order asked, whatever order Grounder answered in.
     assert rows == [{"url": PAGE_A, "title": "T", "content": "page text", "raw_content": "page text"},
                     {"url": PAGE_B, "title": "T", "content": "page text", "raw_content": "page text"}]
+
+
+def test_extract_of_a_page_no_search_found_is_read_for_the_users_latest_message(plugin, stub, hermes, monkeypatch):
+    provider_module = sys.modules[plugin.GrounderWebSearchProvider.__module__]
+    hermes.token = "t"
+    stub.search_body = {"results": [_page(PAGE_A)]}
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-ask")
+    assert provider_module.note_message(session_id="session-ask", user_message="  How many  books\nsince 2020? ") is None
+    plugin.GrounderWebSearchProvider().extract([PAGE_A])
+    assert json.loads(_searches(stub)[-1]["body"])["query"] == "How many books since 2020?"
+    # Content parts keep their text; another session's message is never used.
+    provider_module.note_message(session_id="session-ask", user_message=[{"type": "text", "text": "Which table?"}, {"type": "image_url", "image_url": {}}])
+    provider_module.note_message(session_id="other", user_message="not this one")
+    plugin.GrounderWebSearchProvider().extract([PAGE_A])
+    assert json.loads(_searches(stub)[-1]["body"])["query"] == "Which table?"
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-silent")
+    plugin.GrounderWebSearchProvider().extract([PAGE_A])
+    assert json.loads(_searches(stub)[-1]["body"])["query"] == PAGE_A
 
 
 def test_extract_ranks_pages_against_the_search_that_found_them(plugin, stub, hermes):

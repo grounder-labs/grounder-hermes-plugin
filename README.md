@@ -112,7 +112,7 @@ the plugin adds one. The turn's later results carry neither, which saves about 4
 |---|---|
 | `url` | The address you asked for |
 | `title` | The page's title, or its address when it has none |
-| `content` | What in the page best answers the `web_search` that found it, in the page's own order, at most 6,000 characters. A page that fits comes back whole, and one no search led to comes back from its start |
+| `content` | What in the page best answers the `web_search` that found it, or your latest message when no search found it, in the page's own order, at most 6,000 characters. A page that fits comes back whole, and with no search and no message a page comes back from its start |
 | `error` | Only on a page that could not be read and that no search returned. It says why when Grounder knows: the address does not exist, the site refused the read, or the read ran out of time. The other pages still return. A page a search returned that cannot be read comes back without an error, as the text that search showed of it, which says so |
 
 A `web_extract` keeps less than a whole page on purpose, to spare your model the tokens. Run a `web_search` first to get the
@@ -163,14 +163,16 @@ workspaces on your [account](https://grounder.net/account).
 
 Each `web_search` query, up to its first 2,000 characters, goes to `https://api.grounder.net/v1/search` with the number
 of results wanted, the 800 characters of text it wants for each result, your search key or, when you signed in, the
-access token Hermes attaches, a user agent naming this plugin and its version, two random tokens, one for the session and one for the prompt, so one prompt's searches can be told from the next, and the name of the model whose answer asked for the search, as Hermes reports it. The tokens carry no Hermes id or message. Nothing else from Hermes is sent: not the conversation, the
+access token Hermes attaches, a user agent naming this plugin and its version, two random tokens, one for the session and one for the prompt, so one prompt's searches can be told from the next, and the name of the model whose answer asked for the search, as Hermes reports it. The tokens carry no Hermes id or message. Nothing else from Hermes goes with a search: not the conversation, the
 model's other output or what other tools returned. When a search fails, Hermes may send the same query to its keyless
 free tier, as "What Hermes gets" says; that is Hermes's own behaviour, not Grounder's.
 
 Each `web_extract` sends the addresses of its pages, the 6,000 characters of text it wants for each, the same credential and
-user agent, and the query of the `web_search` that found them, when one did. The plugin keeps that query in memory only, for
-the last 500 pages found. With no such search, the addresses are sent as the query, and are recorded as a search's query
-is.
+user agent, and a question to read them for: the query of the `web_search` that found them, when one did, and otherwise your
+latest message in the session, up to its first 2,000 characters, so a page you paste or the model reads by address comes back
+as the part that answers you rather than its first 6,000 characters. The plugin keeps both in memory only, for the last 500
+pages found and the last 64 sessions. With neither, the addresses are sent as the query. The question is recorded as a
+search's query is. Your other messages, and the rest of the conversation, are never sent.
 
 A `grounder_search` sends what a `web_search` sends plus the options the model chose, including a location or time zone only
 when the user stated one. `grounder_list_providers` reads Grounder's public feature list and sends no credential.
