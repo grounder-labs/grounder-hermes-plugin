@@ -54,7 +54,7 @@ SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.3"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.4"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -251,12 +251,29 @@ def note_turn(**ids: Any) -> None:
         _TURNS.pop(next(iter(_TURNS)), None)
 
 
+# The model each live session last called, as Hermes's ``post_api_request`` hook named it: the model whose answer asked for the search that follows.
+_MODELS: dict[str, str] = {}
+
+
+def note_model(**request: Any) -> None:
+    """``post_api_request`` hook: remember which model this session's last answer came from. Changes nothing about the call."""
+    session = str(request.get("session_id") or "")
+    model = str(request.get("response_model") or request.get("model") or "").strip()
+    if not session or not model:
+        return
+    _MODELS.pop(session, None)
+    _MODELS[session] = model[:80]
+    while len(_MODELS) > _TURNS_KEPT:
+        _MODELS.pop(next(iter(_MODELS)), None)
+
+
 def _token(*parts: str) -> str:
     return hashlib.sha256(_SALT + "\0".join(parts).encode()).hexdigest()[:32]
 
 
-def _context() -> dict[str, str]:
-    """A random token for this session and one for this user prompt, so Grounder can tell one prompt from the next. Neither carries a Hermes id or a message."""
+def _context() -> dict[str, Any]:
+    """A random token for this session and one for this user prompt, so Grounder can tell one prompt from the next, and the model that asked for the search.
+    Neither token carries a Hermes id or a message."""
     try:
         from gateway.session_context import get_session_env
         session = get_session_env("HERMES_SESSION_ID", "")
@@ -265,7 +282,8 @@ def _context() -> dict[str, str]:
     if not session:
         return {}
     conversation, turn = _TURNS.get(session, (session, ""))
-    return {"session_ref": _token(conversation), **({"prompt_ref": _token(conversation, turn)} if turn else {})}
+    model = _MODELS.get(session)
+    return {"session_ref": _token(conversation), **({"prompt_ref": _token(conversation, turn)} if turn else {}), **({"agent": {"model": model}} if model else {})}
 
 
 def _send(payload: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional[str]]:

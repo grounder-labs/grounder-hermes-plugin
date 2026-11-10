@@ -266,7 +266,7 @@ def test_register_adds_the_backend_and_no_command(plugin):
     plugin.register(Context())
     assert calls["provider"].name == "grounder"
     assert "command" not in calls
-    assert calls["hooks"] == {"transform_tool_result": calls["provider"].after_tool, "transform_llm_output": calls["provider"].after_answer, "pre_tool_call": plugin.provider.note_turn}
+    assert calls["hooks"] == {"transform_tool_result": calls["provider"].after_tool, "transform_llm_output": calls["provider"].after_answer, "pre_tool_call": plugin.provider.note_turn, "post_api_request": plugin.provider.note_model}
 
 
 def test_setup_entry_asks_for_no_key_and_names_both_ways_in(plugin):
@@ -590,6 +590,22 @@ def test_searches_of_one_turn_share_a_prompt_id_and_the_next_turn_gets_its_own(p
     assert sent[0]["session_ref"] == sent[2]["session_ref"]
     assert all(re.fullmatch(r"[a-f0-9]{32}", value) for row in sent for value in row.values())
     assert not {"session-1", "chat-1", "turn-1"} & {value for row in sent for value in row.values()}
+
+
+def test_a_search_names_the_model_whose_answer_asked_for_it(plugin, stub, keyed, monkeypatch):
+    provider_module = sys.modules[plugin.GrounderWebSearchProvider.__module__]
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-2")
+    provider = plugin.GrounderWebSearchProvider()
+    provider.search("query")
+    assert "agent" not in json.loads(_searches(stub)[-1]["body"])["context"]
+    provider_module.note_model(session_id="session-2", model="anthropic/claude-sonnet-4.6", response_model="claude-sonnet-4-6-20260101", provider="anthropic")
+    provider.search("query")
+    assert json.loads(_searches(stub)[-1]["body"])["context"]["agent"] == {"model": "claude-sonnet-4-6-20260101"}
+    provider_module.note_model(session_id="session-2", model="openrouter/auto", response_model=None)
+    provider.search("query")
+    assert json.loads(_searches(stub)[-1]["body"])["context"]["agent"] == {"model": "openrouter/auto"}
+    provider_module.note_model(session_id="other", model="x/y")
+    assert json.loads(_searches(stub)[-1]["body"])["context"]["agent"] == {"model": "openrouter/auto"}
 
 
 def test_a_search_outside_a_hermes_session_sends_no_context(plugin, stub, keyed, monkeypatch):
