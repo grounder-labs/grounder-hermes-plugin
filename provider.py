@@ -51,9 +51,10 @@ logger = logging.getLogger(__name__)
 
 ORIGIN = "https://api.grounder.net"
 SEARCH_URL = f"{ORIGIN}/v1/search"
+FEATURES_URL = f"{ORIGIN}/v1/features"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.2"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.3"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -68,6 +69,39 @@ CITE_KEY = "cite_sources"  # the result's last field, so it is the last thing th
 # The first sentence is word for word what Grounder's MCP server ends every search's notes with (CITE_REMINDER in routes/mcp.ts).
 CITE_REQUEST = ("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first. "
                 "End the answer with a Sources list: one line per result used, with its title and its link.")
+SEARCH_TOOL = "grounder_search"
+LIST_PROVIDERS_TOOL = "grounder_list_providers"
+TOOLSET = "grounder"
+# The options of Grounder's MCP search tool, in its words, for what Hermes's web_search cannot say: it takes a query and a limit.
+SEARCH_SCHEMA = {
+    "name": SEARCH_TOOL,
+    "description": "Search the web or read pages through Grounder with more control than web_search: recent results only, named sites, "
+                   "the features the answer needs, pages to read, a named provider, a workspace or this search's routing settings. "
+                   "For a plain search use web_search. A call counts as one search.",
+    "parameters": {"type": "object", "required": ["query"], "properties": {
+        "query": {"type": "string", "description": "The search query."},
+        "top_k": {"type": "integer", "description": "How many results (1-100). Default 10."},
+        "days": {"type": "integer", "description": "Only results published within this many days."},
+        "domains": {"type": "array", "items": {"type": "string"}, "description": 'Restrict to these domains, e.g. ["bbc.com"].'},
+        "features": {"type": "array", "items": {"type": "string"},
+                     "description": f'The features the answer needs ({LIST_PROVIDERS_TOOL} lists them), e.g. ["news"] or ["stock-quote"]. Left out, Grounder works them out from the query.'},
+        "urls": {"type": "array", "items": {"type": "string"},
+                 "description": "Pages to read (http(s) addresses): links the user gave, or a result whose text is cut short. Put what to look for in query."},
+        "include_text": {"type": "boolean", "description": "Include passage text. Default true."},
+        "requested_provider": {"type": "string", "description": f"Provider the user explicitly asked for, by id ({LIST_PROVIDERS_TOOL} lists them)."},
+        "providers": {"type": "array", "items": {"type": "string"}, "description": "Explicit provider override: ids as for requested_provider."},
+        "routing_settings": {"type": "object", "description": "This search's routing settings over the account's saved ones; not saved. Pass only what differs, "
+                                                              'when the user or the task calls for it, e.g. {"providers": {"exa": {"use": "always"}}}.'},
+        "workspace": {"type": "string", "description": "Slug of the workspace to search under; the default one when left out. An unknown slug is refused, never replaced by the default."},
+        "user_location": {"type": "string", "description": 'Where the user is, only if the user said so in this chat, e.g. "Austin, Texas". Never guess it.'},
+        "user_time_zone": {"type": "string", "description": "The user's time zone, only if the user said so in this chat, as an IANA name, e.g. \"America/Chicago\". Never guess it."},
+    }},
+}
+LIST_PROVIDERS_SCHEMA = {
+    "name": LIST_PROVIDERS_TOOL,
+    "description": "List the features a Grounder search can use: what each returns, the inputs it honors, and the providers (with modes) and live-data APIs that deliver it.",
+    "parameters": {"type": "object", "properties": {}},
+}
 # Why a result may be served, in the words of Grounder's MCP card (BASIS in routes/mcp.ts).
 LICENSED = {"publisher-license": "licensed by its publisher", "robots-allowed": "licensed: the site allows it", "data-feed": "licensed data feed"}
 # Where a provider's or live source's id is not its name capitalized; the rest of Grounder's lists are.
@@ -109,11 +143,11 @@ def _source(result: dict[str, Any]) -> str:
     return " · ".join(filter(None, [whose, str(result.get("published_date") or ""), found, LICENSED.get(str(provenance.get("licensed_basis")), "")]))
 
 
-def _row(result: dict[str, Any], position: int) -> dict[str, Any]:
+def _row(result: dict[str, Any], position: int, chars: int = 0) -> dict[str, Any]:
     """Hermes's row for one result, with Grounder's account of where it came from when there is one."""
     source = _source(result)
     return {"title": str(result.get("title", "")), "url": str(result.get("url", "")),
-            "description": _description(result), "position": position, **({"source": source} if source else {})}
+            "description": _description(result, chars or DESCRIPTION_CHARS), "position": position, **({"source": source} if source else {})}
 
 
 def _summary(body: dict[str, Any], sources: int) -> dict[str, Any]:
@@ -184,7 +218,7 @@ def _error_message(status: int, body: Any, signed_in: bool) -> str:
     return f"Grounder returned HTTP {status}" + (f": {detail}" if detail else "")
 
 
-def _description(result: dict[str, Any]) -> str:
+def _description(result: dict[str, Any], chars: int = DESCRIPTION_CHARS) -> str:
     """The result's summary, else its text, on one line.
 
     Grounder sends the text as the passages that best match the query, already
@@ -194,8 +228,8 @@ def _description(result: dict[str, Any]) -> str:
     more than the budget.
     """
     text = " ".join(str(result.get("summary") or result.get("text") or "").split())
-    if len(text) > DESCRIPTION_CHARS:
-        text = text[:DESCRIPTION_CHARS - 1].rstrip() + "…"
+    if len(text) > chars:
+        text = text[:chars - 1].rstrip() + "…"
     return text
 
 
@@ -239,7 +273,7 @@ def _send(payload: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional[s
     key = _key()
     context = _context()
     if context:
-        payload = {**payload, "context": context}
+        payload = {**payload, "context": {**payload.get("context", {}), **context}}
     try:
         status, raw = _post_with_key(key, payload) if key else _post_signed_in(payload)
     except ProviderNotSignedIn:
@@ -319,6 +353,36 @@ def _page_row(url: str, row: Optional[dict[str, Any]]) -> dict[str, Any]:
 
 def _page_error(url: str, error: str) -> dict[str, Any]:
     return {"url": url, "title": "", "content": "", "raw_content": "", "error": error}
+
+
+def _options(args: dict[str, Any], query: str, chars: int) -> dict[str, Any]:
+    """``grounder_search``'s arguments as a search request, the way Grounder's MCP search maps the same arguments."""
+    payload: dict[str, Any] = {"query": query, "text_max_chars": chars}
+    for name in ("top_k", "include_text", "requested_provider", "providers", "features", "urls", "routing_settings", "workspace"):
+        if args.get(name) not in (None, "", [], {}):
+            payload[name] = args[name]
+    filters: dict[str, Any] = {}
+    if args.get("domains"):
+        filters["domains"] = {"values": args["domains"], "mode": "include"}
+    if isinstance(args.get("days"), int) and args["days"] > 0:
+        filters["recency"] = {"mode": "rolling", "days": args["days"]}
+    if filters:
+        payload["filters"] = filters
+    stated = {name: str(args[name]).strip()[:limit] for name, limit in (("user_location", 200), ("user_time_zone", 64)) if str(args.get(name) or "").strip()}
+    if stated:
+        payload["context"] = stated
+    return payload
+
+
+def _feature(feature: dict[str, Any]) -> dict[str, Any]:
+    """One feature as Grounder's MCP ``list_providers`` lays it out: the providers with their modes, and the live-data APIs."""
+    providers: dict[str, list[str]] = {}
+    for offering in feature.get("offerings") or []:
+        modes = providers.setdefault(str(offering.get("provider")), [])
+        if offering.get("mode"):
+            modes.append(str(offering["mode"]))
+    return {"feature": feature.get("id"), "description": feature.get("description"), "returns": feature.get("returns"),
+            "inputs": feature.get("inputs"), "providers": providers, "apis": feature.get("specialized") or []}
 
 
 class GrounderWebSearchProvider(WebSearchProvider):
@@ -402,7 +466,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
 
         Hermes keeps only a page's url, title, content and error from an extract, so its request is added here, after that trim, and never inside a page's text.
         """
-        if tool_name == "web_search":
+        if tool_name in ("web_search", SEARCH_TOOL):
             query = str((args or {}).get("query", ""))[:MAX_QUERY_CHARS]
             with self._lock:
                 summary = self._searched.get(query)
@@ -428,6 +492,31 @@ class GrounderWebSearchProvider(WebSearchProvider):
         with self._lock:
             searches = self._turns.pop((session_id, turn_id), None)
         return f"{response_text.rstrip()}\n\n{_card_line(searches)}" if searches and response_text else None
+
+    def search_tool(self, args: dict[str, Any], **_: Any) -> str:
+        """The ``grounder_search`` tool: one search with every option Grounder's MCP search takes, answered in ``web_search``'s shape."""
+        query = str(args.get("query") or "").strip()[:MAX_QUERY_CHARS]
+        if not query:
+            return json.dumps(_fail("grounder_search needs a query"))
+        chars = EXTRACT_CHARS if args.get("urls") else DESCRIPTION_CHARS
+        body, error = _send(_options(args, query, chars))
+        if body is None:
+            return json.dumps(_fail(error or "Grounder returned no answer"))
+        rows = [_row(r, i + 1, chars) for i, r in enumerate(body.get("results") or [])]
+        self._remember(query, rows, _summary(body, len(rows)))
+        logger.info("Grounder search: %d results", len(rows))
+        features = {"features": body["features"]} if body.get("features") else {}
+        return json.dumps({"success": True, "data": {"web": rows}, **features, **({CITE_KEY: CITE_REQUEST} if rows else {})}, indent=2, ensure_ascii=False)
+
+    def list_providers_tool(self, args: dict[str, Any], **_: Any) -> str:
+        """The ``grounder_list_providers`` tool: what Grounder's MCP ``list_providers`` says, from the public feature list. Sends no credential and is not a search."""
+        request = urllib.request.Request(FEATURES_URL, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+                body = json.loads(response.read())
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
+            return json.dumps(_fail(f"Could not reach Grounder: {error}"))
+        return json.dumps({"success": True, "data": {"features": [_feature(f) for f in body.get("features") or [] if isinstance(f, dict)]}}, ensure_ascii=False)
 
     def _remember(self, query: str, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
         """Note the query that found each of a search's pages, for the extract that may read them next, and the search's summary."""

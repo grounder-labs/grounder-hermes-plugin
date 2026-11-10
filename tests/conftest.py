@@ -126,6 +126,7 @@ class Stub:
         self.requests = []
         self.search_status = 200
         self.search_body = {"query": "q", "results": []}  # bytes are sent as they are, not as JSON
+        self.features_body = {"features": []}
         self.rejected = {"revoked-token", "revoked-key"}  # bearers /v1/search answers 401 for
 
     def handle(self, method, path, headers, body):
@@ -134,6 +135,8 @@ class Stub:
             if headers.get("Authorization", "").removeprefix("Bearer ") in self.rejected:
                 return 401, {"error": {"code": "unauthorized", "message": "expired"}}
             return self.search_status, self.search_body
+        if path == "/v1/features":
+            return 200, self.features_body
         return 404, {"error": "not_found"}
 
 
@@ -175,6 +178,14 @@ def stub():
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
+
+        def do_GET(self):
+            status, payload = state.handle("GET", self.path, dict(self.headers), "")
+            data = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
 
         def do_POST(self):
             length = int(self.headers.get("Content-Length") or 0)

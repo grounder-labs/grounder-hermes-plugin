@@ -596,3 +596,62 @@ def test_a_search_outside_a_hermes_session_sends_no_context(plugin, stub, keyed,
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     plugin.GrounderWebSearchProvider().search("query")
     assert "context" not in json.loads(_searches(stub)[-1]["body"])
+
+
+def test_grounder_search_sends_every_option_as_the_mcp_search_maps_it(plugin, stub, keyed):
+    stub.search_body = ROUTED
+    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({
+        "query": " q ", "top_k": 3, "days": 7, "domains": ["bbc.com"], "features": ["news"], "include_text": False, "requested_provider": "exa",
+        "providers": ["exa"], "routing_settings": {"fallback": False}, "workspace": "work", "user_location": " Austin ", "user_time_zone": "America/Chicago"}))
+    sent = json.loads(_searches(stub)[0]["body"])
+    assert sent == {"query": "q", "text_max_chars": 800, "top_k": 3, "include_text": False, "requested_provider": "exa", "providers": ["exa"], "features": ["news"],
+                    "routing_settings": {"fallback": False}, "workspace": "work",
+                    "filters": {"domains": {"values": ["bbc.com"], "mode": "include"}, "recency": {"mode": "rolling", "days": 7}},
+                    "context": {"user_location": "Austin", "user_time_zone": "America/Chicago"}}
+    assert out["success"] and out["cite_sources"] == plugin.provider.CITE_REQUEST and out["data"]["web"][0]["title"] == "A"
+
+
+def test_grounder_search_reads_pages_at_the_page_budget_and_reports_failures(plugin, stub, keyed):
+    stub.search_body = {"query": "q", "results": [{**RESULT, "text": "x" * 5000}]}
+    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "urls": ["https://example.com/a"]}))
+    assert json.loads(_searches(stub)[0]["body"])["text_max_chars"] == plugin.provider.EXTRACT_CHARS
+    assert len(out["data"]["web"][0]["description"]) == 5000
+    assert not json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": " "}))["success"]
+    stub.search_status = 500
+    assert not json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q"}))["success"]
+
+
+def test_grounder_search_gets_the_card_line(plugin, stub, keyed):
+    stub.search_body = ROUTED
+    provider = plugin.GrounderWebSearchProvider()
+    provider.search_tool({"query": "q"})
+    provider.after_tool("grounder_search", {"query": "q"}, "{}", session_id="s", turn_id="t")
+    assert "Searched with Grounder" in provider.after_answer("A", session_id="s", turn_id="t")
+
+
+def test_list_providers_says_what_the_mcp_tool_says_and_sends_no_credential(plugin, stub, keyed, monkeypatch):
+    monkeypatch.setattr(plugin.provider, "FEATURES_URL", f"{stub.origin}/v1/features")
+    stub.features_body = {"features": [{"id": "news", "description": "d", "returns": "r", "inputs": ["query"], "specialized": ["espn"],
+                                        "offerings": [{"provider": "exa", "mode": None}, {"provider": "brave", "mode": "news"}]}]}
+    out = json.loads(plugin.GrounderWebSearchProvider().list_providers_tool({}))
+    assert out["data"]["features"] == [{"feature": "news", "description": "d", "returns": "r", "inputs": ["query"], "providers": {"exa": [], "brave": ["news"]}, "apis": ["espn"]}]
+    assert "Authorization" not in stub.requests[-1]["headers"]
+
+
+def test_a_hermes_that_refuses_the_tools_keeps_web_search(plugin):
+    calls = []
+
+    class Refuses:
+        state = {}
+
+        def register_web_search_provider(self, provider):
+            calls.append(provider)
+
+        def register_hook(self, name, callback):
+            pass
+
+        def register_tool(self, **kwargs):
+            raise ValueError("no")
+
+    plugin.register(Refuses())
+    assert calls[0].name == "grounder"
