@@ -56,7 +56,7 @@ SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.7"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.8"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -87,6 +87,9 @@ CITE_REQUEST_LISTED = ("Cite every result your answer uses, each with its link, 
 FILES_KEY = "pages"
 FILES_NOTE = ("Each text is the part of its page that answers the query. For another part of a page, web_search its address and what you need, "
               "like \"https://example.com/page early life\". Grounder saves no page to a file, so read_file finds none.")
+# A page read that failed, for a page a search returned: the model gets what that search showed of it (GRO-694). In test-b a bare error sent the model
+# to fetch the page itself, and Hermes wrote itself a skill to do so whenever Grounder erred (GRO-688).
+SHOWN_NOTE = "Grounder could not read this page in full. This is what its search showed of it."
 ADDRESS = re.compile(r"https?://[^\s<>\"'`]+", re.I)
 # A heading or label that starts a Sources list the model wrote itself, so the plugin adds none.
 LISTED = re.compile(r"^[ \t>]*(?:#{1,6}[ \t]*|\*\*|__)?(?:sources|references|citations)\b", re.I | re.M)
@@ -412,6 +415,14 @@ def _page_error(url: str, error: str) -> dict[str, Any]:
     return {"url": url, "title": "", "content": "", "raw_content": "", "error": error}
 
 
+def _page_shown(url: str, shown: tuple[str, str]) -> dict[str, Any]:
+    """Hermes's entry for a page Grounder could not read but a search returned: what that search showed of it, which says so (GRO-694).
+    No ``error``, so Hermes keeps it as read and its own reader does not fetch the page again."""
+    title, text = shown
+    content = f"{SHOWN_NOTE}\n\n{text}"
+    return {"url": url, "title": title, "content": content, "raw_content": content}
+
+
 def _options(args: dict[str, Any], query: str, chars: int) -> dict[str, Any]:
     """``grounder_search``'s arguments as a search request, the way Grounder's MCP search maps the same arguments."""
     payload: dict[str, Any] = {"query": query, "text_max_chars": chars}
@@ -448,6 +459,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
     def __init__(self) -> None:
         # Each page a search returned and that search's query, oldest first, so an extract can be ranked against it. In memory only.
         self._found_by: dict[str, str] = {}
+        # Each such page's title and the text the search showed of it, for a read of it that fails. In memory only.
+        self._shown: dict[str, tuple[str, str]] = {}
         # The pages Grounder read, and each search's summary by its query: how the hooks tell Grounder's results from another backend's. In memory only.
         self._read: dict[str, bool] = {}
         self._searched: dict[str, dict[str, Any]] = {}
@@ -519,10 +532,11 @@ class GrounderWebSearchProvider(WebSearchProvider):
         # The count only: an address says what the user is reading, and a log line outlives the search.
         logger.info("Grounder extract: %d of %d pages read", len(found), len(pages))
         with self._lock:
-            for page in found:
+            shown = {page: self._shown[_page_key(page)] for page in pages if page not in found and _page_key(page) in self._shown}
+            for page in [*found, *shown]:
                 self._read[_page_key(page)] = True
             _bounded(self._read, REMEMBERED_PAGES)
-        return [_page_row(url, found.get(url)) for url in asked]
+        return [_page_shown(url, shown[url]) if url in shown else _page_row(url, found.get(url)) for url in asked]
 
     def _read_part(self, query: str, pages: list[str]) -> dict[str, Any]:
         """A ``web_search`` whose query holds pages' addresses: read those pages for the query's other words, in ``web_search``'s shape (GRO-691).
@@ -538,17 +552,18 @@ class GrounderWebSearchProvider(WebSearchProvider):
             return _fail(error or "Grounder returned no answer")
         found = _pages_found(pages, body.get("results") or [])
         logger.info("Grounder read by search: %d of %d pages read", len(found), len(pages))
-        if not found:
+        with self._lock:
+            shown = {page: self._shown[_page_key(page)] for page in pages if page not in found and _page_key(page) in self._shown}
+            for page in [*found, *shown]:
+                self._read[_page_key(page)] = True
+            _bounded(self._read, REMEMBERED_PAGES)
+        if not found and not shown:
             return _fail("Grounder could not read " + ("this page" if len(pages) == 1 else "these pages") + ", or its site does not allow it.")
         rows = []
         for page in pages:
-            if page in found:
-                entry = _page_row(page, found[page])
+            if page in found or page in shown:
+                entry = _page_row(page, found[page]) if page in found else _page_shown(page, shown[page])
                 rows.append({"title": entry["title"], "url": page, "description": entry["content"], "position": len(rows) + 1})
-        with self._lock:
-            for page in found:
-                self._read[_page_key(page)] = True
-            _bounded(self._read, REMEMBERED_PAGES)
         self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows)), found_by=False)
         return {"success": True, "data": {"web": rows}}
 
@@ -643,7 +658,11 @@ class GrounderWebSearchProvider(WebSearchProvider):
                 key = _page_key(row["url"])
                 self._found_by.pop(key, None)  # a page found again moves to the newest place
                 self._found_by[key] = query
+                if row.get("description"):
+                    self._shown.pop(key, None)
+                    self._shown[key] = (row["title"], row["description"])
             _bounded(self._found_by, REMEMBERED_PAGES)
+            _bounded(self._shown, REMEMBERED_PAGES)
             self._searched.pop(query, None)
             self._searched[query] = summary  # kept after the turn: Hermes may answer the same search from its own cache
             _bounded(self._searched, REMEMBERED_TURNS)

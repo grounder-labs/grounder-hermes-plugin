@@ -709,6 +709,27 @@ def test_a_page_read_by_search_that_fails_says_so_and_sends_one_search(plugin, s
     body = json.loads(_searches(stub)[-1]["body"])
     assert body["urls"] == [PAGE_A, PAGE_B] and body["query"] == "what is on and" and len(_searches(stub)) == 1
 
+
+# --- a failed read keeps what the search showed (GRO-694) -----------------------------------------------------------
+
+def test_a_failed_read_of_a_page_a_search_returned_gives_what_that_search_showed(plugin, stub, keyed):
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_body = {"results": [{**RESULT, "url": PAGE_A, "title": "Page A", "text": "the passage the search showed"}]}
+    provider.search("q")
+    stub.search_body = {"results": []}
+    rows = provider.extract([PAGE_A, PAGE_B])
+    note = plugin.provider.SHOWN_NOTE
+    # No error on it, so Hermes keeps it as read and does not fetch the page again; a page no search returned keeps its error.
+    assert rows[0] == {"url": PAGE_A, "title": "Page A", "content": f"{note}\n\nthe passage the search showed",
+                       "raw_content": f"{note}\n\nthe passage the search showed"}
+    assert rows[1]["error"] and not rows[1]["content"]
+    # It is Grounder's, so it is numbered and cited like a read.
+    page = json.dumps({"results": [{"url": PAGE_A, "title": "Page A", "content": rows[0]["content"], "error": None}]})
+    assert json.loads(provider.after_tool("web_extract", {}, page, session_id="s", turn_id="t"))["results"][0]["position"] == 1
+    # The same holds for a read by search.
+    result = provider.search(f"{PAGE_A} more of it")
+    assert result["success"] and result["data"]["web"][0]["description"].startswith(note)
+
 def test_a_read_grounder_did_not_serve_is_left_alone(plugin, stub, keyed):
     provider = plugin.GrounderWebSearchProvider()
     other = json.dumps({"results": [{"url": "https://example.com/other", "title": "", "content": "text", "error": None}]})
