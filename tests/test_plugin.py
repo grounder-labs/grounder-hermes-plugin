@@ -40,7 +40,7 @@ def test_signed_in_search_goes_through_hermes_which_attaches_the_token(plugin, s
         {"title": "A", "url": "https://example.com/a",
          "description": "first passage text", "position": 1},
         {"title": "B", "url": "https://example.com/b",
-         "description": "short", "position": 2}]}, "pages": plugin.provider.SEARCH_FILES_NOTE, "cite_sources": plugin.provider.CITE_REQUEST}
+         "description": "short", "position": 2}]}}
     call = hermes.calls[0]
     assert (call["provider"], call["method"], call["url"]) == ("grounder", "POST", "https://api.grounder.net/v1/search")
     assert call["json"] == {"query": "offshore wind", "top_k": 20, "text_max_chars": 800}
@@ -507,9 +507,13 @@ ROUTED = {"query": "q", "results": [RESULT], "usage": {"latency_ms": 1432},
 def test_a_search_asks_for_citations_last_and_only_with_results(plugin, stub, keyed):
     stub.search_body = ROUTED
     result = plugin.GrounderWebSearchProvider().search("q")
-    assert list(result) == ["success", "data", "pages", "cite_sources"]
-    assert "saves no page to a file" in result["pages"] and "web_extract" in result["pages"]
-    assert result["cite_sources"].startswith("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first.")
+    # The search itself carries no notes: after_tool adds them to the turn's first result Grounder served (GRO-698).
+    assert list(result) == ["success", "data"]
+    provider = plugin.GrounderWebSearchProvider()
+    first = json.loads(provider.after_tool("web_search", {"query": "q"}, json.dumps(provider.search("q")), session_id="s", turn_id="t"))
+    assert list(first)[-2:] == ["pages", "cite_sources"]
+    assert "saves no page to a file" in first["pages"] and "web_extract" in first["pages"]
+    assert first["cite_sources"].startswith("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first.")
     stub.search_body = {"query": "q", "results": []}
     empty = plugin.GrounderWebSearchProvider().search("q")
     assert "cite_sources" not in empty and "pages" not in empty
@@ -520,8 +524,9 @@ def test_a_row_says_where_its_result_came_from_as_the_card_does(plugin, stub, ke
         "provider": "newsapi", "features": ["news"], "licensed": True, "licensed_basis": "robots-allowed",
         "publisher": {"name": "AP", "domain": "apnews.com"}}}, RESULT]}
     rows = plugin.GrounderWebSearchProvider().search("q")["data"]["web"]
-    assert rows[0]["source"] == "AP (apnews.com) · 2026-11-05 · news via NewsAPI.ai · licensed: the site allows it"
-    assert "source" not in rows[1]
+    # The provenance stays in Grounder's records and response; the model reads the date alone (GRO-698).
+    assert rows[0] == {"title": "A", "url": RESULT["url"], "description": rows[0]["description"], "position": 1, "date": "2026-11-05"}
+    assert "date" not in rows[1] and "source" not in rows[0] and "source" not in rows[1]
 
 
 def test_an_answer_that_searched_ends_with_the_card_line_once(plugin, stub, keyed):
@@ -569,7 +574,35 @@ def test_a_read_grounder_served_asks_for_citations_outside_the_page(plugin, stub
     hermes_result = json.dumps({"results": [{"url": url, "title": "A", "content": "page text", "error": None}]})
     data = json.loads(provider.after_tool("web_extract", {"urls": [url]}, hermes_result))
     assert list(data) == ["results", "pages", "cite_sources"] and data["results"][0]["content"] == "page text"
-    assert data["pages"] == plugin.provider.READ_FILES_NOTE and "read_file finds none" in data["pages"]
+    assert data["pages"] == plugin.provider.FILES_NOTE and "read_file finds none" in data["pages"]
+
+
+def test_the_notes_come_once_a_turn_on_its_first_result_grounder_served(plugin, stub, keyed):
+    # GRO-698: every search of a turn repeated about 420 characters of notes; an answer needs them once.
+    url = "https://example.com/a"
+    stub.search_body = {"query": "q", "results": [{**RESULT, "url": url, "text": "page text"}]}
+    provider = plugin.GrounderWebSearchProvider()
+    searched = lambda query, turn: provider.after_tool("web_search", {"query": query}, json.dumps(provider.search(query)), session_id="s", turn_id=turn)
+    assert json.loads(searched("one", "t1"))["cite_sources"] == plugin.provider.CITE_REQUEST
+    assert searched("two", "t1") is None
+    provider.extract([url])
+    page = json.dumps({"results": [{"url": url, "title": "A", "content": "page text", "error": None}]})
+    assert provider.after_tool("web_extract", {"urls": [url]}, page, session_id="s", turn_id="t1") is None
+    # The next turn, and a read that comes first in its turn, get them again.
+    assert json.loads(provider.after_tool("web_extract", {"urls": [url]}, page, session_id="s", turn_id="t2"))["pages"] == plugin.provider.FILES_NOTE
+    assert searched("three", "t2") is None
+    assert "cite_sources" in json.loads(searched("four", "t3"))
+    # A tool's own search, and a host that names no turn, which gets them every time.
+    tool = provider.after_tool(plugin.provider.SEARCH_TOOL, {"query": "five"}, provider.search_tool({"query": "five"}), session_id="s", turn_id="t4")
+    assert list(json.loads(tool))[-2:] == ["pages", "cite_sources"]
+    assert "cite_sources" in json.loads(searched("six", "")) and "cite_sources" in json.loads(searched("seven", ""))
+    # A search that found nothing, or another backend's, gets none and does not use the turn's notes up.
+    stub.search_body = {"query": "q", "results": []}
+    assert searched("eight", "t5") is None
+    assert provider.after_tool("web_search", {"query": "never searched by Grounder"}, json.dumps({"success": True, "data": {"web": [{"title": "x"}]}}),
+                               session_id="s", turn_id="t5") is None
+    stub.search_body = {"query": "q", "results": [{**RESULT, "url": url, "text": "page text"}]}
+    assert "cite_sources" in json.loads(searched("nine", "t5"))
 
 
 def test_a_read_grounder_did_not_serve_is_left_alone(plugin, stub, keyed):
@@ -627,8 +660,7 @@ def test_grounder_search_sends_every_option_as_the_mcp_search_maps_it(plugin, st
                     "routing_settings": {"fallback": False}, "workspace": "work",
                     "filters": {"domains": {"values": ["bbc.com"], "mode": "include"}, "recency": {"mode": "rolling", "days": 7}},
                     "context": {"user_location": "Austin", "user_time_zone": "America/Chicago"}}
-    assert out["success"] and out["cite_sources"] == plugin.provider.CITE_REQUEST and out["data"]["web"][0]["title"] == "A"
-    assert list(out)[-2:] == ["pages", "cite_sources"] and out["pages"] == plugin.provider.SEARCH_FILES_NOTE
+    assert out["success"] and out["data"]["web"][0]["title"] == "A" and "cite_sources" not in out
 
 
 def test_grounder_search_reads_pages_at_the_page_budget_and_reports_failures(plugin, stub, keyed):
@@ -636,7 +668,6 @@ def test_grounder_search_reads_pages_at_the_page_budget_and_reports_failures(plu
     out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "urls": ["https://example.com/a"]}))
     assert json.loads(_searches(stub)[0]["body"])["text_max_chars"] == plugin.provider.EXTRACT_CHARS
     assert len(out["data"]["web"][0]["description"]) == 5000
-    assert out["pages"] == plugin.provider.READ_FILES_NOTE
     assert not json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": " "}))["success"]
     stub.search_status = 500
     assert not json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q"}))["success"]

@@ -95,12 +95,16 @@ Each search returns up to 20 rows (Hermes asks for 5 unless told otherwise), in 
 | `url` | The result's address |
 | `description` | Its summary, or its text on one line: the passages that best match your search, chosen by Grounder to fit 800 characters |
 | `position` | Its rank, from 1 |
-| `source` | Where it came from, when Grounder says: whose it is, its date, how it was found and why it may be served |
+| `date` | When it was published, when Grounder knows |
 
-The result ends with `pages`, which says each description is part of its page, that `web_extract` reads more and that Grounder
-saves no page to a file (Hermes's own `web_extract` saves a long page's text for `read_file`, and a model expecting that guessed
-file names), then `cite_sources`, which asks the model to cite each result it uses with its link and to end the answer with a
-Sources list.
+Where each result came from (whose it is, the feature and provider that found it, why it may be served) stays in Grounder's
+records and in its API response; the model does not read it row by row, and the line under the answer names the providers.
+
+The first result Grounder serves in a turn, a search or a read, ends with two notes the model then has for its answer: `pages`,
+which says each text is part of its page, that `web_extract` reads more and that Grounder saves no page to a file (Hermes's own
+`web_extract` saves a long page's text for `read_file`, and a model expecting that guessed file names), then `cite_sources`, which
+asks the model to cite each result it uses with its link and to end the answer with a Sources list. The turn's later results
+carry neither, which saves about 420 characters on each.
 
 `web_extract` reads up to 5 pages in a call and returns one entry for each, in the order asked:
 
@@ -112,7 +116,7 @@ Sources list.
 | `error` | Only on a page that could not be read. The other pages still return |
 
 A `web_extract` keeps less than a whole page on purpose, to spare your model the tokens. Run a `web_search` first to get the
-parts that matter. A read that returned text ends with `pages` (what it is, and that no file holds the rest) and `cite_sources` too.
+parts that matter. A read that is the turn's first Grounder result carries the two notes too.
 The pages you ask for always lead what Grounder returns, ahead of anything its search found beside them.
 
 An answer that searched ends with one line saying who answered, how many sources came back and how long it took, for example

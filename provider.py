@@ -54,7 +54,7 @@ SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.5"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.6"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -65,18 +65,18 @@ EXTRACT_CHARS = 6000  # the most text of one page web_extract returns, and what 
 MAX_PAGES = 10  # Grounder's limit on the pages one call reads; Hermes asks for at most 5
 REMEMBERED_PAGES = 500  # how many pages the plugin remembers the web_search of, in memory only
 REMEMBERED_TURNS = 200  # how many searches and unfinished turns it remembers for the line under an answer, in memory only
-CITE_KEY = "cite_sources"  # the result's last field, so it is the last thing the model reads before it answers
+# Two notes the model reads once an answer, on the first of the turn's results Grounder served (GRO-698): every search of a turn repeating them cost
+# about 420 characters a search, and an answer needs them once. `after_tool` adds them, as the result's last fields, so the citation request is
+# the last thing read; a host that names no turn gets them on every result.
+CITE_KEY = "cite_sources"
 # The first sentence is word for word what Grounder's MCP server ends every search's notes with (CITE_REMINDER in routes/mcp.ts).
 CITE_REQUEST = ("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first. "
                 "End the answer with a Sources list: one line per result used, with its title and its link.")
 # Hermes's web_extract tells the model a large page's full text is saved to a file for read_file. Grounder sends only the part that answers and saves
 # nothing, so a model that wanted more guessed file names (GRO-688: `Asian_Latin_Americans.md` in two folders, then a 32-second search of the disk).
-# Said once a result, beside the citation request and before it, so the citation request stays the last thing read.
 FILES_KEY = "pages"
-SEARCH_FILES_NOTE = ("Each description is the part of its page that best answers the query; web_extract with a result's url reads more of it. "
-                     "Grounder saves no page to a file, so read_file finds none.")
-READ_FILES_NOTE = ("Each page's content is the part of it that answers the question, not the whole page. "
-                   "Grounder saves no page to a file, so read_file finds none.")
+FILES_NOTE = ("Each text is the part of its page that answers the query, and web_extract reads more of a search's result. "
+              "Grounder saves no page to a file, so read_file finds none.")
 SEARCH_TOOL = "grounder_search"
 LIST_PROVIDERS_TOOL = "grounder_list_providers"
 TOOLSET = "grounder"
@@ -110,8 +110,6 @@ LIST_PROVIDERS_SCHEMA = {
     "description": "List the features a Grounder search can use: what each returns, the inputs it honors, and the providers (with modes) and live-data APIs that deliver it.",
     "parameters": {"type": "object", "properties": {}},
 }
-# Why a result may be served, in the words of Grounder's MCP card (BASIS in routes/mcp.ts).
-LICENSED = {"publisher-license": "licensed by its publisher", "robots-allowed": "licensed: the site allows it", "data-feed": "licensed data feed"}
 # Where a provider's or live source's id is not its name capitalized; the rest of Grounder's lists are.
 PROVIDER_NAMES = {"you": "You.com", "xai": "xAI", "newsapi": "NewsAPI.ai", "tinyfish": "TinyFish", "aeroapi": "FlightAware",
                   "ap-elections": "AP Elections", "bestbuy": "Best Buy", "espn": "ESPN", "fed": "Federal Reserve", "mlb": "MLB",
@@ -140,22 +138,15 @@ def _provider_name(provider: str) -> str:
     return PROVIDER_NAMES.get(provider, provider.capitalize())
 
 
-def _source(result: dict[str, Any]) -> str:
-    """Where a result came from, as Grounder's MCP card lists it: whose it is, its date, how it was found and why it may be served; "" when Grounder said none of it."""
-    provenance = result.get("provenance") if isinstance(result.get("provenance"), dict) else {}
-    publisher = provenance.get("publisher") if isinstance(provenance.get("publisher"), dict) else {}
-    name, domain = str(publisher.get("name") or ""), str(publisher.get("domain") or "")
-    whose = f"{name} ({domain})" if name and domain and name.lower() != domain.lower() else domain or name
-    provider = str(provenance.get("provider") or "")
-    found = " ".join(filter(None, [", ".join(str(f) for f in provenance.get("features") or []), f"via {_provider_name(provider)}" if provider else ""]))
-    return " · ".join(filter(None, [whose, str(result.get("published_date") or ""), found, LICENSED.get(str(provenance.get("licensed_basis")), "")]))
-
-
 def _row(result: dict[str, Any], position: int, chars: int = 0) -> dict[str, Any]:
-    """Hermes's row for one result, with Grounder's account of where it came from when there is one."""
-    source = _source(result)
+    """Hermes's row for one result, with its date when Grounder has one.
+
+    A result's provenance (whose it is, the feature and provider that found it, why it may be served) stays in Grounder's records and in the API's
+    response, and the line under an answer names the providers; the model reads none of it per result (GRO-698: about 100 characters a result).
+    """
+    date = str(result.get("published_date") or "")[:10]
     return {"title": str(result.get("title", "")), "url": str(result.get("url", "")),
-            "description": _description(result, chars or DESCRIPTION_CHARS), "position": position, **({"source": source} if source else {})}
+            "description": _description(result, chars or DESCRIPTION_CHARS), "position": position, **({"date": date} if date else {})}
 
 
 def _summary(body: dict[str, Any], sources: int) -> dict[str, Any]:
@@ -420,8 +411,9 @@ class GrounderWebSearchProvider(WebSearchProvider):
         # The pages Grounder read, and each search's summary by its query: how the hooks tell Grounder's results from another backend's. In memory only.
         self._read: dict[str, bool] = {}
         self._searched: dict[str, dict[str, Any]] = {}
-        # The searches of each turn not yet answered, by session and turn.
+        # The searches of each turn not yet answered, by session and turn, and the turns whose model has read the notes.
         self._turns: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._noted: dict[tuple[str, str], bool] = {}
         self._lock = threading.Lock()
 
     @property
@@ -462,7 +454,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows)))
         # The count only: a query is the user's words, and a log line outlives the search.
         logger.info("Grounder search: %d results", len(rows))
-        return {"success": True, "data": {"web": rows}, **({FILES_KEY: SEARCH_FILES_NOTE, CITE_KEY: CITE_REQUEST} if rows else {})}
+        return {"success": True, "data": {"web": rows}}
 
     def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         """Read ``urls`` in one search, so it counts once: an entry per URL in their order, with an ``error`` on each page not read.
@@ -488,30 +480,37 @@ class GrounderWebSearchProvider(WebSearchProvider):
         return [_page_row(url, found.get(url)) for url in asked]
 
     def after_tool(self, tool_name: str = "", args: Any = None, result: Any = None, session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
-        """Hermes's ``transform_tool_result``: note a search for the line under the answer, and ask for citations on a read Grounder served.
+        """Hermes's ``transform_tool_result``: note a search for the line under the answer, and add the notes to the turn's first result Grounder served.
 
-        Hermes keeps only a page's url, title, content and error from an extract, so its request is added here, after that trim, and never inside a page's text.
+        Hermes keeps only a page's url, title, content and error from an extract, so the notes are added here, after that trim, and never inside a page's text.
         """
-        if tool_name in ("web_search", SEARCH_TOOL):
-            query = str((args or {}).get("query", ""))[:MAX_QUERY_CHARS]
-            with self._lock:
-                summary = self._searched.get(query)
-                if summary is not None and summary["sources"]:
-                    self._turns.setdefault((session_id, turn_id), []).append(summary)
-                    _bounded(self._turns, REMEMBERED_TURNS)
-            return None
-        if tool_name != "web_extract":
+        if tool_name not in ("web_search", SEARCH_TOOL, "web_extract"):
             return None
         try:
             data = json.loads(result)
         except (TypeError, ValueError):
-            return None
-        pages = data.get("results") if isinstance(data, dict) else None
-        if not isinstance(pages, list):
-            return None
+            data = None
+        turn = (session_id, turn_id)
         with self._lock:
-            served = any(isinstance(page, dict) and page.get("content") and _page_key(str(page.get("url", ""))) in self._read for page in pages)
-        return json.dumps({**data, FILES_KEY: READ_FILES_NOTE, CITE_KEY: CITE_REQUEST}, indent=2, ensure_ascii=False) if served else None
+            if tool_name == "web_extract":
+                pages = data.get("results") if isinstance(data, dict) else None
+                served = isinstance(pages, list) and any(
+                    isinstance(page, dict) and page.get("content") and _page_key(str(page.get("url", ""))) in self._read for page in pages)
+            else:
+                summary = self._searched.get(str((args or {}).get("query", ""))[:MAX_QUERY_CHARS])
+                served = summary is not None and bool(summary["sources"])
+                if served:
+                    self._turns.setdefault(turn, []).append(summary)
+                    _bounded(self._turns, REMEMBERED_TURNS)
+                rows = ((data or {}).get("data") or {}).get("web") if isinstance(data, dict) else None
+                served = served and isinstance(rows, list) and bool(rows)
+            # A host that names no turn cannot say which result is its first: every one gets the notes.
+            if not served or (all(turn) and turn in self._noted):
+                return None
+            if all(turn):
+                self._noted[turn] = True
+                _bounded(self._noted, REMEMBERED_TURNS)
+        return json.dumps({**data, FILES_KEY: FILES_NOTE, CITE_KEY: CITE_REQUEST}, indent=2, ensure_ascii=False)
 
     def after_answer(self, response_text: str = "", session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
         """Hermes's ``transform_llm_output``: end an answer that searched with Grounder's card line. Appends only, so Hermes keeps streaming the answer."""
@@ -532,9 +531,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         self._remember(query, rows, _summary(body, len(rows)))
         logger.info("Grounder search: %d results", len(rows))
         features = {"features": body["features"]} if body.get("features") else {}
-        note = READ_FILES_NOTE if args.get("urls") else SEARCH_FILES_NOTE
-        return json.dumps({"success": True, "data": {"web": rows}, **features, **({FILES_KEY: note, CITE_KEY: CITE_REQUEST} if rows else {})}, indent=2,
-                          ensure_ascii=False)
+        return json.dumps({"success": True, "data": {"web": rows}, **features}, indent=2, ensure_ascii=False)
 
     def list_providers_tool(self, args: dict[str, Any], **_: Any) -> str:
         """The ``grounder_list_providers`` tool: what Grounder's MCP ``list_providers`` says, from the public feature list. Sends no credential and is not a search."""
