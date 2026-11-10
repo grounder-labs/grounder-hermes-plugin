@@ -39,7 +39,7 @@ def test_signed_in_search_goes_through_hermes_which_attaches_the_token(plugin, s
         {"title": "A", "url": "https://example.com/a",
          "description": "first passage text", "position": 1},
         {"title": "B", "url": "https://example.com/b",
-         "description": "short", "position": 2}]}}
+         "description": "short", "position": 2}]}, "cite_sources": plugin.provider.CITE_REQUEST}
     call = hermes.calls[0]
     assert (call["provider"], call["method"], call["url"]) == ("grounder", "POST", "https://api.grounder.net/v1/search")
     assert call["json"] == {"query": "offshore wind", "top_k": 20, "text_max_chars": 800}
@@ -256,12 +256,16 @@ def test_register_adds_the_backend_and_no_command(plugin):
         def register_web_search_provider(self, provider):
             calls["provider"] = provider
 
+        def register_hook(self, name, callback):
+            calls.setdefault("hooks", {})[name] = callback
+
         def register_cli_command(self, **kwargs):
             calls["command"] = kwargs
 
     plugin.register(Context())
     assert calls["provider"].name == "grounder"
     assert "command" not in calls
+    assert calls["hooks"] == {"transform_tool_result": calls["provider"].after_tool, "transform_llm_output": calls["provider"].after_answer}
 
 
 def test_setup_entry_asks_for_no_key_and_names_both_ways_in(plugin):
@@ -414,6 +418,9 @@ class Ctx:
     def register_web_search_provider(self, provider):
         self.providers.append(provider)
 
+    def register_hook(self, name, callback):
+        pass
+
     def get(self, key, default=None):
         return self.saved.get(key, default)
 
@@ -488,3 +495,82 @@ def test_a_failed_write_keeps_the_backend_and_tries_again_next_load(plugin, tmp_
     plugin.register(ctx)
     assert _web(tmp_path) == {"search_backend": "grounder", "extract_backend": "grounder"}
     assert ctx.saved == {plugin.SELECTED_MARK: True}
+
+
+ROUTED = {"query": "q", "results": [RESULT], "usage": {"latency_ms": 1432},
+          "routing": {"calls": [{"provider": "exa", "status": "ok", "result_count": 4}, {"provider": "xai", "status": "ok", "result_count": 2},
+                                {"provider": "brave", "status": "error", "result_count": 0}, {"provider": "tavily", "status": "ok", "result_count": 0}],
+                      "live_calls": [{"provider": "espn", "status": "ok", "result_count": 1}]}}
+
+
+def test_a_search_asks_for_citations_last_and_only_with_results(plugin, stub, keyed):
+    stub.search_body = ROUTED
+    result = plugin.GrounderWebSearchProvider().search("q")
+    assert list(result) == ["success", "data", "cite_sources"]
+    assert result["cite_sources"].startswith("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first.")
+    stub.search_body = {"query": "q", "results": []}
+    assert "cite_sources" not in plugin.GrounderWebSearchProvider().search("q")
+
+
+def test_a_row_says_where_its_result_came_from_as_the_card_does(plugin, stub, keyed):
+    stub.search_body = {"query": "q", "results": [{**RESULT, "published_date": "2026-11-05", "provenance": {
+        "provider": "newsapi", "features": ["news"], "licensed": True, "licensed_basis": "robots-allowed",
+        "publisher": {"name": "AP", "domain": "apnews.com"}}}, RESULT]}
+    rows = plugin.GrounderWebSearchProvider().search("q")["data"]["web"]
+    assert rows[0]["source"] == "AP (apnews.com) · 2026-11-05 · news via NewsAPI.ai · licensed: the site allows it"
+    assert "source" not in rows[1]
+
+
+def test_an_answer_that_searched_ends_with_the_card_line_once(plugin, stub, keyed):
+    stub.search_body = ROUTED
+    provider = plugin.GrounderWebSearchProvider()
+    provider.search("q")
+    assert provider.after_tool("web_search", {"query": "q"}, "{}", session_id="s", turn_id="t") is None
+    assert provider.after_answer("The answer.\n", session_id="s", turn_id="t") == "The answer.\n\nSearched with Grounder · via Exa, xAI +1 · 1 source · 1.4 s"
+    assert provider.after_answer("Again.", session_id="s", turn_id="t") is None
+
+
+def test_every_search_of_a_turn_is_on_the_one_line(plugin, stub, keyed):
+    stub.search_body = {**ROUTED, "usage": {"latency_ms": 300}, "routing": {"calls": [{"provider": "exa", "status": "ok", "result_count": 1}]}}
+    provider = plugin.GrounderWebSearchProvider()
+    for query in ("one", "two"):
+        provider.search(query)
+        provider.after_tool("web_search", {"query": query}, "{}", session_id="s", turn_id="t")
+    assert provider.after_answer("A", session_id="s", turn_id="t") == "A\n\nSearched with Grounder · via Exa · 2 sources · 600 ms"
+
+
+def test_no_line_for_a_turn_grounder_did_not_search(plugin, stub, keyed):
+    stub.search_body = ROUTED
+    provider = plugin.GrounderWebSearchProvider()
+    provider.search("q")
+    provider.after_tool("web_search", {"query": "another backend answered this"}, "{}", session_id="s", turn_id="t")
+    provider.after_tool("terminal", {"command": "ls"}, "{}", session_id="s", turn_id="t")
+    assert provider.after_answer("A", session_id="s", turn_id="t") is None
+    provider.after_tool("web_search", {"query": "q"}, "{}", session_id="s", turn_id="t")
+    assert provider.after_answer("A", session_id="other", turn_id="t") is None
+
+
+def test_a_search_without_results_adds_no_line(plugin, stub, keyed):
+    stub.search_body = {"query": "q", "results": []}
+    provider = plugin.GrounderWebSearchProvider()
+    provider.search("q")
+    provider.after_tool("web_search", {"query": "q"}, "{}", session_id="s", turn_id="t")
+    assert provider.after_answer("A", session_id="s", turn_id="t") is None
+
+
+def test_a_read_grounder_served_asks_for_citations_outside_the_page(plugin, stub, keyed):
+    url = "https://example.com/a"
+    stub.search_body = {"query": "q", "results": [{**RESULT, "url": url, "text": "page text"}]}
+    provider = plugin.GrounderWebSearchProvider()
+    provider.extract([url])
+    hermes_result = json.dumps({"results": [{"url": url, "title": "A", "content": "page text", "error": None}]})
+    data = json.loads(provider.after_tool("web_extract", {"urls": [url]}, hermes_result))
+    assert list(data) == ["results", "cite_sources"] and data["results"][0]["content"] == "page text"
+
+
+def test_a_read_grounder_did_not_serve_is_left_alone(plugin, stub, keyed):
+    provider = plugin.GrounderWebSearchProvider()
+    other = json.dumps({"results": [{"url": "https://example.com/other", "title": "", "content": "text", "error": None}]})
+    assert provider.after_tool("web_extract", {}, other) is None
+    assert provider.after_tool("web_extract", {}, "not json") is None
+    assert provider.after_tool("web_extract", {}, json.dumps({"success": False, "error": "x"})) is None

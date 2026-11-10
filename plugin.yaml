@@ -1,5 +1,5 @@
 name: grounder
-version: 0.5.0
+version: 0.5.1
 requires_hermes: ">=0.22.3"
 license: Apache-2.0
 description: "Licensed, live sources for Hermes Agent's web_search and web_extract. One call reaches the search providers a query needs (Exa, Brave, Tavily, Perplexity and more) and live data for scores, prices, odds and flights, and returns one deduplicated list. Every result is licensed: no site's robots.txt, license or AI opt-out refuses the provider that found it, and a search is never filled with unlicensed results. 50 free searches a day. Connect your account with a Grounder search key in GROUNDER_API_KEY, or sign in with `hermes auth add grounder:grounder`, which Hermes stores and refreshes. A web_extract counts as one search and returns what in each page answers the search that found it, at most 6,000 characters. Installing makes Grounder this profile's web_search and web_extract backend the first time the plugin loads, replacing any backend already chosen for them once; `hermes tools` changes it back and that choice stands. Disclosure: each query and each page address you read is sent to api.grounder.net and recorded under your Grounder account."

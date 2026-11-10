@@ -95,6 +95,10 @@ Each search returns up to 20 rows (Hermes asks for 5 unless told otherwise), in 
 | `url` | The result's address |
 | `description` | Its summary, or its text on one line: the passages that best match your search, chosen by Grounder to fit 800 characters |
 | `position` | Its rank, from 1 |
+| `source` | Where it came from, when Grounder says: whose it is, its date, how it was found and why it may be served |
+
+The result ends with `cite_sources`, which asks the model to cite each result it uses with its link and to end the answer with a
+Sources list.
 
 `web_extract` reads up to 5 pages in a call and returns one entry for each, in the order asked:
 
@@ -106,7 +110,11 @@ Each search returns up to 20 rows (Hermes asks for 5 unless told otherwise), in 
 | `error` | Only on a page that could not be read. The other pages still return |
 
 A `web_extract` keeps less than a whole page on purpose, to spare your model the tokens. Run a `web_search` first to get the
-parts that matter.
+parts that matter. A read that returned text ends with `cite_sources` too.
+
+An answer that searched ends with one line saying who answered, how many sources came back and how long it took, for example
+`Searched with Grounder · via Exa, Brave · 8 sources · 1.4 s`. Whether the Sources list appears is up to your model, as it is
+in any client. The line is added by the plugin. Hermes keeps it with the answer, so it is also in the history later turns send.
 
 A failed search returns `success: false` and one of these errors. Hermes then retries the search on its own keyless free
 tier and, if that answers, returns those results with `rescued_from: grounder` and the error in `backend_error`. If it
@@ -137,7 +145,8 @@ is.
 
 Searches are recorded under your Grounder account, as Grounder's [privacy policy](https://grounder.net/privacy) and
 [data use](https://grounder.net/docs/data-use) pages describe. The plugin logs how many results a search
-returned or pages an extract read, never the query or an address.
+returned or pages an extract read, never the query or an address. To add `cite_sources` and the line under an answer it reads
+its own results and the finished answer on your machine, and sends neither.
 
 ## Development
 

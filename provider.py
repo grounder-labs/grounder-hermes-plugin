@@ -12,6 +12,11 @@ characters; a page no search led to comes back from its start. Every failure is
 reported, never raised: ``{"success": False, "error": ...}`` for a search, the
 page's own ``error`` for an extract.
 
+A result Grounder served asks the model to cite what it uses, as Grounder's MCP
+server does, and an answer that searched ends with the line Grounder's card shows
+(``after_tool`` and ``after_answer``, Hermes's result and reply hooks). Both work on
+what is already on this machine and send nothing.
+
 The plugin selects itself the first time it loads in a profile (``__init__.py``), by
 setting ``web.search_backend: grounder`` and ``web.extract_backend: grounder``.
 A call uses the Grounder search key in ``GROUNDER_API_KEY`` when one is set, and otherwise the sign-in Hermes keeps
@@ -45,7 +50,7 @@ ORIGIN = "https://api.grounder.net"
 SEARCH_URL = f"{ORIGIN}/v1/search"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.0"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.1"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -55,7 +60,81 @@ DESCRIPTION_CHARS = 800  # a row's description, and the text Grounder is asked t
 EXTRACT_CHARS = 6000  # the most text of one page web_extract returns, and what Grounder is asked to keep it within
 MAX_PAGES = 10  # Grounder's limit on the pages one call reads; Hermes asks for at most 5
 REMEMBERED_PAGES = 500  # how many pages the plugin remembers the web_search of, in memory only
+REMEMBERED_TURNS = 200  # how many searches and unfinished turns it remembers for the line under an answer, in memory only
+CITE_KEY = "cite_sources"  # the result's last field, so it is the last thing the model reads before it answers
+# The first sentence is word for word what Grounder's MCP server ends every search's notes with (CITE_REMINDER in routes/mcp.ts).
+CITE_REQUEST = ("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first. "
+                "End the answer with a Sources list: one line per result used, with its title and its link.")
+# Why a result may be served, in the words of Grounder's MCP card (BASIS in routes/mcp.ts).
+LICENSED = {"publisher-license": "licensed by its publisher", "robots-allowed": "licensed: the site allows it", "data-feed": "licensed data feed"}
+# Where a provider's or live source's id is not its name capitalized; the rest of Grounder's lists are.
+PROVIDER_NAMES = {"you": "You.com", "xai": "xAI", "newsapi": "NewsAPI.ai", "tinyfish": "TinyFish", "aeroapi": "FlightAware",
+                  "ap-elections": "AP Elections", "bestbuy": "Best Buy", "espn": "ESPN", "fed": "Federal Reserve", "mlb": "MLB",
+                  "nws": "National Weather Service", "odds-api": "The Odds API", "openf1": "OpenF1", "queue-times": "Queue-Times.com",
+                  "seatgeek": "SeatGeek", "statuspage": "Status pages", "truth-social": "Truth Social", "usgs": "USGS",
+                  "yahoo-finance": "Yahoo Finance", "youtube": "YouTube"}
 TIMEOUT_S = 45  # one search, across every provider it reaches
+
+
+def _bounded(store: dict, limit: int) -> None:
+    """Drop the oldest entries of ``store`` past ``limit``."""
+    while len(store) > limit:
+        del store[next(iter(store))]
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+def _duration(ms: int) -> str:
+    """A search's time as Grounder's card writes it."""
+    return f"{ms / 1000:.1f} s" if ms >= 1000 else f"{ms} ms"
+
+
+def _provider_name(provider: str) -> str:
+    return PROVIDER_NAMES.get(provider, provider.capitalize())
+
+
+def _source(result: dict[str, Any]) -> str:
+    """Where a result came from, as Grounder's MCP card lists it: whose it is, its date, how it was found and why it may be served; "" when Grounder said none of it."""
+    provenance = result.get("provenance") if isinstance(result.get("provenance"), dict) else {}
+    publisher = provenance.get("publisher") if isinstance(provenance.get("publisher"), dict) else {}
+    name, domain = str(publisher.get("name") or ""), str(publisher.get("domain") or "")
+    whose = f"{name} ({domain})" if name and domain and name.lower() != domain.lower() else domain or name
+    provider = str(provenance.get("provider") or "")
+    found = " ".join(filter(None, [", ".join(str(f) for f in provenance.get("features") or []), f"via {_provider_name(provider)}" if provider else ""]))
+    return " · ".join(filter(None, [whose, str(result.get("published_date") or ""), found, LICENSED.get(str(provenance.get("licensed_basis")), "")]))
+
+
+def _row(result: dict[str, Any], position: int) -> dict[str, Any]:
+    """Hermes's row for one result, with Grounder's account of where it came from when there is one."""
+    source = _source(result)
+    return {"title": str(result.get("title", "")), "url": str(result.get("url", "")),
+            "description": _description(result), "position": position, **({"source": source} if source else {})}
+
+
+def _summary(body: dict[str, Any], sources: int) -> dict[str, Any]:
+    """What the line under an answer needs of one search: who answered, how many sources it returned and how long it took."""
+    routing = body.get("routing") if isinstance(body.get("routing"), dict) else {}
+    calls = [*(routing.get("calls") or []), *(routing.get("live_calls") or [])]
+    answered = [str(c.get("provider")) for c in calls if isinstance(c, dict) and c.get("status") == "ok" and c.get("result_count")]
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    latency = usage.get("latency_ms")
+    return {"via": [_provider_name(p) for p in dict.fromkeys(answered)], "sources": sources,
+            "ms": latency if isinstance(latency, int) else 0}
+
+
+def _card_line(searches: list[dict[str, Any]]) -> str:
+    """The line Grounder's card shows for a search, for every search of one answer: the providers that answered, the sources and the time."""
+    via = list(dict.fromkeys(name for search in searches for name in search["via"]))
+    parts = ["Searched with Grounder"]
+    if via:
+        parts.append("via " + ", ".join(via[:2]) + (f" +{len(via) - 2}" if len(via) > 2 else ""))
+    parts.append(_plural(sum(search["sources"] for search in searches), "source"))
+    total = sum(search["ms"] for search in searches)
+    if total:
+        parts.append(_duration(total))
+    return " · ".join(parts)
 
 
 def _fail(error: str) -> dict[str, Any]:
@@ -207,6 +286,11 @@ class GrounderWebSearchProvider(WebSearchProvider):
     def __init__(self) -> None:
         # Each page a search returned and that search's query, oldest first, so an extract can be ranked against it. In memory only.
         self._found_by: dict[str, str] = {}
+        # The pages Grounder read, and each search's summary by its query: how the hooks tell Grounder's results from another backend's. In memory only.
+        self._read: dict[str, bool] = {}
+        self._searched: dict[str, dict[str, Any]] = {}
+        # The searches of each turn not yet answered, by session and turn.
+        self._turns: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
 
     @property
@@ -243,15 +327,11 @@ class GrounderWebSearchProvider(WebSearchProvider):
         if body is None:
             return _fail(error or "Grounder returned no answer")
         results = body.get("results") or []
-        rows = [
-            {"title": str(r.get("title", "")), "url": str(r.get("url", "")),
-             "description": _description(r), "position": i + 1}
-            for i, r in enumerate(results[:max(1, int(limit))])
-        ]
-        self._remember(query[:MAX_QUERY_CHARS], rows)
+        rows = [_row(r, i + 1) for i, r in enumerate(results[:max(1, int(limit))])]
+        self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows)))
         # The count only: a query is the user's words, and a log line outlives the search.
         logger.info("Grounder search: %d results", len(rows))
-        return {"success": True, "data": {"web": rows}}
+        return {"success": True, "data": {"web": rows}, **({CITE_KEY: CITE_REQUEST} if rows else {})}
 
     def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         """Read ``urls`` in one search, so it counts once: an entry per URL in their order, with an ``error`` on each page not read.
@@ -270,17 +350,55 @@ class GrounderWebSearchProvider(WebSearchProvider):
         found = _pages_found(pages, body.get("results") or [])
         # The count only: an address says what the user is reading, and a log line outlives the search.
         logger.info("Grounder extract: %d of %d pages read", len(found), len(pages))
+        with self._lock:
+            for page in found:
+                self._read[_page_key(page)] = True
+            _bounded(self._read, REMEMBERED_PAGES)
         return [_page_row(url, found.get(url)) for url in asked]
 
-    def _remember(self, query: str, rows: list[dict[str, Any]]) -> None:
-        """Note the query that found each of a search's pages, for the extract that may read them next."""
+    def after_tool(self, tool_name: str = "", args: Any = None, result: Any = None, session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
+        """Hermes's ``transform_tool_result``: note a search for the line under the answer, and ask for citations on a read Grounder served.
+
+        Hermes keeps only a page's url, title, content and error from an extract, so its request is added here, after that trim, and never inside a page's text.
+        """
+        if tool_name == "web_search":
+            query = str((args or {}).get("query", ""))[:MAX_QUERY_CHARS]
+            with self._lock:
+                summary = self._searched.get(query)
+                if summary is not None and summary["sources"]:
+                    self._turns.setdefault((session_id, turn_id), []).append(summary)
+                    _bounded(self._turns, REMEMBERED_TURNS)
+            return None
+        if tool_name != "web_extract":
+            return None
+        try:
+            data = json.loads(result)
+        except (TypeError, ValueError):
+            return None
+        pages = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(pages, list):
+            return None
+        with self._lock:
+            served = any(isinstance(page, dict) and page.get("content") and _page_key(str(page.get("url", ""))) in self._read for page in pages)
+        return json.dumps({**data, CITE_KEY: CITE_REQUEST}, indent=2, ensure_ascii=False) if served else None
+
+    def after_answer(self, response_text: str = "", session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
+        """Hermes's ``transform_llm_output``: end an answer that searched with Grounder's card line. Appends only, so Hermes keeps streaming the answer."""
+        with self._lock:
+            searches = self._turns.pop((session_id, turn_id), None)
+        return f"{response_text.rstrip()}\n\n{_card_line(searches)}" if searches and response_text else None
+
+    def _remember(self, query: str, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
+        """Note the query that found each of a search's pages, for the extract that may read them next, and the search's summary."""
         with self._lock:
             for row in rows:
                 key = _page_key(row["url"])
                 self._found_by.pop(key, None)  # a page found again moves to the newest place
                 self._found_by[key] = query
-            while len(self._found_by) > REMEMBERED_PAGES:
-                del self._found_by[next(iter(self._found_by))]
+            _bounded(self._found_by, REMEMBERED_PAGES)
+            self._searched.pop(query, None)
+            self._searched[query] = summary  # kept after the turn: Hermes may answer the same search from its own cache
+            _bounded(self._searched, REMEMBERED_TURNS)
 
     def _question(self, pages: list[str]) -> str:
         """What to rank the pages against: the web_search that found the most of them, else their addresses, which ask nothing."""

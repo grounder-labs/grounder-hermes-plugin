@@ -7,7 +7,8 @@
 time it runs in a profile, selects it (``_select_once``). Sign-in is Hermes's own:
 ``hermes auth add grounder:grounder`` signs in to the ``oauth:`` client
 ``plugin.yaml`` declares, and Hermes stores, refreshes and attaches the grant, so
-this plugin keeps no credential of its own.
+this plugin keeps no credential of its own. Two hooks ask the model to cite a read
+Grounder served and end an answer that searched with the line Grounder's card shows.
 """
 
 from __future__ import annotations
@@ -44,7 +45,10 @@ def _select_once(ctx) -> None:
 
 def register(ctx) -> None:
     """Hermes's plugin entry point."""
-    ctx.register_web_search_provider(GrounderWebSearchProvider())
+    provider = GrounderWebSearchProvider()
+    ctx.register_web_search_provider(provider)
+    ctx.register_hook("transform_tool_result", provider.after_tool)
+    ctx.register_hook("transform_llm_output", provider.after_answer)
     try:
         _select_once(ctx)
     except Exception as error:  # a config that cannot be written must not take the plugin down with it
