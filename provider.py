@@ -44,8 +44,9 @@ ORIGIN = "https://api.grounder.net"
 SEARCH_URL = f"{ORIGIN}/v1/search"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.4.0"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.4.1"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
+CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # set once, as the first step of signing in
 MAX_RESULTS = 20  # most results one search asks Grounder for
 MAX_QUERY_CHARS = 2000  # Grounder's limit on a query
 DESCRIPTION_CHARS = 800  # a row's description, and the text Grounder is asked to fit it in (text_max_chars)
@@ -215,13 +216,14 @@ class GrounderWebSearchProvider(WebSearchProvider):
         return "Grounder"
 
     def is_available(self) -> bool:
-        """True with a search key; checks no network.
+        """True with a search key or the sign-in client set; checks no network.
 
-        A sign-in alone does not count: Hermes offers a plugin no way to see
-        its grant without a request, so a signed-in user selects Grounder
-        (``web.search_backend: grounder``), which Hermes honours either way.
+        Hermes turns web_search and web_extract off when no selected backend
+        says it is ready, and offers a plugin no way to see its grant without a
+        request. So the client id, the first step of signing in, stands for the
+        sign-in; with no grant behind it a search says how to sign in.
         """
-        return bool(_key())
+        return bool(_key() or str(get_secret(CLIENT_ENV) or "").strip())
 
     def supports_search(self) -> bool:
         return True

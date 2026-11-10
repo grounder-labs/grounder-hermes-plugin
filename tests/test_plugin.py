@@ -391,3 +391,12 @@ def test_extract_logs_the_page_count_and_never_an_address(plugin, stub, hermes, 
         plugin.GrounderWebSearchProvider().extract([PAGE_A, PAGE_B])
     assert any("1 of 2 pages read" in record.getMessage() for record in caplog.records)
     assert not [r for r in caplog.records if "example.com" in r.getMessage()]
+
+
+def test_the_sign_in_client_counts_as_ready_so_hermes_keeps_the_web_tools(plugin, monkeypatch):
+    # With no selected backend ready, Hermes offers the model neither web_search nor web_extract.
+    provider = plugin.GrounderWebSearchProvider()
+    assert not provider.is_available()
+    monkeypatch.setenv("GROUNDER_OAUTH_CLIENT_ID", "https://api.grounder.net/oauth/clients/hermes-agent")
+    assert provider.is_available()
+    assert plugin.provider.CLIENT_ENV == manifest()["oauth"][0]["client_id_env"]

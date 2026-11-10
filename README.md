@@ -80,8 +80,7 @@ web:
 
 Each setting names its own backend, so leave `extract_backend` on another backend to have that one read pages instead.
 
-With a search key set, Hermes can also pick Grounder by itself. With the sign-in alone it cannot, since a plugin has no way
-to see Hermes's grant without a request, so select it as above.
+Once a search key or the sign-in client above is set, Hermes counts Grounder as ready and can also pick it by itself.
 
 ## What Hermes gets
 

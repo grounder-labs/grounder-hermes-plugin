@@ -181,6 +181,7 @@ def stub():
 def plugin(stub, tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("GROUNDER_API_KEY", raising=False)
+    monkeypatch.delenv("GROUNDER_OAUTH_CLIENT_ID", raising=False)
     return _load_plugin()
 
 
