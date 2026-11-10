@@ -832,3 +832,17 @@ def test_a_hermes_that_refuses_the_tools_keeps_web_search(plugin):
 
     plugin.register(Refuses())
     assert calls[0].name == "grounder"
+
+
+# --- why a page was not read (GRO-687) -------------------------------------------------------------------------------
+
+def test_a_failed_read_says_why_when_the_api_knows(plugin, stub, keyed):
+    stub.search_body = {"results": [], "unread": [{"url": PAGE_A, "reason": "not_found"}, {"url": "https://www.example.com/b/", "reason": "timed_out"},
+                                                   {"url": PAGE_C, "reason": "unreadable"}]}
+    rows = plugin.GrounderWebSearchProvider().extract([PAGE_A, PAGE_B, PAGE_C, "https://example.com/d"])
+    assert [row["error"] for row in rows] == [plugin.provider.UNREAD["not_found"], plugin.provider.UNREAD["timed_out"], plugin.provider.NOT_READ,
+                                              plugin.provider.NOT_READ]
+    assert "404" in rows[0]["error"] and "right address" in rows[0]["error"]
+    # A read by search says it too.
+    stub.search_body = {"results": [], "unread": [{"url": PAGE_A, "reason": "refused"}]}
+    assert plugin.GrounderWebSearchProvider().search(f"{PAGE_A} books") == {"success": False, "error": plugin.provider.UNREAD["refused"]}

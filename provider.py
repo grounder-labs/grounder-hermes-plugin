@@ -56,7 +56,7 @@ SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.8"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.9"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -400,10 +400,25 @@ def _pages_found(pages: list[str], results: list[Any]) -> dict[str, dict[str, An
     return found
 
 
-def _page_row(url: str, row: Optional[dict[str, Any]]) -> dict[str, Any]:
-    """Hermes's entry for one page, or its error when no result read it."""
+# Why Grounder could not read a page, as the API's `unread` says (GRO-687): a model told "no such page" looks for the right address instead of guessing.
+UNREAD = {
+    "not_found": "Grounder could not read this page: it does not exist (the site answers 404). Search for its right address.",
+    "refused": "Grounder could not read this page: its site does not allow readers.",
+    "timed_out": "Grounder could not read this page in time: the site was too slow. Try again.",
+}
+NOT_READ = "Grounder could not read this page, or its site does not allow it."
+
+
+def _unread(body: dict[str, Any]) -> dict[str, str]:
+    """Each page the API says it could not read, by address as compared, with why."""
+    pages = body.get("unread") if isinstance(body.get("unread"), list) else []
+    return {_page_key(str(page.get("url", ""))): str(page.get("reason", "")) for page in pages if isinstance(page, dict)}
+
+
+def _page_row(url: str, row: Optional[dict[str, Any]], reason: str = "") -> dict[str, Any]:
+    """Hermes's entry for one page, or its error when no result read it, saying why when the API knows."""
     if row is None:
-        return _page_error(url, "Grounder could not read this page, or its site does not allow it.")
+        return _page_error(url, UNREAD.get(reason, NOT_READ))
     text = str(row.get("text") or "").strip()
     # A guard for a response that ignored ``text_max_chars``, as ``_description`` has for a row.
     if len(text) > EXTRACT_CHARS:
@@ -536,7 +551,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
             for page in [*found, *shown]:
                 self._read[_page_key(page)] = True
             _bounded(self._read, REMEMBERED_PAGES)
-        return [_page_shown(url, shown[url]) if url in shown else _page_row(url, found.get(url)) for url in asked]
+        why = _unread(body)
+        return [_page_shown(url, shown[url]) if url in shown else _page_row(url, found.get(url), why.get(_page_key(url), "")) for url in asked]
 
     def _read_part(self, query: str, pages: list[str]) -> dict[str, Any]:
         """A ``web_search`` whose query holds pages' addresses: read those pages for the query's other words, in ``web_search``'s shape (GRO-691).
@@ -558,7 +574,11 @@ class GrounderWebSearchProvider(WebSearchProvider):
                 self._read[_page_key(page)] = True
             _bounded(self._read, REMEMBERED_PAGES)
         if not found and not shown:
-            return _fail("Grounder could not read " + ("this page" if len(pages) == 1 else "these pages") + ", or its site does not allow it.")
+            why = _unread(body)
+            reasons = {why.get(_page_key(page), "") for page in pages}
+            if len(pages) == 1 or len(reasons) == 1:
+                return _fail(UNREAD.get(reasons.pop(), NOT_READ) if len(pages) == 1 else UNREAD.get(reasons.pop(), NOT_READ).replace("this page", "these pages"))
+            return _fail("Grounder could not read these pages, or their sites do not allow it.")
         rows = []
         for page in pages:
             if page in found or page in shown:
