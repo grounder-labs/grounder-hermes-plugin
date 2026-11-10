@@ -76,7 +76,27 @@ def _install_hermes_stand_ins():
 
     requests.ProviderNotSignedIn = ProviderNotSignedIn
     requests.credentialed_provider_request = credentialed_provider_request
-    for module in (agent, web, scope, hermes_cli, constants, requests):
+    config = types.ModuleType("hermes_cli.config")
+
+    def home():
+        return Path(os.environ["HERMES_HOME"])
+
+    def save_config(partial, *, merge_existing=False):
+        path = home() / "config.yaml"
+        saved = (yaml.safe_load(path.read_text()) or {}) if merge_existing and path.exists() else {}
+        for section, values in partial.items():
+            saved.setdefault(section, {}).update(values)
+        path.write_text(yaml.safe_dump(saved))
+
+    def save_env_value(name, value):
+        with (home() / ".env").open("a") as env:
+            env.write(f"{name}={value}\n")
+        os.environ[name] = value
+
+    config.is_managed = lambda: False
+    config.save_config = save_config
+    config.save_env_value = save_env_value
+    for module in (agent, web, scope, hermes_cli, constants, requests, config):
         sys.modules[module.__name__] = module
 
 

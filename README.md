@@ -42,7 +42,8 @@ hermes auth add grounder:grounder
 ```
 
 The first line names Grounder's public sign-in client for Hermes: the same for everyone and not a secret, set once because
-Hermes reads a plugin's client from your profile's `.env`. The second opens Grounder's sign-in page. Sign in or create an
+Hermes reads a plugin's client from your profile's `.env`. The plugin writes the same line itself when it first loads, so
+it is only needed if you sign in before starting Hermes. The second opens Grounder's sign-in page. Sign in or create an
 account, then allow Hermes Agent to search for it. There is no key to copy. Hermes keeps the grant in your profile,
 refreshes it and attaches it to each search; the plugin never sees a token. The grant searches and nothing else: it cannot
 reach your account's settings, keys or billing.
@@ -63,14 +64,10 @@ that cannot connect to `127.0.0.1`: copy that page's full address from the brows
 Version 0.1.0 signed in with `hermes grounder login` and kept its own tokens in `$HERMES_HOME/grounder`. Hermes holds the
 sign-in now, so that command is gone: connect again as above and delete the old folder.
 
-## Select it
+## It selects itself
 
-```sh
-hermes config set web.search_backend grounder
-hermes config set web.extract_backend grounder
-```
-
-Or choose Grounder under web search in `hermes tools`, or set it in `config.yaml`:
+Hermes runs no plugin code while installing, so the first time this plugin loads in a profile, which is the next time
+Hermes starts, it sets both backends in that profile's `config.yaml`:
 
 ```yaml
 web:
@@ -78,9 +75,15 @@ web:
   extract_backend: grounder
 ```
 
-Each setting names its own backend, so leave `extract_backend` on another backend to have that one read pages instead.
+This replaces any backend chosen for `web_search` or `web_extract` before. An existing install does the same once, the
+first time it loads this version. It happens once per profile: to use another backend, pick it in `hermes tools` or run
+`hermes config set web.search_backend <backend>`, and that choice stands. Each setting names its own backend, so
+`extract_backend` can stay on another backend while Grounder searches.
 
-Once a search key or the sign-in client above is set, Hermes counts Grounder as ready and can also pick it by itself.
+With no search key, the plugin also writes `GROUNDER_OAUTH_CLIENT_ID` to your profile's `.env`. It is Grounder's public
+sign-in client, the same for everyone and not a secret. Hermes turns `web_search` and `web_extract` off when the selected
+backend is not ready, and this keeps them on. Until you connect your account, a search says how to sign in, and Hermes
+may answer it from its keyless free tier as "What Hermes gets" describes.
 
 ## What Hermes gets
 

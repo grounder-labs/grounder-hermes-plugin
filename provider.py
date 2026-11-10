@@ -12,7 +12,8 @@ characters; a page no search led to comes back from its start. Every failure is
 reported, never raised: ``{"success": False, "error": ...}`` for a search, the
 page's own ``error`` for an extract.
 
-Select it with ``web.search_backend: grounder`` and ``web.extract_backend: grounder``.
+The plugin selects itself the first time it loads in a profile (``__init__.py``), by
+setting ``web.search_backend: grounder`` and ``web.extract_backend: grounder``.
 A call uses the Grounder search key in ``GROUNDER_API_KEY`` when one is set, and otherwise the sign-in Hermes keeps
 for the ``oauth:`` client in ``plugin.yaml`` (``hermes auth add grounder:grounder``):
 Hermes signs in, stores and refreshes that grant and attaches its token to the
@@ -44,9 +45,10 @@ ORIGIN = "https://api.grounder.net"
 SEARCH_URL = f"{ORIGIN}/v1/search"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.4.1"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.0"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
-CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # set once, as the first step of signing in
+CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
+CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
 MAX_RESULTS = 20  # most results one search asks Grounder for
 MAX_QUERY_CHARS = 2000  # Grounder's limit on a query
 DESCRIPTION_CHARS = 800  # a row's description, and the text Grounder is asked to fit it in (text_max_chars)

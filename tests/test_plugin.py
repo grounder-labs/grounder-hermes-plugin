@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from conftest import PLUGIN_DIR, manifest
+from conftest import PLUGIN_DIR, manifest, yaml
 
 RESULT = {"url": "https://example.com/a", "title": "A", "text": "first  passage\n text",
           "rank": 1, "provenance": {"found_by": ["brave"]}}
@@ -58,7 +58,8 @@ def test_the_plugin_keeps_no_credential_of_its_own(plugin, stub, hermes, tmp_pat
     for source in PLUGIN_DIR.rglob("*.py"):
         assert token_url not in source.read_text(), source.name
     for source in PLUGIN_DIR.glob("*.py"):
-        assert "/oauth/" not in source.read_text(), source.name
+        text = source.read_text()  # the public client's address, /oauth/clients/, is an identifier and no endpoint
+        assert "/oauth/token" not in text and "/oauth/authorize" not in text, source.name
 
 
 def test_manifest_declares_the_client_hermes_signs_in_to(plugin):
@@ -400,3 +401,90 @@ def test_the_sign_in_client_counts_as_ready_so_hermes_keeps_the_web_tools(plugin
     monkeypatch.setenv("GROUNDER_OAUTH_CLIENT_ID", "https://api.grounder.net/oauth/clients/hermes-agent")
     assert provider.is_available()
     assert plugin.provider.CLIENT_ENV == manifest()["oauth"][0]["client_id_env"]
+
+
+class Ctx:
+    """The part of Hermes's plugin context ``register`` uses; ``state`` lasts across loads, as Hermes's does."""
+
+    def __init__(self):
+        self.providers = []
+        self.state = self
+        self.saved = {}
+
+    def register_web_search_provider(self, provider):
+        self.providers.append(provider)
+
+    def get(self, key, default=None):
+        return self.saved.get(key, default)
+
+    def set(self, key, value):
+        self.saved[key] = value
+
+
+def _web(home):
+    return yaml.safe_load((home / "config.yaml").read_text())["web"]
+
+
+def _env(home):
+    path = home / ".env"
+    return path.read_text() if path.exists() else ""
+
+
+CLIENT_LINE = "GROUNDER_OAUTH_CLIENT_ID=https://api.grounder.net/oauth/clients/hermes-agent"
+
+
+def test_the_first_load_selects_both_backends_and_keeps_the_web_tools_on(plugin, tmp_path):
+    ctx = Ctx()
+    plugin.register(ctx)
+    assert [p.name for p in ctx.providers] == ["grounder"]
+    assert _web(tmp_path) == {"search_backend": "grounder", "extract_backend": "grounder"}
+    assert CLIENT_LINE in _env(tmp_path)
+    assert ctx.providers[0].is_available()  # Hermes hides web_search and web_extract otherwise
+
+
+def test_the_first_load_replaces_another_backend_and_keeps_the_rest_of_the_config(plugin, tmp_path):
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(
+        {"model": {"default": "m"}, "web": {"backend": "firecrawl", "search_backend": "tavily", "keyless_fallback": False}}))
+    plugin.register(Ctx())
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert saved["model"] == {"default": "m"}
+    assert saved["web"] == {"backend": "firecrawl", "search_backend": "grounder", "extract_backend": "grounder",
+                            "keyless_fallback": False}
+
+
+def test_a_later_choice_stands(plugin, tmp_path):
+    ctx = Ctx()
+    plugin.register(ctx)
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"web": {"search_backend": "firecrawl", "extract_backend": "firecrawl"}}))
+    plugin.register(ctx)
+    assert _web(tmp_path) == {"search_backend": "firecrawl", "extract_backend": "firecrawl"}
+
+
+def test_a_search_key_user_gets_no_sign_in_client(plugin, tmp_path, keyed):
+    plugin.register(Ctx())
+    assert _web(tmp_path) == {"search_backend": "grounder", "extract_backend": "grounder"}
+    assert _env(tmp_path) == ""
+
+
+def test_a_managed_install_is_left_alone(plugin, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin, "is_managed", lambda: True)
+    ctx = Ctx()
+    plugin.register(ctx)
+    assert not (tmp_path / "config.yaml").exists() and _env(tmp_path) == "" and ctx.saved == {}
+    assert [p.name for p in ctx.providers] == ["grounder"]
+
+
+def test_a_failed_write_keeps_the_backend_and_tries_again_next_load(plugin, tmp_path, monkeypatch):
+    real = plugin.save_config
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(plugin, "save_config", refuse)
+    ctx = Ctx()
+    plugin.register(ctx)
+    assert [p.name for p in ctx.providers] == ["grounder"] and ctx.saved == {}
+    monkeypatch.setattr(plugin, "save_config", real)
+    plugin.register(ctx)
+    assert _web(tmp_path) == {"search_backend": "grounder", "extract_backend": "grounder"}
+    assert ctx.saved == {plugin.SELECTED_MARK: True}
