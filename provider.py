@@ -54,7 +54,7 @@ SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.4"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.5"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -69,6 +69,14 @@ CITE_KEY = "cite_sources"  # the result's last field, so it is the last thing th
 # The first sentence is word for word what Grounder's MCP server ends every search's notes with (CITE_REMINDER in routes/mcp.ts).
 CITE_REQUEST = ("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first. "
                 "End the answer with a Sources list: one line per result used, with its title and its link.")
+# Hermes's web_extract tells the model a large page's full text is saved to a file for read_file. Grounder sends only the part that answers and saves
+# nothing, so a model that wanted more guessed file names (GRO-688: `Asian_Latin_Americans.md` in two folders, then a 32-second search of the disk).
+# Said once a result, beside the citation request and before it, so the citation request stays the last thing read.
+FILES_KEY = "pages"
+SEARCH_FILES_NOTE = ("Each description is the part of its page that best answers the query; web_extract with a result's url reads more of it. "
+                     "Grounder saves no page to a file, so read_file finds none.")
+READ_FILES_NOTE = ("Each page's content is the part of it that answers the question, not the whole page. "
+                   "Grounder saves no page to a file, so read_file finds none.")
 SEARCH_TOOL = "grounder_search"
 LIST_PROVIDERS_TOOL = "grounder_list_providers"
 TOOLSET = "grounder"
@@ -454,7 +462,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows)))
         # The count only: a query is the user's words, and a log line outlives the search.
         logger.info("Grounder search: %d results", len(rows))
-        return {"success": True, "data": {"web": rows}, **({CITE_KEY: CITE_REQUEST} if rows else {})}
+        return {"success": True, "data": {"web": rows}, **({FILES_KEY: SEARCH_FILES_NOTE, CITE_KEY: CITE_REQUEST} if rows else {})}
 
     def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         """Read ``urls`` in one search, so it counts once: an entry per URL in their order, with an ``error`` on each page not read.
@@ -503,7 +511,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
             return None
         with self._lock:
             served = any(isinstance(page, dict) and page.get("content") and _page_key(str(page.get("url", ""))) in self._read for page in pages)
-        return json.dumps({**data, CITE_KEY: CITE_REQUEST}, indent=2, ensure_ascii=False) if served else None
+        return json.dumps({**data, FILES_KEY: READ_FILES_NOTE, CITE_KEY: CITE_REQUEST}, indent=2, ensure_ascii=False) if served else None
 
     def after_answer(self, response_text: str = "", session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
         """Hermes's ``transform_llm_output``: end an answer that searched with Grounder's card line. Appends only, so Hermes keeps streaming the answer."""
@@ -524,7 +532,9 @@ class GrounderWebSearchProvider(WebSearchProvider):
         self._remember(query, rows, _summary(body, len(rows)))
         logger.info("Grounder search: %d results", len(rows))
         features = {"features": body["features"]} if body.get("features") else {}
-        return json.dumps({"success": True, "data": {"web": rows}, **features, **({CITE_KEY: CITE_REQUEST} if rows else {})}, indent=2, ensure_ascii=False)
+        note = READ_FILES_NOTE if args.get("urls") else SEARCH_FILES_NOTE
+        return json.dumps({"success": True, "data": {"web": rows}, **features, **({FILES_KEY: note, CITE_KEY: CITE_REQUEST} if rows else {})}, indent=2,
+                          ensure_ascii=False)
 
     def list_providers_tool(self, args: dict[str, Any], **_: Any) -> str:
         """The ``grounder_list_providers`` tool: what Grounder's MCP ``list_providers`` says, from the public feature list. Sends no credential and is not a search."""

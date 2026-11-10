@@ -40,7 +40,7 @@ def test_signed_in_search_goes_through_hermes_which_attaches_the_token(plugin, s
         {"title": "A", "url": "https://example.com/a",
          "description": "first passage text", "position": 1},
         {"title": "B", "url": "https://example.com/b",
-         "description": "short", "position": 2}]}, "cite_sources": plugin.provider.CITE_REQUEST}
+         "description": "short", "position": 2}]}, "pages": plugin.provider.SEARCH_FILES_NOTE, "cite_sources": plugin.provider.CITE_REQUEST}
     call = hermes.calls[0]
     assert (call["provider"], call["method"], call["url"]) == ("grounder", "POST", "https://api.grounder.net/v1/search")
     assert call["json"] == {"query": "offshore wind", "top_k": 20, "text_max_chars": 800}
@@ -507,10 +507,12 @@ ROUTED = {"query": "q", "results": [RESULT], "usage": {"latency_ms": 1432},
 def test_a_search_asks_for_citations_last_and_only_with_results(plugin, stub, keyed):
     stub.search_body = ROUTED
     result = plugin.GrounderWebSearchProvider().search("q")
-    assert list(result) == ["success", "data", "cite_sources"]
+    assert list(result) == ["success", "data", "pages", "cite_sources"]
+    assert "saves no page to a file" in result["pages"] and "web_extract" in result["pages"]
     assert result["cite_sources"].startswith("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first.")
     stub.search_body = {"query": "q", "results": []}
-    assert "cite_sources" not in plugin.GrounderWebSearchProvider().search("q")
+    empty = plugin.GrounderWebSearchProvider().search("q")
+    assert "cite_sources" not in empty and "pages" not in empty
 
 
 def test_a_row_says_where_its_result_came_from_as_the_card_does(plugin, stub, keyed):
@@ -566,7 +568,8 @@ def test_a_read_grounder_served_asks_for_citations_outside_the_page(plugin, stub
     provider.extract([url])
     hermes_result = json.dumps({"results": [{"url": url, "title": "A", "content": "page text", "error": None}]})
     data = json.loads(provider.after_tool("web_extract", {"urls": [url]}, hermes_result))
-    assert list(data) == ["results", "cite_sources"] and data["results"][0]["content"] == "page text"
+    assert list(data) == ["results", "pages", "cite_sources"] and data["results"][0]["content"] == "page text"
+    assert data["pages"] == plugin.provider.READ_FILES_NOTE and "read_file finds none" in data["pages"]
 
 
 def test_a_read_grounder_did_not_serve_is_left_alone(plugin, stub, keyed):
@@ -625,6 +628,7 @@ def test_grounder_search_sends_every_option_as_the_mcp_search_maps_it(plugin, st
                     "filters": {"domains": {"values": ["bbc.com"], "mode": "include"}, "recency": {"mode": "rolling", "days": 7}},
                     "context": {"user_location": "Austin", "user_time_zone": "America/Chicago"}}
     assert out["success"] and out["cite_sources"] == plugin.provider.CITE_REQUEST and out["data"]["web"][0]["title"] == "A"
+    assert list(out)[-2:] == ["pages", "cite_sources"] and out["pages"] == plugin.provider.SEARCH_FILES_NOTE
 
 
 def test_grounder_search_reads_pages_at_the_page_budget_and_reports_failures(plugin, stub, keyed):
@@ -632,6 +636,7 @@ def test_grounder_search_reads_pages_at_the_page_budget_and_reports_failures(plu
     out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "urls": ["https://example.com/a"]}))
     assert json.loads(_searches(stub)[0]["body"])["text_max_chars"] == plugin.provider.EXTRACT_CHARS
     assert len(out["data"]["web"][0]["description"]) == 5000
+    assert out["pages"] == plugin.provider.READ_FILES_NOTE
     assert not json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": " "}))["success"]
     stub.search_status = 500
     assert not json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q"}))["success"]
