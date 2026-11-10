@@ -27,8 +27,11 @@ request, so this plugin never holds a token.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
+import secrets
 import re
 import threading
 import urllib.error
@@ -50,7 +53,7 @@ ORIGIN = "https://api.grounder.net"
 SEARCH_URL = f"{ORIGIN}/v1/search"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.1"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.2"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -196,9 +199,47 @@ def _description(result: dict[str, Any]) -> str:
     return text
 
 
+# The conversation and turn of each live session, as Hermes's ``pre_tool_call`` hook last named them.
+_TURNS: dict[str, tuple[str, str]] = {}
+_TURNS_KEPT = 64
+# Makes the tokens below random to everyone: they cannot be worked back to a Hermes id, and last only as long as this process.
+_SALT = secrets.token_bytes(16)
+
+
+def note_turn(**ids: Any) -> None:
+    """``pre_tool_call`` hook: remember which conversation and turn this session is in. Changes nothing about the call."""
+    session = str(ids.get("session_id") or "")
+    if not session:
+        return
+    _TURNS.pop(session, None)
+    _TURNS[session] = (str(ids.get("conversation_id") or session), str(ids.get("turn_id") or ""))
+    while len(_TURNS) > _TURNS_KEPT:
+        _TURNS.pop(next(iter(_TURNS)), None)
+
+
+def _token(*parts: str) -> str:
+    return hashlib.sha256(_SALT + "\0".join(parts).encode()).hexdigest()[:32]
+
+
+def _context() -> dict[str, str]:
+    """A random token for this session and one for this user prompt, so Grounder can tell one prompt from the next. Neither carries a Hermes id or a message."""
+    try:
+        from gateway.session_context import get_session_env
+        session = get_session_env("HERMES_SESSION_ID", "")
+    except ImportError:
+        session = os.environ.get("HERMES_SESSION_ID", "")
+    if not session:
+        return {}
+    conversation, turn = _TURNS.get(session, (session, ""))
+    return {"session_ref": _token(conversation), **({"prompt_ref": _token(conversation, turn)} if turn else {})}
+
+
 def _send(payload: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """One POST to Grounder: ``(body, None)``, or ``(None, error)`` when it failed. Never raises, and never retries: a second POST is a second search."""
     key = _key()
+    context = _context()
+    if context:
+        payload = {**payload, "context": context}
     try:
         status, raw = _post_with_key(key, payload) if key else _post_signed_in(payload)
     except ProviderNotSignedIn:

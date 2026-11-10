@@ -134,7 +134,7 @@ tier.
 
 Each `web_search` query, up to its first 2,000 characters, goes to `https://api.grounder.net/v1/search` with the number
 of results wanted, the 800 characters of text it wants for each result, your search key or, when you signed in, the
-access token Hermes attaches, and a user agent naming this plugin and its version. Nothing else from Hermes is sent: not the conversation, the
+access token Hermes attaches, a user agent naming this plugin and its version, and two random tokens, one for the session and one for the prompt, so one prompt's searches can be told from the next. The tokens carry no Hermes id or message. Nothing else from Hermes is sent: not the conversation, the
 model's other output or what other tools returned. When a search fails, Hermes may send the same query to its keyless
 free tier, as "What Hermes gets" says; that is Hermes's own behaviour, not Grounder's.
 

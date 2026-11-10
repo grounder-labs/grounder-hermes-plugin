@@ -18,7 +18,7 @@ import logging
 from agent.secret_scope import get_secret
 from hermes_cli.config import is_managed, save_config, save_env_value
 
-from .provider import CLIENT_ENV, CLIENT_ID, KEY_ENV, GrounderWebSearchProvider
+from .provider import CLIENT_ENV, CLIENT_ID, KEY_ENV, GrounderWebSearchProvider, note_turn
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,7 @@ def register(ctx) -> None:
     ctx.register_web_search_provider(provider)
     ctx.register_hook("transform_tool_result", provider.after_tool)
     ctx.register_hook("transform_llm_output", provider.after_answer)
+    ctx.register_hook("pre_tool_call", note_turn)
     try:
         _select_once(ctx)
     except Exception as error:  # a config that cannot be written must not take the plugin down with it

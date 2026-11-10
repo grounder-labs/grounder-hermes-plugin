@@ -3,6 +3,7 @@
 
 import json
 import re
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -265,7 +266,7 @@ def test_register_adds_the_backend_and_no_command(plugin):
     plugin.register(Context())
     assert calls["provider"].name == "grounder"
     assert "command" not in calls
-    assert calls["hooks"] == {"transform_tool_result": calls["provider"].after_tool, "transform_llm_output": calls["provider"].after_answer}
+    assert calls["hooks"] == {"transform_tool_result": calls["provider"].after_tool, "transform_llm_output": calls["provider"].after_answer, "pre_tool_call": plugin.provider.note_turn}
 
 
 def test_setup_entry_asks_for_no_key_and_names_both_ways_in(plugin):
@@ -574,3 +575,24 @@ def test_a_read_grounder_did_not_serve_is_left_alone(plugin, stub, keyed):
     assert provider.after_tool("web_extract", {}, other) is None
     assert provider.after_tool("web_extract", {}, "not json") is None
     assert provider.after_tool("web_extract", {}, json.dumps({"success": False, "error": "x"})) is None
+
+
+def test_searches_of_one_turn_share_a_prompt_id_and_the_next_turn_gets_its_own(plugin, stub, keyed, monkeypatch):
+    provider_module = sys.modules[plugin.GrounderWebSearchProvider.__module__]
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-1")
+    provider = plugin.GrounderWebSearchProvider()
+    sent = []
+    for turn in ("turn-1", "turn-1", "turn-2"):
+        provider_module.note_turn(session_id="session-1", conversation_id="chat-1", turn_id=turn, tool_name="web_search")
+        provider.search("query")
+        sent.append(json.loads(_searches(stub)[-1]["body"])["context"])
+    assert sent[0] == sent[1] and sent[0]["prompt_ref"] != sent[2]["prompt_ref"]
+    assert sent[0]["session_ref"] == sent[2]["session_ref"]
+    assert all(re.fullmatch(r"[a-f0-9]{32}", value) for row in sent for value in row.values())
+    assert not {"session-1", "chat-1", "turn-1"} & {value for row in sent for value in row.values()}
+
+
+def test_a_search_outside_a_hermes_session_sends_no_context(plugin, stub, keyed, monkeypatch):
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    plugin.GrounderWebSearchProvider().search("query")
+    assert "context" not in json.loads(_searches(stub)[-1]["body"])
