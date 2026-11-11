@@ -112,7 +112,7 @@ the plugin adds one. The turn's later results carry neither, which saves about 4
 |---|---|
 | `url` | The address you asked for |
 | `title` | The page's title, or its address when it has none |
-| `content` | What in the page best answers the `web_search` that found it, or your latest message when no search found it, in the page's own order, at most 6,000 characters. A page that fits comes back whole, and with no search and no message a page comes back from its start |
+| `content` | What in the page best answers the `web_search` that found it, or your latest message when no search found it, in the page's own order, at most 6,000 characters. A page that fits comes back whole, and with no search and no message a page comes back from its start, or from the section its address names (`#Bibliography`) |
 | `error` | Only on a page that could not be read and that no search returned. It says why when Grounder knows: the address does not exist, the site refused the read, or the read ran out of time. The other pages still return. A page a search returned that cannot be read comes back without an error, as the text that search showed of it, which says so |
 
 A `web_extract` keeps less than a whole page on purpose, to spare your model the tokens. Run a `web_search` first to get the
