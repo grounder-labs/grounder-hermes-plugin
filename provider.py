@@ -56,7 +56,7 @@ SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.12"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.13"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -76,7 +76,8 @@ CITE_KEY = "cite_sources"
 # answer, in the model's slowest and dearest tokens, and the plugin already holds every word of it. A result's `position` is its number across the turn.
 CITE_REQUEST = ("Cite every result your answer uses by its position in square brackets, like [3], in this answer and in every later one in this chat, "
                 "not only the first. Positions run on across this answer's searches and page reads, so each number names one result. "
-                "Write no Sources list: one with each cited result's title and link is added under the answer.")
+                "End the answer with its last sentence: write no Sources, References or Citations list and no links, since Grounder adds the list of "
+                "every cited result's title and link under the answer, and one you write costs tokens for nothing.")
 # For a host that names no turn the plugin cannot tell which answer a result serves, so the model writes the list itself. The first sentence is word for
 # word what Grounder's MCP server ends every search's notes with (CITE_REMINDER in routes/mcp.ts).
 CITE_REQUEST_LISTED = ("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first. "
@@ -213,7 +214,8 @@ def _sources_list(text: str, sources: dict[str, dict[str, Any]]) -> str:
     used = sorted((source for source in sources.values() if source["n"] in cited), key=lambda source: source["n"])
     if not used:
         return ""
-    lines = [f"- [{source['n']}] {source['title'] or source['url']} — {source['url']}" for source in used]
+    # One plain bullet each, in the order of their numbers (Harlan, 2026-11-11, GRO-731: "a bullet point for each unnumbered").
+    lines = [f"- {source['title'] or source['url']} — {source['url']}" for source in used]
     return "Sources:\n" + "\n".join(lines)
 
 

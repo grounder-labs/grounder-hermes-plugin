@@ -124,7 +124,7 @@ as the result's `description`, and counts as one search. Hermes's `web_extract` 
 from its own cache, so without this a model that needed more of a page fetched it with its own tools.
 The pages you ask for always lead what Grounder returns, ahead of anything its search found beside them.
 
-An answer that cites a Grounder result ends with a Sources list the plugin writes: one line for each result the answer cites
+An answer that cites a Grounder result ends with a Sources list the plugin writes: one plain bullet for each result the answer cites
 by number, with its title and link. The model writes only the numbers, which spares it the slowest tokens it makes; an
 answer that wrote its own list, under a Sources or References heading, gets none added. Then an answer that searched ends with
 one line saying who answered, how many sources came back and how long it took, for example
