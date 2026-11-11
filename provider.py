@@ -24,7 +24,13 @@ setting ``web.search_backend: grounder`` and ``web.extract_backend: grounder``.
 A call uses the Grounder search key in ``GROUNDER_API_KEY`` when one is set, and otherwise the sign-in Hermes keeps
 for the ``oauth:`` client in ``plugin.yaml`` (``hermes auth add grounder:grounder``):
 Hermes signs in, stores and refreshes that grant and attaches its token to the
-request, so this plugin never holds a token.
+request, so this plugin never holds a token. With neither, a search is one of Grounder's free searches: it carries no
+credential, and neither the server nor the mode the user chose, which Grounder refuses a caller with no account. A free
+search that reaches Grounder's limit says where to sign up and add credit, with the links the API gave.
+
+``/search`` and ``/search_presets`` (``commands.py``) save the server and the mode to ``web.grounder.server`` and
+``web.grounder.preset``, the same keys Hermes's own Grounder provider reads, and a signed-in ``web_search`` or
+``grounder_search`` sends them (``chosen``).
 """
 
 from __future__ import annotations
@@ -54,9 +60,11 @@ logger = logging.getLogger(__name__)
 ORIGIN = "https://api.grounder.net"
 SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
+PROVIDERS_URL = f"{ORIGIN}/v1/providers"  # public: the search providers and the live-data APIs, which /search offers
+PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the search modes, which /search_presets offers
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.13"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.14"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -121,13 +129,16 @@ SEARCH_SCHEMA = {
         "routing_settings": {"type": "object", "description": "This search's routing settings over the account's saved ones; not saved. Pass only what differs, "
                                                               'when the user or the task calls for it, e.g. {"providers": {"exa": {"use": "always"}}}.'},
         "workspace": {"type": "string", "description": "Slug of the workspace to search under; the default one when left out. An unknown slug is refused, never replaced by the default."},
+        "profile": {"type": "string", "description": f"A search mode by id, which changes how this search runs ({LIST_PROVIDERS_TOOL} lists them under search_modes); `auto` is none. "
+                                                      "Left out, the user's own choice stands. Needs the user to be signed in to Grounder."},
         "user_location": {"type": "string", "description": 'Where the user is, only if the user said so in this chat, e.g. "Austin, Texas". Never guess it.'},
         "user_time_zone": {"type": "string", "description": "The user's time zone, only if the user said so in this chat, as an IANA name, e.g. \"America/Chicago\". Never guess it."},
     }},
 }
 LIST_PROVIDERS_SCHEMA = {
     "name": LIST_PROVIDERS_TOOL,
-    "description": "List the features a Grounder search can use: what each returns, the inputs it honors, and the providers (with modes) and live-data APIs that deliver it.",
+    "description": "List the features a Grounder search can use: what each returns, the inputs it honors, and the providers (with modes) and live-data APIs that deliver it, "
+                   "and the search modes a search can run in.",
     "parameters": {"type": "object", "properties": {}},
 }
 # Where a provider's or live source's id is not its name capitalized; the rest of Grounder's lists are.
@@ -137,6 +148,11 @@ PROVIDER_NAMES = {"you": "You.com", "xai": "xAI", "newsapi": "NewsAPI.ai", "tiny
                   "seatgeek": "SeatGeek", "statuspage": "Status pages", "truth-social": "Truth Social", "usgs": "USGS",
                   "yahoo-finance": "Yahoo Finance", "youtube": "YouTube"}
 TIMEOUT_S = 45  # one search, across every provider it reaches
+LIST_TIMEOUT_S = 8  # one of Grounder's public lists
+KEYS_URL = "https://grounder.net/account/keys"
+SETTINGS_KEY = "grounder"  # the section of config.yaml's web: that /search and /search_presets write
+_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_SERVER = re.compile(r"^(provider|api):([a-z0-9][a-z0-9._-]*)$")
 
 
 def _bounded(store: dict, limit: int) -> None:
@@ -229,11 +245,11 @@ def _key() -> str:
     return str(get_secret(KEY_ENV) or "").strip()
 
 
-def _post_with_key(key: str, payload: dict[str, Any]) -> tuple[int, bytes]:
-    """Send one search with the user's own search key; return the HTTP status and the body."""
+def _post(payload: dict[str, Any], key: str = "") -> tuple[int, bytes]:
+    """Send one search, with the user's own search key or, with none, as a free search that carries no credential; return the HTTP status and the body."""
     request = urllib.request.Request(
         SEARCH_URL, json.dumps(payload).encode(),
-        {"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+        {**({"Authorization": f"Bearer {key}"} if key else {}), "Content-Type": "application/json",
          "Accept": "application/json", "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
@@ -250,14 +266,85 @@ def _post_signed_in(payload: dict[str, Any]) -> tuple[int, bytes]:
     return response.status, response.body
 
 
-def _error_message(status: int, body: Any, signed_in: bool) -> str:
-    """A one-line message for a failed search, with Grounder's own reason when it gave one."""
-    detail: Optional[str] = None
-    if isinstance(body, dict) and isinstance(body.get("error"), dict):
-        detail = body["error"].get("message")
+def _get(url: str) -> tuple[int, bytes]:
+    """GET one of Grounder's public lists with no credential; return the HTTP status and the body."""
+    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=LIST_TIMEOUT_S) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read()
+
+
+def _get_signed_in(url: str) -> tuple[int, bytes]:
+    """GET one of Grounder's public lists through Hermes, which raises ``ProviderNotSignedIn`` with no grant and otherwise attaches the token.
+    A public list needs none; this is how a plugin, which cannot see the grant, learns there is one, with no search spent."""
+    response = credentialed_provider_request(OAUTH_ID, "GET", url, headers={"Accept": "application/json", "User-Agent": USER_AGENT}, timeout=LIST_TIMEOUT_S)
+    return response.status, response.body
+
+
+def fetch_list(url: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """One of Grounder's public lists, as it is when asked and never kept: ``(body, None)``, or ``(None, reason)``.
+
+    Raises ``ProviderNotSignedIn`` when the user has neither a search key nor a sign-in: ``/search`` and ``/search_presets`` choose what only a signed-in search
+    carries, so they answer with how to sign in instead of a list.
+    """
+    try:
+        status, raw = _get(url) if _key() else _get_signed_in(url)
+    except ProviderNotSignedIn:
+        raise
+    except AuthError as error:
+        return None, f"Grounder sign-in failed: {error}"
+    except PermissionError as error:
+        return None, f"Hermes refused the Grounder sign-in: {error}"
+    except (httpx.HTTPError, urllib.error.URLError, TimeoutError, OSError) as error:
+        return None, f"Could not reach Grounder: {error}"
+    if status != 200:
+        return None, f"HTTP {status}"
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None, "Grounder's answer was not JSON"
+    return (body, None) if isinstance(body, dict) else (None, "Grounder's answer was not what was expected")
+
+
+def chosen() -> dict[str, Any]:
+    """The mode and the server the user chose with ``/search_presets`` and ``/search``, as the fields a search carries; ``{}`` when they chose none.
+
+    Read from ``web.grounder.preset`` and ``web.grounder.server`` when a search is made, the keys Hermes's own Grounder provider reads, so a user who moves to it
+    keeps both. A value of another shape reads as unset, and a config that cannot be read changes nothing about the search.
+    """
+    try:
+        from hermes_cli.config import load_config
+        web = load_config().get("web")
+    except Exception as error:  # a config that cannot be read must not fail a search
+        logger.warning("Could not read the Grounder settings: %s", error)
+        return {}
+    section = web.get(SETTINGS_KEY) if isinstance(web, dict) else None
+    section = section if isinstance(section, dict) else {}
+    preset, server = (value.strip() if isinstance(value := section.get(name), str) else "" for name in ("preset", "server"))
+    extra: dict[str, Any] = {}
+    if _ID.match(preset):
+        extra["profile"] = preset
+    if match := _SERVER.match(server):
+        kind, ident = match.groups()
+        extra["routing_settings"] = {("providers" if kind == "provider" else "specialized"): {ident: {"use": "always"}}}
+    return extra
+
+
+def _error_message(status: int, body: Any, via: str) -> str:
+    """A one-line message for a failed search, with Grounder's own reason when it gave one. ``via`` is how the search was made: ``key``, ``sign-in`` or ``free``."""
+    error = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), dict) else {}
+    detail = error.get("message") if isinstance(error.get("message"), str) else None
+    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    if via == "free" and status in (429, 503) and details.get("signup_url"):
+        # The links are the API's own, and the limits are in no sentence here: Grounder changes them, this plugin does not.
+        credit = f", then add credit at {details['billing_url']}" if details.get("billing_url") else ""
+        used = "You've used Grounder's free searches" if status == 429 else "Grounder's free searches have reached their limit for now"
+        return f"{used}. Sign up at {details['signup_url']}{credit}. Then sign in with `{SIGN_IN}`, or set a search key in `{KEY_ENV}`."
     if status == 401:
-        return (f"Grounder rejected the sign-in. Run `{SIGN_IN}`." if signed_in
-                else f"Grounder rejected the search key in {KEY_ENV}.")
+        return (f"Grounder rejected the sign-in. Run `{SIGN_IN}`." if via == "sign-in"
+                else f"Grounder rejected the search key in `{KEY_ENV}`.")
     if status == 429:
         return f"Grounder rate limit reached: {detail or 'try again later'}"
     return f"Grounder returned HTTP {status}" + (f": {detail}" if detail else "")
@@ -383,16 +470,27 @@ def _context() -> dict[str, Any]:
     return {"session_ref": _token(conversation), **({"prompt_ref": _token(conversation, turn)} if turn else {}), **({"agent": {"model": model}} if model else {})}
 
 
-def _send(payload: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """One POST to Grounder: ``(body, None)``, or ``(None, error)`` when it failed. Never raises, and never retries: a second POST is a second search."""
+def _send(payload: dict[str, Any], extra: Optional[dict[str, Any]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """One POST to Grounder: ``(body, None)``, or ``(None, error)`` when it failed. Never raises, and never retries: a second POST is a second search.
+
+    ``extra`` is what only a signed-in search carries, the user's chosen mode and server (``chosen``): it goes with a search key or a sign-in, under anything the
+    request itself already says, and never with a free search, which Grounder refuses a caller with no account. A user with neither a key nor a grant searches free.
+    """
     key = _key()
     context = _context()
     if context:
         payload = {**payload, "context": {**payload.get("context", {}), **context}}
+    signed = {**{name: value for name, value in (extra or {}).items() if name not in payload}, **payload}
+    via = "key" if key else "sign-in"
     try:
-        status, raw = _post_with_key(key, payload) if key else _post_signed_in(payload)
-    except ProviderNotSignedIn:
-        return None, f"Not signed in to Grounder. Run `{SIGN_IN}`."
+        if key:
+            status, raw = _post(signed, key)
+        else:
+            try:
+                status, raw = _post_signed_in(signed)
+            except ProviderNotSignedIn:
+                via = "free"
+                status, raw = _post(payload)
     except AuthError as error:
         return None, f"Grounder sign-in failed: {error}"
     except PermissionError as error:
@@ -407,7 +505,7 @@ def _send(payload: dict[str, Any]) -> tuple[Optional[dict[str, Any]], Optional[s
             return None, "Could not parse the Grounder response as JSON"
         body = None
     if status != 200 or not isinstance(body, dict):
-        return None, _error_message(status, body, signed_in=not key)
+        return None, _error_message(status, body, via)
     return body, None
 
 
@@ -496,7 +594,7 @@ def _page_shown(url: str, shown: tuple[str, str]) -> dict[str, Any]:
 def _options(args: dict[str, Any], query: str, chars: int) -> dict[str, Any]:
     """``grounder_search``'s arguments as a search request, the way Grounder's MCP search maps the same arguments."""
     payload: dict[str, Any] = {"query": query, "text_max_chars": chars}
-    for name in ("top_k", "include_text", "requested_provider", "providers", "features", "urls", "routing_settings", "workspace"):
+    for name in ("top_k", "include_text", "requested_provider", "providers", "features", "urls", "routing_settings", "workspace", "profile"):
         if args.get(name) not in (None, "", [], {}):
             payload[name] = args[name]
     filters: dict[str, Any] = {}
@@ -521,6 +619,17 @@ def _feature(feature: dict[str, Any]) -> dict[str, Any]:
             modes.append(str(offering["mode"]))
     return {"feature": feature.get("id"), "description": feature.get("description"), "returns": feature.get("returns"),
             "inputs": feature.get("inputs"), "providers": providers, "apis": feature.get("specialized") or []}
+
+
+def search_modes() -> list[dict[str, str]]:
+    """The search modes Grounder lists now, as ``[{"id", "name", "description"}]``; empty when the list cannot be read, which leaves the rest of an answer as it was."""
+    try:
+        status, raw = _get(PROFILES_URL)
+        rows = json.loads(raw).get("profiles") if status == 200 else None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, AttributeError):
+        return []
+    return [{"id": str(row["id"]), "name": str(row.get("name") or row["id"]), "description": str(row.get("description") or "")}
+            for row in rows if isinstance(row, dict) and row.get("id")] if isinstance(rows, list) else []
 
 
 class GrounderWebSearchProvider(WebSearchProvider):
@@ -550,14 +659,12 @@ class GrounderWebSearchProvider(WebSearchProvider):
         return "Grounder"
 
     def is_available(self) -> bool:
-        """True with a search key or the sign-in client set; checks no network.
+        """Always true: a search needs no account, so Grounder is ready with no key and no sign-in.
 
-        Hermes turns web_search and web_extract off when no selected backend
-        says it is ready, and offers a plugin no way to see its grant without a
-        request. So the client id, the first step of signing in, stands for the
-        sign-in; with no grant behind it a search says how to sign in.
+        Hermes turns web_search and web_extract off when no selected backend says it is ready. With neither a key nor a grant a search is a free search, so
+        the backend is ready; the sign-in client the plugin writes at its first load only saves the user a step when they do sign in.
         """
-        return bool(_key() or str(get_secret(CLIENT_ENV) or "").strip())
+        return True
 
     def supports_search(self) -> bool:
         return True
@@ -574,7 +681,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         payload = {"query": query[:MAX_QUERY_CHARS],
                    "top_k": max(1, min(int(limit), MAX_RESULTS)),
                    "text_max_chars": DESCRIPTION_CHARS}
-        body, error = _send(payload)
+        body, error = _send(payload, chosen())
         if body is None:
             return _fail(error or "Grounder returned no answer")
         results = body.get("results") or []
@@ -707,7 +814,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
         if not query:
             return json.dumps(_fail("grounder_search needs a query"))
         chars = EXTRACT_CHARS if args.get("urls") else DESCRIPTION_CHARS
-        body, error = _send(_options(args, query, chars))
+        # A page read is not shaped by a server the user chose for searches, so it carries only what the model asked.
+        body, error = _send(_options(args, query, chars), None if args.get("urls") else chosen())
         if body is None:
             return json.dumps(_fail(error or "Grounder returned no answer"))
         rows = [_row(r, i + 1, chars) for i, r in enumerate(body.get("results") or [])]
@@ -724,7 +832,11 @@ class GrounderWebSearchProvider(WebSearchProvider):
                 body = json.loads(response.read())
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
             return json.dumps(_fail(f"Could not reach Grounder: {error}"))
-        return json.dumps({"success": True, "data": {"features": [_feature(f) for f in body.get("features") or [] if isinstance(f, dict)]}}, ensure_ascii=False)
+        data: dict[str, Any] = {"features": [_feature(f) for f in body.get("features") or [] if isinstance(f, dict)]}
+        modes = search_modes()
+        if modes:
+            data["search_modes"] = modes
+        return json.dumps({"success": True, "data": data}, ensure_ascii=False)
 
     def _remember(self, query: str, rows: list[dict[str, Any]], summary: dict[str, Any], found_by: bool = True) -> None:
         """Note the query that found each of a search's pages, for the extract that may read them next, and the search's summary.
@@ -758,6 +870,6 @@ class GrounderWebSearchProvider(WebSearchProvider):
         return {
             "name": "Grounder", "badge": "account",
             "tag": "Licensed, live sources: many search providers in one call, "
-                   f"one deduplicated list, and page reading. A search key in {KEY_ENV}, or sign in with `{SIGN_IN}`.",
+                   f"one deduplicated list, and page reading. Free searches need no account; for more, a search key in `{KEY_ENV}`, or sign in with `{SIGN_IN}`.",
             "env_vars": [],
         }

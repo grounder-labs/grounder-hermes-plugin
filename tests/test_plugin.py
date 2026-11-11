@@ -13,20 +13,81 @@ from conftest import PLUGIN_DIR, manifest, yaml
 
 RESULT = {"url": "https://example.com/a", "title": "A", "text": "first  passage\n text",
           "rank": 1, "provenance": {"found_by": ["brave"]}}
-SIGN_IN = "Not signed in to Grounder. Run `hermes auth add grounder:grounder`."
+SIGN_IN = "hermes auth add grounder:grounder"
 
 
 def _searches(stub):
     return [r for r in stub.requests if r["path"] == "/v1/search"]
 
 
-def test_without_sign_in_search_asks_for_hermes_sign_in_and_sends_nothing(plugin, stub, hermes):
+def test_the_backend_is_named_and_ready_with_no_account(plugin):
     provider = plugin.GrounderWebSearchProvider()
     assert provider.name == "grounder" and provider.display_name == "Grounder"
     assert provider.supports_search() and provider.supports_extract()
-    assert not provider.is_available()
-    assert provider.search("q") == {"success": False, "error": SIGN_IN}
-    assert stub.requests == []
+    assert provider.is_available()  # a search needs no account, so Hermes keeps web_search and web_extract on
+
+
+def test_with_no_key_and_no_sign_in_a_search_is_a_free_search_that_carries_no_credential(plugin, stub, free):
+    stub.search_body = {"query": "q", "results": [RESULT]}
+    assert plugin.GrounderWebSearchProvider().search("q")["success"]
+    assert [call["provider"] for call in free.calls] == ["grounder"]  # signing in was tried first, and Hermes had no grant
+    request = _searches(stub)[0]
+    assert not {name.lower() for name in request["headers"]} & {"authorization", "cookie"}
+    assert json.loads(request["body"]) == {"query": "q", "top_k": 5, "text_max_chars": 800}
+    assert request["headers"]["User-Agent"] == plugin.provider.USER_AGENT
+
+
+def test_a_page_read_with_no_key_and_no_sign_in_is_free_too(plugin, stub, free):
+    stub.search_body = {"results": [{**RESULT, "url": "https://example.com/a", "text": "page text"}]}
+    rows = plugin.GrounderWebSearchProvider().extract(["https://example.com/a"])
+    assert rows[0]["content"] == "page text" and "error" not in rows[0]
+    assert "Authorization" not in _searches(stub)[0]["headers"]
+
+
+def test_a_free_search_sends_neither_the_chosen_server_nor_the_mode(plugin, stub, free, tmp_path):
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"web": {"grounder": {"preset": "deep", "server": "provider:exa"}}}))
+    plugin.GrounderWebSearchProvider().search("q")
+    assert json.loads(_searches(stub)[0]["body"]) == {"query": "q", "top_k": 5, "text_max_chars": 800}
+
+
+def test_a_free_search_the_model_asked_options_for_is_left_for_grounder_to_refuse(plugin, stub, free):
+    # Grounder refuses a caller with no account a profile, routing settings and a workspace; the plugin neither drops them nor invents them.
+    stub.search_status = 400
+    stub.search_body = {"error": {"code": "invalid_request", "message": "profile changes how a search runs on a Grounder account; search with your account's key or connection."}}
+    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "profile": "fast"}))
+    assert json.loads(_searches(stub)[0]["body"])["profile"] == "fast"
+    assert out["success"] is False and "account's key or connection" in out["error"]
+
+
+def test_a_free_search_that_reaches_a_limit_says_where_to_sign_up_and_add_credit(plugin, stub, free):
+    links = {"signup_url": "https://grounder.net/account", "billing_url": "https://grounder.net/account/billing"}
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_status = 429
+    stub.search_body = {"error": {"code": "daily_limit_reached", "message": "the API's own words", "details": {"daily_limit": 50, **links}}}
+    daily = provider.search("q")
+    assert daily == {"success": False, "error": (
+        "You've used Grounder's free searches. Sign up at https://grounder.net/account, then add credit at https://grounder.net/account/billing. "
+        f"Then sign in with `{SIGN_IN}`, or set a search key in `GROUNDER_API_KEY`.")}
+    stub.search_status = 503
+    stub.search_body = {"error": {"code": "capacity_reached", "message": "the API's own words", "details": links}}
+    capacity = provider.search("q")["error"]
+    assert capacity.startswith("Grounder's free searches have reached their limit for now. Sign up at https://grounder.net/account, then add credit at ")
+    # The plugin names no limit of its own: a number in these words would be one Grounder can change.
+    assert not re.search(r"\d", daily["error"].replace(links["signup_url"], "").replace(links["billing_url"], "")) and not re.search(r"\d", capacity)
+    stub.search_status = 200
+
+
+def test_a_per_minute_limit_with_no_links_keeps_the_apis_words(plugin, stub, free):
+    stub.search_status = 429
+    stub.search_body = {"error": {"code": "rate_limited", "message": "10 a minute"}}
+    assert plugin.GrounderWebSearchProvider().search("q") == {"success": False, "error": "Grounder rate limit reached: 10 a minute"}
+
+
+def test_a_limit_on_a_search_with_a_key_is_not_a_free_search_limit(plugin, stub, keyed):
+    # With a key the search is not free, so Grounder's sign-up words are not its answer to it.
+    stub.search_status = 429
+    stub.search_body = {"error": {"code": "daily_limit_reached", "message": "add credit", "details": {"signup_url": "https://grounder.net/account"}}}
+    assert plugin.GrounderWebSearchProvider().search("q") == {"success": False, "error": "Grounder rate limit reached: add credit"}
 
 
 def test_signed_in_search_goes_through_hermes_which_attaches_the_token(plugin, stub, hermes):
@@ -202,7 +263,7 @@ def test_a_refused_key_and_a_refused_sign_in_each_say_what_to_fix(plugin, stub, 
     monkeypatch.setenv("GROUNDER_API_KEY", "revoked-key")
     monkeypatch.setattr(plugin.provider, "SEARCH_URL", f"{stub.origin}/v1/search")
     assert plugin.GrounderWebSearchProvider().search("q") == {
-        "success": False, "error": "Grounder rejected the search key in GROUNDER_API_KEY."}
+        "success": False, "error": "Grounder rejected the search key in `GROUNDER_API_KEY`."}
     assert len(_searches(stub)) == 2 and len(hermes.calls) == 1
 
 
@@ -213,8 +274,6 @@ def test_what_hermes_raises_becomes_a_failure_not_an_exception(plugin, stub, her
         code="oauth_client_id_missing")
     assert provider.search("q") == {"success": False, "error":
                                     "Grounder sign-in failed: grounder:grounder: GROUNDER_OAUTH_CLIENT_ID is not set."}
-    hermes.raises = plugin.provider.ProviderNotSignedIn("grant revoked")
-    assert provider.search("q") == {"success": False, "error": SIGN_IN}
     hermes.raises = PermissionError("Refusing to send the grounder sign-in to elsewhere.example")
     assert provider.search("q") == {"success": False, "error":
                                     "Hermes refused the Grounder sign-in: Refusing to send the grounder sign-in to elsewhere.example"}
@@ -400,8 +459,6 @@ def test_a_whole_request_failure_is_every_pages_error_never_an_exception_and_nev
     assert len(_searches(stub)) == 1
     hermes.raises = httpx.ConnectTimeout("timed out")
     assert provider.extract([PAGE_A])[0]["error"] == "Could not reach Grounder: timed out"
-    hermes.raises = plugin.provider.ProviderNotSignedIn("grant revoked")
-    assert provider.extract([PAGE_A])[0]["error"] == SIGN_IN
 
 
 def test_extract_goes_with_a_key_when_one_is_set(plugin, stub, hermes, keyed):
@@ -438,10 +495,10 @@ def test_extract_logs_the_page_count_and_never_an_address(plugin, stub, hermes, 
     assert not [r for r in caplog.records if "example.com" in r.getMessage()]
 
 
-def test_the_sign_in_client_counts_as_ready_so_hermes_keeps_the_web_tools(plugin, monkeypatch):
-    # With no selected backend ready, Hermes offers the model neither web_search nor web_extract.
+def test_grounder_is_ready_whatever_is_set_so_hermes_keeps_the_web_tools(plugin, monkeypatch):
+    # With no selected backend ready, Hermes offers the model neither web_search nor web_extract; a free search needs no key and no client.
     provider = plugin.GrounderWebSearchProvider()
-    assert not provider.is_available()
+    assert provider.is_available()
     monkeypatch.setenv("GROUNDER_OAUTH_CLIENT_ID", "https://api.grounder.net/oauth/clients/hermes-agent")
     assert provider.is_available()
     assert plugin.provider.CLIENT_ENV == manifest()["oauth"][0]["client_id_env"]
@@ -486,7 +543,7 @@ def test_the_first_load_selects_both_backends_and_keeps_the_web_tools_on(plugin,
     assert [p.name for p in ctx.providers] == ["grounder"]
     assert _web(tmp_path) == {"search_backend": "grounder", "extract_backend": "grounder"}
     assert CLIENT_LINE in _env(tmp_path)
-    assert ctx.providers[0].is_available()  # Hermes hides web_search and web_extract otherwise
+    assert ctx.providers[0].is_available()
 
 
 def test_the_first_load_replaces_another_backend_and_keeps_the_rest_of_the_config(plugin, tmp_path):
@@ -851,7 +908,16 @@ def test_list_providers_says_what_the_mcp_tool_says_and_sends_no_credential(plug
                                         "offerings": [{"provider": "exa", "mode": None}, {"provider": "brave", "mode": "news"}]}]}
     out = json.loads(plugin.GrounderWebSearchProvider().list_providers_tool({}))
     assert out["data"]["features"] == [{"feature": "news", "description": "d", "returns": "r", "inputs": ["query"], "providers": {"exa": [], "brave": ["news"]}, "apis": ["espn"]}]
-    assert "Authorization" not in stub.requests[-1]["headers"]
+    assert "search_modes" not in out["data"]  # the stub lists none
+    assert all("Authorization" not in request["headers"] for request in stub.requests)
+
+
+def test_list_providers_also_lists_the_search_modes_as_grounder_lists_them_now(plugin, stub, keyed):
+    stub.profiles_body = {"profiles": [{"id": "fast", "name": "Fast", "description": "Quick"}, {"id": "x", "description": "No name"}, {"name": "no id"}]}
+    out = json.loads(plugin.GrounderWebSearchProvider().list_providers_tool({}))
+    assert out["data"]["search_modes"] == [{"id": "fast", "name": "Fast", "description": "Quick"}, {"id": "x", "name": "x", "description": "No name"}]
+    stub.profiles_body = {"profiles": [{"id": "later", "name": "Later", "description": ""}]}
+    assert [m["id"] for m in json.loads(plugin.GrounderWebSearchProvider().list_providers_tool({}))["data"]["search_modes"]] == ["later"]
 
 
 def test_a_hermes_that_refuses_the_tools_keeps_web_search(plugin):

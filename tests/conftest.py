@@ -7,7 +7,7 @@ In a Hermes Agent development environment the plugin imports Hermes's own interf
 the same names and signatures take their place, so the tests run in any Python with pytest, PyYAML and httpx. Either
 way, ``credentialed_provider_request`` is replaced by ``FakeHermes``, which plays Hermes's part: it refuses an
 origin the manifest's ``oauth:`` hosts do not name, raises ``ProviderNotSignedIn`` with no grant, and attaches the
-token itself.
+token itself. No test reaches the live API: a request to anywhere but the stub fails the test that made it.
 """
 
 import abc
@@ -18,6 +18,7 @@ import sys
 import threading
 import types
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -93,7 +94,12 @@ def _install_hermes_stand_ins():
             env.write(f"{name}={value}\n")
         os.environ[name] = value
 
+    def load_config():
+        path = home() / "config.yaml"
+        return (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
+
     config.is_managed = lambda: False
+    config.load_config = load_config
     config.save_config = save_config
     config.save_env_value = save_env_value
     for module in (agent, web, scope, hermes_cli, constants, requests, config):
@@ -127,6 +133,9 @@ class Stub:
         self.search_status = 200
         self.search_body = {"query": "q", "results": []}  # bytes are sent as they are, not as JSON
         self.features_body = {"features": []}
+        self.providers_body = {"providers": [], "live_data_apis": []}
+        self.list_status = 200  # what /v1/providers and /v1/search-profiles answer
+        self.profiles_body = {"profiles": []}
         self.rejected = {"revoked-token", "revoked-key"}  # bearers /v1/search answers 401 for
 
     def handle(self, method, path, headers, body):
@@ -137,6 +146,10 @@ class Stub:
             return self.search_status, self.search_body
         if path == "/v1/features":
             return 200, self.features_body
+        if path in ("/v1/providers", "/v1/search-profiles"):
+            if self.list_status != 200:
+                return self.list_status, {"error": {"code": "unavailable", "message": "later"}}
+            return 200, self.providers_body if path == "/v1/providers" else self.profiles_body
         return 404, {"error": "not_found"}
 
 
@@ -166,8 +179,8 @@ class FakeHermes:
         if self.token is None:
             raise self.plugin.provider.ProviderNotSignedIn("not signed in")
         sent = {name: value for name, value in (headers or {}).items() if name.lower() != "authorization"}
-        response = httpx.post(f"{self.stub.origin}{parsed.path}", json=json, timeout=timeout,
-                              headers={**sent, "Authorization": f"Bearer {self.token}"})
+        response = httpx.request(method, f"{self.stub.origin}{parsed.path}", json=json, timeout=timeout,
+                                 headers={**sent, "Authorization": f"Bearer {self.token}"})
         return types.SimpleNamespace(status=response.status_code, headers=dict(response.headers), body=response.content)
 
 
@@ -213,6 +226,20 @@ def plugin(stub, tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("GROUNDER_API_KEY", raising=False)
     monkeypatch.delenv("GROUNDER_OAUTH_CLIENT_ID", raising=False)
+    real = urllib.request.urlopen
+
+    def to_stub(request, *args, **kwargs):
+        """The plugin's own requests (a key's search, a free search, a public list) reach the stub where they would reach Grounder; any other address fails the test."""
+        url = request if isinstance(request, str) else request.full_url
+        if url.startswith("https://api.grounder.net/"):
+            moved = stub.origin + url[len("https://api.grounder.net"):]
+            request = moved if isinstance(request, str) else urllib.request.Request(
+                moved, data=request.data, headers=dict(request.header_items()), method=request.get_method())
+        else:
+            assert url.startswith(stub.origin) or url.startswith("http://127.0.0.1:"), f"a test reached {url}, not the stub"
+        return real(request, *args, **kwargs)
+
+    monkeypatch.setattr(urllib.request, "urlopen", to_stub)
     return _load_plugin()
 
 
@@ -229,3 +256,9 @@ def keyed(plugin, stub, monkeypatch):
     monkeypatch.setenv("GROUNDER_API_KEY", "user-key")
     monkeypatch.setattr(plugin.provider, "SEARCH_URL", f"{stub.origin}/v1/search")
     return "user-key"
+
+
+@pytest.fixture
+def free(hermes):
+    """No key and no grant: Hermes raises ``ProviderNotSignedIn``, and a free search goes to the stub with no credential."""
+    return hermes
