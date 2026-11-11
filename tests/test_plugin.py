@@ -317,6 +317,26 @@ def test_extract_of_a_page_no_search_found_is_read_for_the_users_latest_message(
     assert json.loads(_searches(stub)[-1]["body"])["query"] == PAGE_A
 
 
+def test_extract_reads_as_much_as_the_models_char_limit_asks_up_to_the_ceiling(plugin, stub, hermes, monkeypatch):
+    provider_module = sys.modules[plugin.GrounderWebSearchProvider.__module__]
+    hermes.token = "t"
+    stub.search_body = {"results": [{**_page(PAGE_A), "text": "x" * 40000}]}
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-limit")
+    provider_module.note_turn(session_id="session-limit", tool_name="web_extract", args={"urls": [PAGE_A], "char_limit": 20000})
+    page = plugin.GrounderWebSearchProvider().extract([PAGE_A])[0]
+    assert json.loads(_searches(stub)[-1]["body"])["text_max_chars"] == 20000
+    assert len(page["content"]) == 20000
+    # It holds for the one read it was asked for; the next without one is back to the default, and a bigger ask stops at the ceiling.
+    plugin.GrounderWebSearchProvider().extract([PAGE_A])
+    assert json.loads(_searches(stub)[-1]["body"])["text_max_chars"] == provider_module.EXTRACT_CHARS
+    provider_module.note_turn(session_id="session-limit", tool_name="web_extract", args={"urls": [PAGE_A], "char_limit": 60000})
+    plugin.GrounderWebSearchProvider().extract([PAGE_A])
+    assert json.loads(_searches(stub)[-1]["body"])["text_max_chars"] == provider_module.MAX_EXTRACT_CHARS
+    provider_module.note_turn(session_id="session-limit", tool_name="web_extract", args={"urls": [PAGE_A], "char_limit": "lots"})
+    plugin.GrounderWebSearchProvider().extract([PAGE_A])
+    assert json.loads(_searches(stub)[-1]["body"])["text_max_chars"] == provider_module.EXTRACT_CHARS
+
+
 def test_extract_ranks_pages_against_the_search_that_found_them(plugin, stub, hermes):
     hermes.token = "t"
     provider = plugin.GrounderWebSearchProvider()

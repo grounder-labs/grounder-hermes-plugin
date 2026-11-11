@@ -112,7 +112,7 @@ the plugin adds one. The turn's later results carry neither, which saves about 4
 |---|---|
 | `url` | The address you asked for |
 | `title` | The page's title, or its address when it has none |
-| `content` | What in the page best answers the `web_search` that found it, or your latest message when no search found it, in the page's own order, at most 6,000 characters. A page that fits comes back whole, and with no search and no message a page comes back from its start, or from the section its address names (`#Books`) |
+| `content` | What in the page best answers the `web_search` that found it, or your latest message when no search found it, in the page's own order, at most 6,000 characters, or what the model's `char_limit` asks for up to 30,000. A page that fits comes back whole, and with no search and no message a page comes back from its start, or from the section its address names (`#Books`) |
 | `error` | Only on a page that could not be read and that no search returned. It says why when Grounder knows: the address does not exist, the site refused the read, or the read ran out of time. The other pages still return. A page a search returned that cannot be read comes back without an error, as the text that search showed of it, which says so |
 
 A `web_extract` keeps less than a whole page on purpose, to spare your model the tokens. Run a `web_search` first to get the
@@ -167,7 +167,7 @@ access token Hermes attaches, a user agent naming this plugin and its version, t
 model's other output or what other tools returned. When a search fails, Hermes may send the same query to its keyless
 free tier, as "What Hermes gets" says; that is Hermes's own behaviour, not Grounder's.
 
-Each `web_extract` sends the addresses of its pages, the 6,000 characters of text it wants for each, the same credential and
+Each `web_extract` sends the addresses of its pages, the characters of text it wants for each (6,000, or the model's `char_limit` up to 30,000), the same credential and
 user agent, and a question to read them for: the query of the `web_search` that found them, when one did, and otherwise your
 latest message in the session, up to its first 2,000 characters, so a page you paste or the model reads by address comes back
 as the part that answers you rather than its first 6,000 characters. The plugin keeps both in memory only, for the last 500

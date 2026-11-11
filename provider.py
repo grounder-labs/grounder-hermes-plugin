@@ -56,7 +56,7 @@ SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.11"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.12"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -64,6 +64,7 @@ MAX_RESULTS = 20  # most results one search asks Grounder for
 MAX_QUERY_CHARS = 2000  # Grounder's limit on a query
 DESCRIPTION_CHARS = 800  # a row's description, and the text Grounder is asked to fit it in (text_max_chars)
 EXTRACT_CHARS = 6000  # the most text of one page web_extract returns, and what Grounder is asked to keep it within
+MAX_EXTRACT_CHARS = 30000  # the most a model's char_limit raises that to (GRO-725)
 MAX_PAGES = 10  # Grounder's limit on the pages one call reads; Hermes asks for at most 5
 REMEMBERED_PAGES = 500  # how many pages the plugin remembers the web_search of, in memory only
 REMEMBERED_TURNS = 200  # how many searches and unfinished turns it remembers for the line under an answer, in memory only
@@ -282,11 +283,32 @@ _TURNS_KEPT = 64
 _SALT = secrets.token_bytes(16)
 
 
+# The characters a model asked ``web_extract`` for (its ``char_limit``), by session, for the read that call makes. Hermes cuts a page at it but does not
+# pass it to the backend, so without this a model that asked for more got 6,000 characters again and fetched the page itself (GRO-725).
+_LIMITS: dict[str, int] = {}
+
+
+def _asked_chars(value: Any) -> int:
+    """A ``char_limit`` as the characters a read may return: from ``EXTRACT_CHARS`` up to ``MAX_EXTRACT_CHARS``, or ``EXTRACT_CHARS`` when it is not a number."""
+    try:
+        return max(EXTRACT_CHARS, min(MAX_EXTRACT_CHARS, int(value)))
+    except (TypeError, ValueError):
+        return EXTRACT_CHARS
+
+
 def note_turn(**ids: Any) -> None:
-    """``pre_tool_call`` hook: remember which conversation and turn this session is in. Changes nothing about the call."""
+    """``pre_tool_call`` hook: remember which conversation and turn this session is in, and a ``web_extract``'s ``char_limit``. Changes nothing about the call."""
     session = str(ids.get("session_id") or "")
     if not session:
         return
+    args = ids.get("args") if isinstance(ids.get("args"), dict) else {}
+    if ids.get("tool_name") == "web_extract" and args.get("char_limit") is not None:
+        _LIMITS.pop(session, None)
+        _LIMITS[session] = _asked_chars(args.get("char_limit"))
+        while len(_LIMITS) > _TURNS_KEPT:
+            _LIMITS.pop(next(iter(_LIMITS)), None)
+    elif ids.get("tool_name") == "web_extract":
+        _LIMITS.pop(session, None)
     _TURNS.pop(session, None)
     _TURNS[session] = (str(ids.get("conversation_id") or session), str(ids.get("turn_id") or ""))
     while len(_TURNS) > _TURNS_KEPT:
@@ -446,14 +468,14 @@ def _unread(body: dict[str, Any]) -> dict[str, str]:
     return {_page_key(str(page.get("url", ""))): str(page.get("reason", "")) for page in pages if isinstance(page, dict)}
 
 
-def _page_row(url: str, row: Optional[dict[str, Any]], reason: str = "") -> dict[str, Any]:
+def _page_row(url: str, row: Optional[dict[str, Any]], reason: str = "", chars: int = EXTRACT_CHARS) -> dict[str, Any]:
     """Hermes's entry for one page, or its error when no result read it, saying why when the API knows."""
     if row is None:
         return _page_error(url, UNREAD.get(reason, NOT_READ))
     text = str(row.get("text") or "").strip()
     # A guard for a response that ignored ``text_max_chars``, as ``_description`` has for a row.
-    if len(text) > EXTRACT_CHARS:
-        text = text[:EXTRACT_CHARS - 1].rstrip() + "…"
+    if len(text) > chars:
+        text = text[:chars - 1].rstrip() + "…"
     return {"url": url, "title": str(row.get("title", "")), "content": text, "raw_content": text}
 
 
@@ -563,15 +585,16 @@ class GrounderWebSearchProvider(WebSearchProvider):
     def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         """Read ``urls`` in one search, so it counts once: an entry per URL in their order, with an ``error`` on each page not read.
 
-        Grounder keeps what in each page answers the question and at most ``EXTRACT_CHARS`` of it, to spare the model the rest. Hermes's
-        ``format`` and other ``kwargs`` change nothing.
+        Grounder keeps what in each page answers the question and at most ``EXTRACT_CHARS`` of it, to spare the model the rest, or as much as the
+        model's ``char_limit`` asked for, up to ``MAX_EXTRACT_CHARS`` (``note_turn``). Hermes's ``format`` and other ``kwargs`` change nothing.
         """
         asked = [str(url) for url in urls]
         pages = list(dict.fromkeys(asked))[:MAX_PAGES]
         if not pages:
             return []
+        chars = _LIMITS.pop(_session(), EXTRACT_CHARS)
         body, error = _send({"query": self._question(pages), "urls": pages, "top_k": len(pages),
-                             "text_max_chars": EXTRACT_CHARS, "features": ["page-text"]})
+                             "text_max_chars": chars, "features": ["page-text"]})
         if body is None:
             return [_page_error(url, error or "Grounder returned no answer") for url in asked]
         found = _pages_found(pages, body.get("results") or [])
@@ -583,7 +606,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
                 self._read[_page_key(page)] = True
             _bounded(self._read, REMEMBERED_PAGES)
         why = _unread(body)
-        return [_page_shown(url, shown[url]) if url in shown else _page_row(url, found.get(url), why.get(_page_key(url), "")) for url in asked]
+        return [_page_shown(url, shown[url]) if url in shown else _page_row(url, found.get(url), why.get(_page_key(url), ""), chars) for url in asked]
 
     def _read_part(self, query: str, pages: list[str]) -> dict[str, Any]:
         """A ``web_search`` whose query holds pages' addresses: read those pages for the query's other words, in ``web_search``'s shape (GRO-691).
