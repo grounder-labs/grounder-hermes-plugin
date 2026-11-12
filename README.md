@@ -25,15 +25,15 @@ Once Grounder is listed in the Hermes plugin catalog, `hermes plugins install gr
 
 With no search key and no sign-in, a search is one of Grounder's free searches. It carries no credential and runs within the free
 limits Grounder sets; this plugin repeats none of them, so a limit Grounder changes needs no change here. A free search cannot
-choose its server or its mode, so it sends neither, and a `grounder_search` that asks for a profile, routing settings or a workspace
+choose a preset, a provider or a mode, so it sends none of them, and a `grounder_search` that asks for a profile, routing settings or a workspace
 runs without them and says so. When the free searches are used up, the search answers with a message that says where to sign up and
 where to add credit, with the links Grounder returned, as its result: Hermes would serve a failed search from its keyless free tier and
 the message would never reach you. Sign up, then connect your account as below.
 
 ## Connect your account
 
-Connect your account to search past the free limits and to choose a server and a mode
-([`/search` and `/search_presets`](#choose-a-server-and-a-mode-search-and-search_presets)). Connect it with a search key or by
+Connect your account to search past the free limits and to choose how Grounder searches
+([`/search` and `/search_presets`](#choose-how-grounder-searches-search-and-search_presets)). Connect it with a search key or by
 signing in; when both are set, the key is used.
 
 ### With a search key
@@ -174,36 +174,49 @@ Hermes's `web_search` takes a query and a limit, so the plugin adds two tools, o
 `grounder_search` takes every option of Grounder's MCP search: `top_k`, `days`, `domains`, `features`, `urls`,
 `include_text`, `requested_provider`, `providers`, `routing_settings`, `workspace`, `profile`, `user_location` and
 `user_time_zone`. It answers in `web_search`'s shape and counts as one search. `grounder_list_providers` lists the features a
-search can use, the providers behind each and the search modes `profile` takes, and is not a search.
+search can use, the providers behind each and the presets `profile` takes, and is not a search.
 
 Signing in grants searching only, so `user_info` and the workspace tools of Grounder's MCP server are not offered here. Manage
 workspaces on your [account](https://grounder.net/account).
 
-## Choose a server and a mode: `/search` and `/search_presets`
+## Choose how Grounder searches: `/search` and `/search_presets`
 
-Two commands choose how Grounder searches. Both offer Grounder's own lists, read when you run them, so a server or a mode Grounder
-adds is on offer at once.
+Two commands choose how Grounder searches. Both offer Grounder's own lists, read when you run them, so a preset, provider, mode or live-data
+API Grounder adds is on offer at once.
 
 | Command | What it does |
 |---|---|
-| `/search` | Asks which server Grounder should always use for searches: one of its search providers or live-data APIs, or "Let Grounder pick". `/search <id>` (or `/search provider:<id>`, `/search api:<id>`) chooses without asking, and `/search auto` goes back to Grounder picking |
-| `/search_presets` | Asks which mode Grounder should search in, such as a quick one or a thorough one. `/search_presets <id>` chooses without asking, and `/search_presets auto` goes back to Grounder picking |
+| `/search` | Asks how Grounder should search: **let Grounder pick for you based on your prompt** (the default), **a preset** (Fast, Cheap, Live, Deep, Code or Balanced), or **a provider to always include**, then which of that provider's modes, or any. It also asks which live-data APIs Grounder may use: all are on unless you turn one off. `/search auto` goes back to Grounder picking |
+| `/search_presets` | The shortcut to the presets. `/search_presets <preset>` chooses without asking, and `/search_presets auto` goes back to Grounder picking the preset |
 
-They save `web.grounder.server` and `web.grounder.preset` in your profile's `config.yaml`. A search made with your search key or
-sign-in sends them: the server as an always-on setting for that provider or API, the mode as the search's `profile`.
-`grounder_search` sends them too, unless the model chose its own `routing_settings` or `profile`. A page read (`web_extract`, or a
-`web_search` of an address) sends neither. Hermes's own Grounder provider reads the same two keys, so a choice made here stands
-in a Hermes release that bundles it.
+Typed arguments skip the questions: `/search exa`, `/search exa:instant` (a provider's mode), `/search fast` (a preset), `/search auto`, `/search apis`
+(the live-data APIs). `/search api:<id>` still always includes one live-data API, as it did before 0.6.0; a choice made in `/search` replaces it.
+
+A preset and a provider you pick clear each other, and a provider is always included in a search: Grounder may add other providers when your
+prompt needs them. (A search cannot yet ask for one provider alone.) The questions are asked in steps on every Hermes released today: first
+Let Grounder pick, a preset or a provider, then which preset or which of the provider's modes; the live-data APIs are a card that switches one
+at a time, with Done on every page where a messaging app limits a card. **On Slack, `/search` is Slack's own search**, so type `/hermes search`;
+`/search_presets` works as it is. (A Hermes that offers `ctx.ask_form` would show the same choices as one form with the presets side by side and
+a drop-down of each provider's modes; no released Hermes offers it yet.)
+
+They save `web.grounder.preset`, `web.grounder.server` and `web.grounder.server_mode`, and the live-data APIs you turned off as `web.grounder.live_data_off`
+(only the ones off, so an API Grounder adds later is on), in your profile's `config.yaml`. A search made with your search key or sign-in sends them: the
+preset as the search's `profile`, the provider and its mode as an always-on setting, and each API you turned off as an off setting. `grounder_search` sends
+them too: its `profile` stands over your preset for that search, and what you chose for a provider or API wins over what the model passes for the same one,
+so the model cannot switch back on an API you turned off. If Grounder stops offering something you chose (a preset, provider, mode or API it has
+removed), the search that finds out drops that choice, says so in its result, and is sent again without it. A page read (`web_extract`, or a
+`web_search` of an address) sends none of this. Hermes's own Grounder provider reads the same keys, so a choice made here stands in a Hermes release
+that bundles it.
 
 With no search key and no sign-in, a command answers with how to sign in instead of a list, because Grounder refuses a free
-search both. A Hermes that bundles Grounder's provider has both commands already, and this plugin adds none there. A Hermes that
+search all of them. A Hermes that bundles Grounder's provider has both commands already, and this plugin adds none there. A Hermes that
 cannot register a command or ask a choice gets none, and search works the same.
 
 ## What is sent
 
 Each `web_search` query, up to its first 2,000 characters, goes to `https://api.grounder.net/v1/search` with the number
 of results wanted, the 800 characters of text it wants for each result, your search key or, when you signed in, the
-access token Hermes attaches (a free search sends neither), the server and mode you chose with `/search` and `/search_presets` when
+access token Hermes attaches (a free search sends neither), the preset, provider, mode and live-data APIs you chose with `/search` and `/search_presets` when
 you are signed in or use a key, a user agent naming this plugin and its version, two random tokens, one for the session and one for the prompt, so one prompt's searches can be told from the next, and the name of the model whose answer asked for the search, as Hermes reports it. The tokens carry no Hermes id or message. Nothing else from Hermes goes with a search: not the conversation, the
 model's other output or what other tools returned. An address in a query or in `urls` that carries what looks like a key or token
 (Hermes's own check for `web_extract`, on the address and its decoded form, and your own search key), or that is not a public web
@@ -219,8 +232,8 @@ pages found and the last 64 sessions. With neither, the addresses are sent as th
 search's query is. Your other messages, and the rest of the conversation, are never sent.
 
 A `grounder_search` sends what a `web_search` sends plus the options the model chose, including a location or time zone only
-when the user stated one. `grounder_list_providers` reads Grounder's public feature list and list of search modes and sends no
-credential. `/search` and `/search_presets` read Grounder's public lists of servers and modes, which is not a search; with a
+when the user stated one. `grounder_list_providers` reads Grounder's public feature list and list of presets and sends no
+credential. `/search` and `/search_presets` read Grounder's public lists of providers, presets and live-data APIs, which is not a search; with a
 sign-in, Hermes attaches its token to that read, which is how a command knows you are signed in.
 
 Searches are recorded under your Grounder account, and a free search with no account as Grounder's

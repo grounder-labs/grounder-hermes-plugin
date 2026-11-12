@@ -136,6 +136,7 @@ class Stub:
         self.search_status = 200
         self.search_headers = {}  # extra headers on the /v1/search answer, e.g. a redirect's Location
         self.search_body = {"query": "q", "results": []}  # bytes are sent as they are, not as JSON
+        self.search_script = []  # (status, body) answers to the next searches, in order, before search_status and search_body apply
         self.features_body = {"features": []}
         self.providers_body = {"providers": [], "live_data_apis": []}
         self.list_status = 200  # what /v1/providers and /v1/search-profiles answer
@@ -147,6 +148,8 @@ class Stub:
         if path == "/v1/search":
             if headers.get("Authorization", "").removeprefix("Bearer ") in self.rejected:
                 return 401, {"error": {"code": "unauthorized", "message": "expired"}}
+            if self.search_script:
+                return self.search_script.pop(0)
             return self.search_status, self.search_body
         if path == "/v1/features":
             return 200, self.features_body

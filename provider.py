@@ -68,10 +68,10 @@ ORIGIN = "https://api.grounder.net"
 SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
 PROVIDERS_URL = f"{ORIGIN}/v1/providers"  # public: the search providers and the live-data APIs, which /search offers
-PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the search modes, which /search_presets offers
+PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /search_presets offers
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.16"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.6.0"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -141,9 +141,11 @@ SEARCH_SCHEMA = {
         "requested_provider": {"type": "string", "description": f"Provider the user explicitly asked for, by id ({LIST_PROVIDERS_TOOL} lists them)."},
         "providers": {"type": "array", "items": {"type": "string"}, "description": "Explicit provider override: ids as for requested_provider."},
         "routing_settings": {"type": "object", "description": "This search's routing settings over the account's saved ones; not saved. Pass only what differs, "
-                                                              'when the user or the task calls for it, e.g. {"providers": {"exa": {"use": "always"}}}. Needs the user to be signed in to Grounder.'},
+                                                              'when the user or the task calls for it, e.g. {"providers": {"exa": {"use": "always"}}}. What the user chose with /search '
+                                                              "(a live-data API turned off, a provider or mode they pinned) wins over what you pass for the same provider or API, so you cannot switch one back on. "
+                                                              "Needs the user to be signed in to Grounder."},
         "workspace": {"type": "string", "description": "Slug of the workspace to search under; the default one when left out. An unknown slug is refused, never replaced by the default. Needs the user to be signed in to Grounder."},
-        "profile": {"type": "string", "description": f"A search mode by id, which changes how this search runs ({LIST_PROVIDERS_TOOL} lists them under search_modes); `auto` is none. "
+        "profile": {"type": "string", "description": f"A search preset by id, which changes how this search runs ({LIST_PROVIDERS_TOOL} lists them under search_modes); `auto` is none. "
                                                       "Left out, the user's own choice stands. Needs the user to be signed in to Grounder."},
         "user_location": {"type": "string", "description": 'Where the user is, only if the user said so in this chat, e.g. "Austin, Texas". Never guess it.'},
         "user_time_zone": {"type": "string", "description": "The user's time zone, only if the user said so in this chat, as an IANA name, e.g. \"America/Chicago\". Never guess it."},
@@ -152,7 +154,7 @@ SEARCH_SCHEMA = {
 LIST_PROVIDERS_SCHEMA = {
     "name": LIST_PROVIDERS_TOOL,
     "description": "List the features a Grounder search can use: what each returns, the inputs it honors, and the providers (with modes) and live-data APIs that deliver it, "
-                   "and the search modes a search can run in.",
+                   "and the presets a search can run in.",
     "parameters": {"type": "object", "properties": {}},
 }
 # Where a provider's or live source's id is not its name capitalized; the rest of Grounder's lists are.
@@ -165,8 +167,10 @@ TIMEOUT_S = 45  # one search, across every provider it reaches
 LIST_TIMEOUT_S = 8  # one of Grounder's public lists
 KEYS_URL = "https://grounder.net/account/keys"
 SETTINGS_KEY = "grounder"  # the section of config.yaml's web: that /search and /search_presets write
+LIVE_OFF_KEY = "live_data_off"  # in that section: the live-data APIs the user turned off (a list of ids), so a new one is on
 _ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _SERVER = re.compile(r"^(provider|api):([a-z0-9][a-z0-9._-]*)$")
+MAX_FORGET = 4  # the choices one search may drop: a 400 costs nothing, but the user's whole saved list is not a loop to walk
 
 
 def _bounded(store: dict, limit: int) -> None:
@@ -387,32 +391,107 @@ def fetch_list(url: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     return (body, None) if isinstance(body, dict) else (None, "Grounder's answer was not what was expected")
 
 
-def chosen() -> dict[str, Any]:
-    """The mode and the server the user chose with ``/search_presets`` and ``/search``, as the fields a search carries; ``{}`` when they chose none.
-
-    Read from ``web.grounder.preset`` and ``web.grounder.server`` when a search is made, the keys Hermes's own Grounder provider reads, so a user who moves to it
-    keeps both. A value of another shape reads as unset, and a config that cannot be read changes nothing about the search.
-    """
+def settings() -> dict[str, Any]:
+    """What ``/search`` and ``/search_presets`` saved in ``web.grounder``, read when asked: ``preset`` (a preset id), ``server`` (``provider:<id>``, or the
+    older ``api:<id>``) and ``server_mode`` (one of that provider's modes), each ``""`` when unset, and ``off``, the live-data API ids the user turned off,
+    in the order saved. A value of another shape reads as unset, and a config that cannot be read reads as nothing saved."""
     try:
         from hermes_cli.config import load_config
         web = load_config().get("web")
     except Exception as error:  # a config that cannot be read must not fail a search
         logger.warning("Could not read the Grounder settings: %s", error)
-        return {}
+        return {"preset": "", "server": "", "server_mode": "", "off": []}
     section = web.get(SETTINGS_KEY) if isinstance(web, dict) else None
     section = section if isinstance(section, dict) else {}
-    preset, server = (value.strip() if isinstance(value := section.get(name), str) else "" for name in ("preset", "server"))
+    preset, server, server_mode = (value.strip() if isinstance(value := section.get(name), str) else "" for name in ("preset", "server", "server_mode"))
+    off = section.get(LIVE_OFF_KEY)
+    return {"preset": preset, "server": server, "server_mode": server_mode,
+            "off": list(dict.fromkeys(i.strip() for i in off if isinstance(i, str) and _ID.match(i.strip()))) if isinstance(off, list) else []}
+
+
+def chosen() -> dict[str, Any]:
+    """What the user chose with ``/search_presets`` and ``/search``, as the fields a search carries; ``{}`` when they chose nothing.
+
+    The preset is the search's ``profile``. A pinned server is an always-on setting for that provider (or, the older way, live-data API), and with the mode the user
+    pinned that provider's mode is always on too: Grounder always includes it, and may add other providers when the prompt needs them. Each live-data API the user turned
+    off is an off setting: it is the user's list of what is OFF, so a live-data API Grounder adds later is on until they turn it off. A pinned live-data API stays on
+    whatever that list says. The keys are Hermes's own Grounder provider's, so a user who moves to it keeps its choices.
+    """
+    saved = settings()
     extra: dict[str, Any] = {}
-    if _ID.match(preset):
-        extra["profile"] = preset
-    if match := _SERVER.match(server):
+    if _ID.match(saved["preset"]):
+        extra["profile"] = saved["preset"]
+    routing: dict[str, Any] = {}
+    if match := _SERVER.match(saved["server"]):
         kind, ident = match.groups()
-        extra["routing_settings"] = {("providers" if kind == "provider" else "specialized"): {ident: {"use": "always"}}}
+        pinned: dict[str, Any] = {"use": "always"}
+        if kind == "provider" and _ID.match(saved["server_mode"]):
+            pinned["modes"] = {saved["server_mode"]: "always"}
+        routing["providers" if kind == "provider" else "specialized"] = {ident: pinned}
+    for ident in saved["off"]:
+        routing.setdefault("specialized", {}).setdefault(ident, {"use": "off"})
+    if routing:
+        extra["routing_settings"] = routing
     return extra
+
+
+def save_settings(**changes: Any) -> None:
+    """Set or, with ``None`` or an empty list, remove keys of ``web.grounder`` in the active profile's config, in one write."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    web = config.get("web") if isinstance(config.get("web"), dict) else config.setdefault("web", {})
+    section = web.get(SETTINGS_KEY) if isinstance(web.get(SETTINGS_KEY), dict) else web.setdefault(SETTINGS_KEY, {})
+    for key, value in changes.items():
+        if value is None or value == []:
+            section.pop(key, None)
+        else:
+            section[key] = value
+    save_config(config)
+
+
+# What Grounder's 400 says of a choice it no longer offers (workers/router/src: routing-settings.ts `applySettings`, search-profiles.ts `resolveProfile`).
+_REFUSED = [(re.compile(r"No such search profile: (\S+?)\.?(?:\s|$)"), "preset"),
+            (re.compile(r"No such provider: (\S+)"), "provider"),
+            (re.compile(r"No such specialized API: (\S+)"), "api"),
+            (re.compile(r"providers\.(\S+?)\.modes: no mode (\S+?);"), "mode")]
+MAX_FORGET = 4  # the choices one search may forget: a 400 costs nothing, but the user's whole saved list is not a loop to walk
+
+
+def _stale_choice(error: str, saved: dict[str, Any], sent: Optional[dict[str, Any]]) -> Optional[tuple[dict[str, Any], str]]:
+    """``(what to save, what to tell the user)`` when Grounder's 400 names a saved choice it no longer offers, else None. Only a choice the user saved:
+    what the model passed in this search (its own ``profile``, or a provider or live-data API in its ``routing_settings``) is the model's to fix."""
+    if not error.startswith("Grounder returned HTTP 400"):
+        return None
+    sent = sent or {}
+    routing = sent.get("routing_settings") if isinstance(sent.get("routing_settings"), dict) else {}
+
+    def models(section: str, ident: str) -> bool:
+        return isinstance(routing.get(section), dict) and ident in routing[section]
+
+    for pattern, kind in _REFUSED:
+        found = pattern.search(error)
+        if not found:
+            continue
+        named = [name.rstrip(".") for name in found.groups()]
+        ident = named[-1]
+        server_kind, _, server = saved["server"].partition(":")
+        if kind == "preset" and saved["preset"] == ident and not sent.get("profile"):
+            return {"preset": None}, f"the preset `{ident}`"
+        if kind == "provider" and server_kind == "provider" and server == ident and not models("providers", ident):
+            return {"server": None, "server_mode": None}, f"the provider `{ident}` you always included"
+        if kind == "mode" and server_kind == "provider" and server == named[0] and saved["server_mode"] == ident and not models("providers", named[0]):
+            return {"server_mode": None}, f"the `{ident}` mode of {named[0]} you always included"
+        if kind == "api" and server_kind == "api" and server == ident and not models("specialized", ident):
+            return {"server": None}, f"the live-data API `{ident}` you always included"
+        if kind == "api" and ident in saved["off"] and not models("specialized", ident):
+            return {LIVE_OFF_KEY: [i for i in saved["off"] if i != ident]}, f"the live-data API `{ident}` you turned off"
+    return None
 
 
 ACT_CODES = ("daily_limit_reached", "capacity_reached", "cap_reached")  # a search refused for the user's own allowance, which only the user can change
 GROUNDER_SITE = "https://grounder.net/account"
+NOTE_KEY = "notice"  # on a search that ran: what Grounder wants the user told about it (a choice of theirs it no longer offers, dropped for this search)
 NOTICE_KEY = "grounder_notice"  # on a result that is Grounder's message to the user in place of rows: "act" (what the user must do first) or "refused"
 
 
@@ -619,20 +698,31 @@ def _context() -> dict[str, Any]:
 FREE_REFUSES = ("profile", "routing_settings", "workspace")  # what Grounder refuses a caller with no account (400): they change a search on an account's own settings
 
 
-def _send(payload: dict[str, Any], extra: Optional[dict[str, Any]] = None, dropped: Optional[list[str]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+def _merged(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    """``over`` laid on ``base``, setting by setting: where both say something for the same setting, ``over`` wins, and what only one says stays."""
+    return {key: _merged(base[key], value) if isinstance(base.get(key), dict) and isinstance(value, dict) else value for key, value in {**base, **over}.items()}
+
+
+def _send(payload: dict[str, Any], extra: Optional[dict[str, Any]] = None, dropped: Optional[list[str]] = None,
+          via_out: Optional[list[str]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """One POST to Grounder: ``(body, None)``, or ``(None, error)`` when it failed. Never raises, and never retries: a second POST is a second search.
 
-    ``extra`` is what only a signed-in search carries, the user's chosen mode and server (``chosen``): it goes with a search key or a sign-in, under anything the
-    request itself already says, and never with a free search, which Grounder refuses a caller with no account. A user with neither a key nor a grant searches free,
+    ``extra`` is what only a signed-in search carries, the user's chosen preset, provider, mode and live-data APIs turned off (``chosen``): it goes with a search key or a
+    sign-in, under anything the request itself already says, except that ``routing_settings`` are merged setting by setting with the user's winning where both name the same
+    provider or live-data API (an API the user turned off stays off whatever the model passes), and never with a free search, which Grounder refuses a caller with no account. A user with neither a key nor a grant searches free,
     and a free search sends none of ``FREE_REFUSES`` either, which the model may have chosen: the names it asked for are added to ``dropped``, so the result can say so.
-    An error the user must act on comes back as an ``_Act``.
+    An error the user must act on comes back as an ``_Act``. ``via_out`` gets how it was sent (``key``, ``sign-in`` or ``free``), so a caller knows whether ``extra`` went.
     """
     key = _key()
     context = _context()
     if context:
         payload = {**payload, "context": {**payload.get("context", {}), **context}}
     signed = {**{name: value for name, value in (extra or {}).items() if name not in payload}, **payload}
+    if isinstance((extra or {}).get("routing_settings"), dict) and isinstance(payload.get("routing_settings"), dict):
+        signed["routing_settings"] = _merged(payload["routing_settings"], extra["routing_settings"])  # the user's choice wins where both name the same provider or API
     via = "key" if key else "sign-in"
+    if via_out is not None:
+        via_out.append(via)
     try:
         if key:
             status, raw = _post(signed, key)
@@ -641,6 +731,8 @@ def _send(payload: dict[str, Any], extra: Optional[dict[str, Any]] = None, dropp
                 status, raw = _post_signed_in(signed)
             except ProviderNotSignedIn:
                 via = "free"
+                if via_out is not None:
+                    via_out.append(via)
                 if dropped is not None:
                     dropped.extend(name for name in FREE_REFUSES if name in payload)
                 status, raw = _post({name: value for name, value in payload.items() if name not in FREE_REFUSES})
@@ -666,6 +758,34 @@ def _send(payload: dict[str, Any], extra: Optional[dict[str, Any]] = None, dropp
         link = str(_error_parts(body)[2].get("signup_url") or "") if via == "free" else ""
         return None, _act(message, link if link.startswith("https://") else "")
     return body, None
+
+
+def _send_chosen(payload: dict[str, Any], dropped: Optional[list[str]] = None) -> tuple[Optional[dict[str, Any]], Optional[str], list[str]]:
+    """``_send`` with the user's choices (``chosen``). When Grounder refuses a choice it no longer offers (a 400: a removed preset, provider, mode or live-data API, refused
+    before anything is read, called or spent: workers/router/src/lib/search.ts, ``resolveProfile`` and ``applyCallSettings`` checked over the defaults), drop that choice, so
+    the user is not left with every search failing until they run ``/search`` again, and send once more without it. ``(body, error, what was dropped)``, one entry for each."""
+    gone: list[str] = []
+    for _ in range(MAX_FORGET + 1):
+        how: list[str] = []
+        body, error = _send(payload, chosen(), dropped, how)
+        # A free search sent none of the user's choices, so a 400 cannot be about one of them.
+        found = _stale_choice(str(error or ""), settings(), payload) if body is None and not isinstance(error, _Act) and how[-1:] != ["free"] else None
+        if found is None or len(gone) >= MAX_FORGET:
+            return body, error, gone
+        changes, what = found
+        try:
+            save_settings(**changes)
+        except Exception as problem:  # a config that cannot be written leaves the choice, and the 400 is said as it is
+            logger.warning("Could not drop a choice Grounder no longer offers: %s", problem)
+            return body, error, gone
+        gone.append(what)
+    return body, error, gone
+
+
+def _dropped_notice(gone: list[str]) -> str:
+    """What to tell the user, in the result, about the choices dropped for this search."""
+    return ("Grounder no longer offers " + " or ".join(gone) + ", so Hermes dropped it from the user's /search choices and searched without it. "
+            "Tell the user this, and that /search chooses again.") if gone else ""
 
 
 def _trim_address(address: str) -> str:
@@ -867,7 +987,7 @@ def _feature(feature: dict[str, Any]) -> dict[str, Any]:
 
 
 def search_modes() -> list[dict[str, str]]:
-    """The search modes Grounder lists now, as ``[{"id", "name", "description"}]``; empty when the list cannot be read, which leaves the rest of an answer as it was."""
+    """The presets Grounder lists now, as ``[{"id", "name", "description"}]``; empty when the list cannot be read, which leaves the rest of an answer as it was."""
     try:
         status, raw = _get(PROFILES_URL)
         rows = json.loads(raw).get("profiles") if status == 200 else None
@@ -936,14 +1056,14 @@ class GrounderWebSearchProvider(WebSearchProvider):
         payload = {"query": query[:MAX_QUERY_CHARS],
                    "top_k": max(1, min(int(limit), MAX_RESULTS)),
                    "text_max_chars": DESCRIPTION_CHARS}
-        body, error = _send(payload, chosen())
+        body, error, gone = _send_chosen(payload)
         if body is None:
             return _notice(error) if isinstance(error, _Act) else _fail(error or "Grounder returned no answer")
         rows = [_row(r, i + 1) for i, r in enumerate(_results(body)[:max(1, int(limit))])]
         self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows)))
         # The count only: a query is the user's words, and a log line outlives the search.
         logger.info("Grounder search: %d results", len(rows))
-        return {"success": True, "data": {"web": rows}}
+        return {"success": True, "data": {"web": rows, **({NOTE_KEY: _dropped_notice(gone)} if gone else {})}}
 
     def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         """Read ``urls`` in one search, so it counts once: an entry per URL in their order, with an ``error`` on each page not read.
@@ -1095,7 +1215,11 @@ class GrounderWebSearchProvider(WebSearchProvider):
         chars = EXTRACT_CHARS if args.get("urls") else DESCRIPTION_CHARS
         # A page read is not shaped by a server the user chose for searches, so it carries only what the model asked.
         dropped: list[str] = []
-        body, error = _send(_options(args, query, chars), None if args.get("urls") else chosen(), dropped)
+        if args.get("urls"):
+            body, error = _send(_options(args, query, chars), None, dropped)
+            gone: list[str] = []
+        else:
+            body, error, gone = _send_chosen(_options(args, query, chars), dropped)
         if body is None:
             return json.dumps(_fail(error or "Grounder returned no answer"))
         rows = [_row(r, i + 1, chars) for i, r in enumerate(_results(body))]
@@ -1104,7 +1228,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         features = {"features": body["features"]} if body.get("features") else {}
         note = {"note": f"No Grounder account is connected, so {', '.join(dropped)} {'was' if len(dropped) == 1 else 'were'} not sent and this ran as a free search. "
                         f"Sign in with `{SIGN_IN}`, or set a search key in `{KEY_ENV}`, to use {'it' if len(dropped) == 1 else 'them'}."} if dropped else {}
-        return json.dumps({"success": True, "data": {"web": rows}, **features, **note}, indent=2, ensure_ascii=False)
+        return json.dumps({"success": True, "data": {"web": rows, **({NOTE_KEY: _dropped_notice(gone)} if gone else {})}, **features, **note}, indent=2, ensure_ascii=False)
 
     def list_providers_tool(self, args: dict[str, Any], **_: Any) -> str:
         """The ``grounder_list_providers`` tool: what Grounder's MCP ``list_providers`` says, from the public feature list. Sends no credential and is not a search."""
