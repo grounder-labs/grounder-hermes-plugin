@@ -186,14 +186,15 @@ API Grounder adds is on offer at once.
 
 | Command | What it does |
 |---|---|
-| `/search` | Asks how Grounder should search: **let Grounder pick for you based on your prompt** (the default), **a preset** (Fast, Cheap, Live, Deep, Code or Balanced), or **a provider to always include**, then which of that provider's modes, or any. It also asks which live-data APIs Grounder may use: all are on unless you turn one off. `/search auto` goes back to Grounder picking |
+| `/search` | Asks how Grounder should search: **let Grounder pick for you based on your prompt** (the default), **a preset** (Fast, Cheap, Live, Deep, Code or Balanced), or **one provider to search with, and only it**, then which of that provider's modes, or any; if it finds nothing, Grounder picks for you. It also asks which live-data APIs Grounder may use: all are on unless you turn one off. `/search auto` goes back to Grounder picking |
 | `/search_presets` | The shortcut to the presets. `/search_presets <preset>` chooses without asking, and `/search_presets auto` goes back to Grounder picking the preset |
 
 Typed arguments skip the questions: `/search exa`, `/search exa:instant` (a provider's mode), `/search fast` (a preset), `/search auto`, `/search apis`
 (the live-data APIs). `/search api:<id>` still always includes one live-data API, as it did before 0.6.0; a choice made in `/search` replaces it.
 
-A preset and a provider you pick clear each other, and a provider is always included in a search: Grounder may add other providers when your
-prompt needs them. (A search cannot yet ask for one provider alone.) The questions are asked in steps on every Hermes released today: first
+A preset and a provider you pick clear each other. A provider you pick is the only one a search calls (Grounder 0.8.16's `exclusive`, sent with `fallback` on): if it
+finds nothing, Grounder picks for you, as it does when you pick nothing. Against a Grounder from before 0.8.16, which has no such setting, the provider is sent once as
+always included and the result says so: Grounder may then add other providers when your prompt needs them. The questions are asked in steps on every Hermes released today: first
 Let Grounder pick, a preset or a provider, then which preset or which of the provider's modes; the live-data APIs are a card that switches one
 at a time, with Done on every page where a messaging app limits a card. **On Slack, `/search` is Slack's own search**, so type `/hermes search`;
 `/search_presets` works as it is. (A Hermes that offers `ctx.ask_form` would show the same choices as one form with the presets side by side and
@@ -201,7 +202,7 @@ a drop-down of each provider's modes; no released Hermes offers it yet.)
 
 They save `web.grounder.preset`, `web.grounder.server` and `web.grounder.server_mode`, and the live-data APIs you turned off as `web.grounder.live_data_off`
 (only the ones off, so an API Grounder adds later is on), in your profile's `config.yaml`. A search made with your search key or sign-in sends them: the
-preset as the search's `profile`, the provider and its mode as an always-on setting, and each API you turned off as an off setting. `grounder_search` sends
+preset as the search's `profile`, the provider and its mode as an always-on, exclusive setting (`exclusive` and `fallback` on), and each API you turned off as an off setting. `grounder_search` sends
 them too: its `profile` stands over your preset for that search, and what you chose for a provider or API wins over what the model passes for the same one,
 so the model cannot switch back on an API you turned off. If Grounder stops offering something you chose (a preset, provider, mode or API it has
 removed), the search that finds out drops that choice, says so in its result, and is sent again without it. A page read (`web_extract`, or a

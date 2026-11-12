@@ -4,7 +4,7 @@
 """``/search`` and ``/search_presets``: choose how Grounder searches.
 
 ``/search`` chooses one thing: let Grounder pick for you based on your prompt (the default), one of its presets (Fast, Cheap, Live, Deep, Code,
-Balanced), or one provider to always include, optionally with one of that provider's modes. It also chooses which live-data APIs may answer, every
+Balanced), or one provider to search with alone, optionally with one of that provider's modes; if it finds nothing, Grounder picks for the user. It also chooses which live-data APIs may answer, every
 one on unless the user turns it off. Every Hermes today asks in steps with ``ctx.ask_choice``: Let Grounder pick, a preset or a provider, then which
 preset, or which of the provider's modes, and the live-data APIs as a card that switches one at a time. A Hermes that offers ``ctx.ask_form`` (none
 ships it yet: it is a proposed addition to Hermes's plugin surface) shows the same choices as one form of two pages: the presets side by side, a provider's modes
@@ -13,8 +13,8 @@ in a drop-down, a preset lighting the providers and modes it includes where Grou
 ``/search apis``) skip the questions. On Slack ``/search`` is Slack's own command, so ``/hermes search`` runs this one.
 
 A preset and a pinned provider clear each other. They go to ``web.grounder.preset`` and ``web.grounder.server`` (with the provider's mode in
-``web.grounder.server_mode``), the keys Hermes's own Grounder provider reads. A pinned provider is always included in a search's calls; Grounder may add
-others when the prompt needs them (an exclusive pin is not something a search can ask for yet). The APIs turned OFF go to ``web.grounder.live_data_off``,
+``web.grounder.server_mode``), the keys Hermes's own Grounder provider reads. A pinned provider is the only one a search calls (``exclusive``, Grounder 0.8.16, with
+``fallback`` on: when it finds nothing Grounder picks); against a Grounder from before that it is sent once as always included (``provider._send_chosen``). The APIs turned OFF go to ``web.grounder.live_data_off``,
 so one Grounder adds later is on by default. A signed-in search sends them (``provider.chosen``), and what the user chose wins over what the model passes
 for the same provider or API; a free search sends none, since Grounder refuses a caller with no account all of them. A choice Grounder stops offering is
 dropped when its 400 names it (``provider._send_chosen``). An ``api:<id>`` server saved by an earlier version keeps working until the next choice made
@@ -42,7 +42,7 @@ PICK_ALONE_HINT = "↑/↓ move · ←/→ presets and modes · type to filter �
 APIS_ALONE_HINT = "↑/↓ move · Space checks or unchecks · type to filter · Enter confirms"
 PRESETS_HEADER, PROVIDERS_HEADER = "Presets", "Providers"
 PICK_QUESTION = "How should Grounder search?"
-PIN_NOTE = "Always included in a search; Grounder may add other providers when your prompt needs them."
+PIN_NOTE = "Only this provider; if it finds nothing, Grounder picks for you."
 # The most choices one ask_choice card shows where a messaging platform caps them and drops the rest without a word: Discord's
 # buttons stop at 24 (one slot is "Other"); WhatsApp Cloud's list takes 10. Where it does, a longer list is asked in pages.
 # Telegram, Slack and the local surfaces show every choice.
@@ -271,7 +271,10 @@ def _pick_words(value: str, catalog: Catalog, saved: dict[str, Any]) -> str:
         return f"Grounder will search with the {catalog.name(value)} preset." + note
     if kind == "mode":
         found = catalog.mode_of(value.partition(":")[2])
-        return (f"Grounder will always include {found[0]['name']}'s {found[1]['mode']} mode in searches." if found else f"Grounder will always include {catalog.name(value)} in searches.") + note
+        return (f"Grounder will search with only {found[0]['name']}'s {found[1]['mode']} mode; if it finds nothing, Grounder picks for you." if found
+                else f"Grounder will search with only {catalog.name(value)}; if it finds nothing, Grounder picks for you.") + note
+    if kind == "provider":
+        return f"Grounder will search with only {catalog.name(value)}; if it finds nothing, Grounder picks for you." + note
     return f"Grounder will always include {catalog.name(value)} in searches." + note
 
 
@@ -324,7 +327,7 @@ def _step_pick(ctx, catalog: Catalog) -> Optional[str]:
     """Page one where there is no form, in steps: Let Grounder pick, a preset or a provider; then which preset, or which of the provider's modes."""
     top = [{"value": AUTO, "label": AUTO_LABEL},
            {"value": "presets", "label": "A preset…", "description": ", ".join(p["name"] for p in catalog.presets)},
-           {"value": "providers", "label": "A provider…", "description": "always include one, and optionally one of its modes"},
+           {"value": "providers", "label": "A provider…", "description": "search with only one, and optionally one of its modes; if it finds nothing, Grounder picks for you"},
            {"value": APIS, "label": "Live-data APIs…", "description": "choose which ones Grounder may use"}]
     group = ctx.ask_choice(PICK_QUESTION, top)
     if group in (None, AUTO, APIS):
@@ -332,7 +335,7 @@ def _step_pick(ctx, catalog: Catalog) -> Optional[str]:
     if group == "presets":
         return _ask(ctx, "Which preset should Grounder search with?",
                     [{"value": f"preset:{p['id']}", "label": p["name"], "description": _preset_text(p, catalog)} for p in catalog.presets])
-    picked = _ask(ctx, "Which provider should Grounder always include in searches?",
+    picked = _ask(ctx, "Which provider should Grounder search with, and only it?",
                   [{"value": f"provider:{p['id']}", "label": p["name"], "description": f"{len(p['modes'])} mode{'s' if len(p['modes']) != 1 else ''}" if p["modes"] else ""} for p in catalog.providers])
     owner = catalog.provider(picked.partition(":")[2]) if picked else None
     if not owner or not owner["modes"]:
@@ -389,7 +392,7 @@ def search_command(ctx, raw_args: str) -> str:
     if catalog is None:
         return problem
     saved = api.settings()
-    usage = "Use `/search <id>` to use a preset or always include a provider (`/search <provider>:<mode>` for one of its modes), `/search auto` to let Grounder pick, or `/search apis` to choose the live-data APIs."
+    usage = "Use `/search <id>` to use a preset or search with only one provider (`/search <provider>:<mode>` for one of its modes), `/search auto` to let Grounder pick, or `/search apis` to choose the live-data APIs."
     arg = (raw_args or "").strip().lower()
     if not arg:
         if _has_form(ctx):

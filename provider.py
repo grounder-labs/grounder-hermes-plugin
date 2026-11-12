@@ -71,7 +71,7 @@ PROVIDERS_URL = f"{ORIGIN}/v1/providers"  # public: the search providers and the
 PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /search_presets offers
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.6.1"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.6.2"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -142,7 +142,7 @@ SEARCH_SCHEMA = {
         "providers": {"type": "array", "items": {"type": "string"}, "description": "Explicit provider override: ids as for requested_provider."},
         "routing_settings": {"type": "object", "description": "This search's routing settings over the account's saved ones; not saved. Pass only what differs, "
                                                               'when the user or the task calls for it, e.g. {"providers": {"exa": {"use": "always"}}}. What the user chose with /search '
-                                                              "(a live-data API turned off, a provider or mode they pinned) wins over what you pass for the same provider or API, so you cannot switch one back on. "
+                                                              "(a live-data API turned off, a provider or mode they chose to search with alone) wins over what you pass for the same provider or API, so you cannot switch one back on. "
                                                               "Needs the user to be signed in to Grounder."},
         "workspace": {"type": "string", "description": "Slug of the workspace to search under; the default one when left out. An unknown slug is refused, never replaced by the default. Needs the user to be signed in to Grounder."},
         "profile": {"type": "string", "description": f"A search preset by id, which changes how this search runs ({LIST_PROVIDERS_TOOL} lists them under search_modes); `auto` is none. "
@@ -409,13 +409,15 @@ def settings() -> dict[str, Any]:
             "off": list(dict.fromkeys(i.strip() for i in off if isinstance(i, str) and _ID.match(i.strip()))) if isinstance(off, list) else []}
 
 
-def chosen() -> dict[str, Any]:
+def chosen(exclusive: bool = True) -> dict[str, Any]:
     """What the user chose with ``/search_presets`` and ``/search``, as the fields a search carries; ``{}`` when they chose nothing.
 
-    The preset is the search's ``profile``. A pinned server is an always-on setting for that provider (or, the older way, live-data API), and with the mode the user
-    pinned that provider's mode is always on too: Grounder always includes it, and may add other providers when the prompt needs them. Each live-data API the user turned
-    off is an off setting: it is the user's list of what is OFF, so a live-data API Grounder adds later is on until they turn it off. A pinned live-data API stays on
-    whatever that list says. The keys are Hermes's own Grounder provider's, so a user who moves to it keeps its choices.
+    The preset is the search's ``profile``. A pinned provider is an always-on setting for it, with the mode the user pinned always on too, and the search is exclusive
+    (``exclusive: true``, Grounder 0.8.16): only that provider is called, and ``fallback: true`` says that when it finds nothing Grounder picks for the user, whatever
+    the account's own ``fallback`` is. ``exclusive=False`` sends the older form, always included: Grounder may add other providers when the prompt needs them, for a
+    Grounder that predates ``exclusive`` (``_send_chosen``). A pinned live-data API (the older way a server was saved) stays an always-on setting alone, as before. Each live-data
+    API the user turned off is an off setting: it is the user's list of what is OFF, so a live-data API Grounder adds later is on until they turn it off. A pinned live-data
+    API stays on whatever that list says. The keys are Hermes's own Grounder provider's, so a user who moves to it keeps its choices.
     """
     saved = settings()
     extra: dict[str, Any] = {}
@@ -428,6 +430,8 @@ def chosen() -> dict[str, Any]:
         if kind == "provider" and _ID.match(saved["server_mode"]):
             pinned["modes"] = {saved["server_mode"]: "always"}
         routing["providers" if kind == "provider" else "specialized"] = {ident: pinned}
+        if kind == "provider" and exclusive:
+            routing.update({"exclusive": True, "fallback": True})
     for ident in saved["off"]:
         routing.setdefault("specialized", {}).setdefault(ident, {"use": "off"})
     if routing:
@@ -479,9 +483,9 @@ def _stale_choice(error: str, saved: dict[str, Any], sent: Optional[dict[str, An
         if kind == "preset" and saved["preset"] == ident and not sent.get("profile"):
             return {"preset": None}, f"the preset `{ident}`"
         if kind == "provider" and server_kind == "provider" and server == ident and not models("providers", ident):
-            return {"server": None, "server_mode": None}, f"the provider `{ident}` you always included"
+            return {"server": None, "server_mode": None}, f"the provider `{ident}` you chose to search with"
         if kind == "mode" and server_kind == "provider" and server == named[0] and saved["server_mode"] == ident and not models("providers", named[0]):
-            return {"server_mode": None}, f"the `{ident}` mode of {named[0]} you always included"
+            return {"server_mode": None}, f"the `{ident}` mode of {named[0]} you chose to search with"
         if kind == "api" and server_kind == "api" and server == ident and not models("specialized", ident):
             return {"server": None}, f"the live-data API `{ident}` you always included"
         if kind == "api" and ident in saved["off"] and not models("specialized", ident):
@@ -763,29 +767,53 @@ def _send(payload: dict[str, Any], extra: Optional[dict[str, Any]] = None, dropp
 def _send_chosen(payload: dict[str, Any], dropped: Optional[list[str]] = None) -> tuple[Optional[dict[str, Any]], Optional[str], list[str]]:
     """``_send`` with the user's choices (``chosen``). When Grounder refuses a choice it no longer offers (a 400: a removed preset, provider, mode or live-data API, refused
     before anything is read, called or spent: workers/router/src/lib/search.ts, ``resolveProfile`` and ``applyCallSettings`` checked over the defaults), drop that choice, so
-    the user is not left with every search failing until they run ``/search`` again, and send once more without it. ``(body, error, what was dropped)``, one entry for each."""
+    the user is not left with every search failing until they run ``/search`` again, and send once more without it. ``(body, error, what was dropped)``, one entry for each.
+
+    A Grounder from before 0.8.16 refuses ``exclusive`` (a 400 naming it, before anything is called). A pinned provider is then sent once in the older form, always included,
+    and ``OLDER_API`` is added to what comes back, so the result says the search may have included other providers."""
     gone: list[str] = []
-    for _ in range(MAX_FORGET + 1):
+    plain = False
+    for _ in range(MAX_FORGET + 2):
         how: list[str] = []
-        body, error = _send(payload, chosen(), dropped, how)
+        body, error = _send(payload, chosen(exclusive=not plain), dropped, how)
         # A free search sent none of the user's choices, so a 400 cannot be about one of them.
-        found = _stale_choice(str(error or ""), settings(), payload) if body is None and not isinstance(error, _Act) and how[-1:] != ["free"] else None
+        signed = body is None and not isinstance(error, _Act) and how[-1:] != ["free"]
+        if signed and not plain and _predates_exclusive(str(error or "")):
+            plain = True
+            continue
+        found = _stale_choice(str(error or ""), settings(), payload) if signed else None
         if found is None or len(gone) >= MAX_FORGET:
-            return body, error, gone
+            return body, error, gone + ([OLDER_API] if plain and body is not None else [])
         changes, what = found
         try:
             save_settings(**changes)
         except Exception as problem:  # a config that cannot be written leaves the choice, and the 400 is said as it is
             logger.warning("Could not drop a choice Grounder no longer offers: %s", problem)
-            return body, error, gone
+            return body, error, gone + ([OLDER_API] if plain and body is not None else [])
         gone.append(what)
-    return body, error, gone
+    return body, error, gone + ([OLDER_API] if plain and body is not None else [])
+
+
+OLDER_API = "only-this-provider"  # in what _send_chosen returns: this Grounder predates ``exclusive``, so the pin was sent as always included
+_EXCLUSIVE_REFUSED = re.compile(r"Unknown setting: exclusive")  # what a Grounder from before 0.8.16 says of it (workers/router/src/lib/routing-settings.ts ``applySettings``)
+
+
+def _predates_exclusive(error: str) -> bool:
+    """Whether Grounder's 400 says it does not know ``exclusive``: an API from before 0.8.16."""
+    return error.startswith("Grounder returned HTTP 400") and bool(_EXCLUSIVE_REFUSED.search(error))
 
 
 def _dropped_notice(gone: list[str]) -> str:
-    """What to tell the user, in the result, about the choices dropped for this search."""
-    return ("Grounder no longer offers " + " or ".join(gone) + ", so Hermes dropped it from the user's /search choices and searched without it. "
-            "Tell the user this, and that /search chooses again.") if gone else ""
+    """What to tell the user, in the result, about the choices dropped for this search and a pin this Grounder could not make exclusive."""
+    dropped = [name for name in gone if name != OLDER_API]
+    notes = []
+    if dropped:
+        notes.append("Grounder no longer offers " + " or ".join(dropped) + ", so Hermes dropped it from the user's /search choices and searched without it. "
+                     "Tell the user this, and that /search chooses again.")
+    if OLDER_API in gone:
+        notes.append("This Grounder cannot yet search with only the provider the user chose, so that provider was included and Grounder may have added others. "
+                     "Tell the user this.")
+    return " ".join(notes)
 
 
 def _trim_address(address: str) -> str:

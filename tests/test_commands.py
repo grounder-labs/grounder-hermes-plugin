@@ -178,7 +178,7 @@ def test_another_plugins_commands_are_left_alone_and_this_plugins_own_are_replac
 def test_the_registered_handlers_run_the_commands(plugin, signed_in, tmp_path):
     host = Host()
     plugin.register(host)
-    assert host.commands["search"].handler("exa") == "Grounder will always include Exa in searches."
+    assert host.commands["search"].handler("exa") == "Grounder will search with only Exa; if it finds nothing, Grounder picks for you."
     assert host.commands["search_presets"].handler("deep") == "Grounder will search with the Deep preset."
     assert _saved(tmp_path, "server") is None and _saved(tmp_path, "preset") == "deep"  # a preset clears a pinned provider
 
@@ -226,9 +226,9 @@ def test_the_preset_step_lists_each_preset_with_what_it_uses_where_grounder_says
 
 def test_the_provider_step_then_asks_for_a_mode_and_saves_both(plugin, signed_in, tmp_path):
     host = Host(["providers", "provider:exa", "mode:exa:instant"])
-    assert plugin.commands.search_command(host, "") == "Grounder will always include Exa's instant mode in searches."
+    assert plugin.commands.search_command(host, "") == "Grounder will search with only Exa's instant mode; if it finds nothing, Grounder picks for you."
     (_, _), (question, providers), (mode_question, modes) = host.asked
-    assert question == "Which provider should Grounder always include in searches?"
+    assert question == "Which provider should Grounder search with, and only it?"
     assert [c["value"] for c in providers] == ["provider:exa", "provider:tavily", "provider:parallel"]
     assert providers[0]["description"] == "2 modes" and providers[1]["description"] == ""
     assert mode_question == "Which Exa mode?"
@@ -251,7 +251,7 @@ def test_any_mode_keeps_the_provider_and_drops_a_mode_pinned_before(plugin, sign
 
 def test_a_provider_with_no_modes_is_picked_in_one_step(plugin, signed_in, tmp_path):
     host = Host(["providers", "provider:tavily"])
-    assert plugin.commands.search_command(host, "") == "Grounder will always include Tavily in searches."
+    assert plugin.commands.search_command(host, "") == "Grounder will search with only Tavily; if it finds nothing, Grounder picks for you."
     assert len(host.asked) == 2 and _saved(tmp_path, "server") == "provider:tavily"
 
 
@@ -280,11 +280,11 @@ def test_with_a_search_key_the_lists_are_read_with_no_credential_and_never_throu
 # --- /search with an argument ------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arg,saved,words", [
-    ("exa", {"server": "provider:exa", "server_mode": None, "preset": None}, "Grounder will always include Exa in searches."),
-    ("EXA", {"server": "provider:exa", "server_mode": None, "preset": None}, "Grounder will always include Exa in searches."),
-    ("provider:tavily", {"server": "provider:tavily", "server_mode": None, "preset": None}, "Grounder will always include Tavily in searches."),
-    ("exa:instant", {"server": "provider:exa", "server_mode": "instant", "preset": None}, "Grounder will always include Exa's instant mode in searches."),
-    ("mode:exa:deep", {"server": "provider:exa", "server_mode": "deep", "preset": None}, "Grounder will always include Exa's deep mode in searches."),
+    ("exa", {"server": "provider:exa", "server_mode": None, "preset": None}, "Grounder will search with only Exa; if it finds nothing, Grounder picks for you."),
+    ("EXA", {"server": "provider:exa", "server_mode": None, "preset": None}, "Grounder will search with only Exa; if it finds nothing, Grounder picks for you."),
+    ("provider:tavily", {"server": "provider:tavily", "server_mode": None, "preset": None}, "Grounder will search with only Tavily; if it finds nothing, Grounder picks for you."),
+    ("exa:instant", {"server": "provider:exa", "server_mode": "instant", "preset": None}, "Grounder will search with only Exa's instant mode; if it finds nothing, Grounder picks for you."),
+    ("mode:exa:deep", {"server": "provider:exa", "server_mode": "deep", "preset": None}, "Grounder will search with only Exa's deep mode; if it finds nothing, Grounder picks for you."),
     ("fast", {"server": None, "server_mode": None, "preset": "fast"}, "Grounder will search with the Fast preset."),
     ("Fast", {"server": None, "server_mode": None, "preset": "fast"}, "Grounder will search with the Fast preset."),
     ("preset:deep", {"server": None, "server_mode": None, "preset": "deep"}, "Grounder will search with the Deep preset."),
@@ -342,7 +342,7 @@ def test_when_nothing_can_ask_search_lists_what_there_is(plugin, signed_in, tmp_
 def test_a_provider_card_a_surface_caps_is_asked_in_pages_each_with_a_way_on_and_back(plugin, signed_in, lists, tmp_path):
     lists.providers_body = {"providers": [{"provider": f"p{n}", "display_name": f"P{n}"} for n in range(30)], "live_data_apis": []}
     host = Host(["providers", "__more__", "__back__", "__more__", "provider:p25"], surface="discord")
-    assert plugin.commands.search_command(host, "") == "Grounder will always include P25 in searches."
+    assert plugin.commands.search_command(host, "") == "Grounder will search with only P25; if it finds nothing, Grounder picks for you."
     assert [len(choices) for _, choices in host.asked] == [4, 23, 9, 23, 9]  # 22 providers and More…, then 8 and ← Previous
     pages = [[c["value"] for c in choices] for _, choices in host.asked[1:]]
     assert pages[0][-1] == "__more__" and "__back__" not in pages[0] and pages[1][-1] == "__back__" and "__more__" not in pages[1]
@@ -418,14 +418,14 @@ def test_a_hermes_with_ask_form_gets_two_pages_the_presets_in_a_row_the_modes_un
     assert by_value["preset:fast"]["lights"] == ["mode:exa:instant", "provider:tavily"] and by_value["preset:deep"]["lights"] == ["mode:exa:deep"]
     assert "lights" not in by_value["preset:cheap"]  # an API that does not say what a preset includes lights nothing
     assert by_value["mode:exa:instant"]["parent"] == "provider:exa" and "parent" not in by_value["provider:exa"]
-    assert "parallel:fast" not in str(pick) and by_value["provider:exa"]["description"].startswith("Embeddings search. Always included in a search")
+    assert "parallel:fast" not in str(pick) and by_value["provider:exa"]["description"].startswith("Embeddings search. Only this provider; if it finds nothing, Grounder picks for you.")
     assert (apis["id"], apis["tab"], apis["multi_select"], apis["optional"]) == ("apis", "Live-data APIs", True, True)
     assert [c["value"] for c in apis["choices"]] == ["polymarket", "espn"] and apis["checked"] == ["polymarket"]  # ESPN was turned off
 
 
 def test_what_the_form_answers_is_saved_and_the_live_apis_left_unchecked_are_the_ones_off(plugin, signed_in, tmp_path):
     host = Host(form={"pick": "mode:exa:deep", "apis": ["polymarket"]})
-    assert plugin.commands.search_command(host, "") == "Grounder will always include Exa's deep mode in searches. Live-data APIs turned off: ESPN."
+    assert plugin.commands.search_command(host, "") == "Grounder will search with only Exa's deep mode; if it finds nothing, Grounder picks for you. Live-data APIs turned off: ESPN."
     assert (_saved(tmp_path, "server"), _saved(tmp_path, "server_mode"), _saved(tmp_path, "preset"), _saved(tmp_path, "live_data_off")) == ("provider:exa", "deep", None, ["espn"])
     assert plugin.commands.search_command(Host(form={"pick": "auto", "apis": ["polymarket", "espn"]}), "") == (
         "Grounder will pick the providers, modes and any preset for each search from your prompt. Every live-data API is on.")
@@ -527,7 +527,7 @@ def test_a_sign_in_hermes_refuses_is_said_not_raised(plugin, hermes, lists):
 def test_on_slack_the_steps_run_with_no_form_and_every_provider_is_on_one_card(plugin, signed_in, lists, tmp_path):
     lists.providers_body = {"providers": [{"provider": f"p{n}", "display_name": f"P{n}"} for n in range(22)], "live_data_apis": []}
     host = Host(["providers", "provider:p21"], surface="slack")  # `/hermes search`: Slack's own /search is not this command
-    assert plugin.commands.search_command(host, "") == "Grounder will always include P21 in searches."
+    assert plugin.commands.search_command(host, "") == "Grounder will search with only P21; if it finds nothing, Grounder picks for you."
     assert [len(choices) for _, choices in host.asked] == [4, 22]
     assert _saved(tmp_path, "server") == "provider:p21"
 
@@ -547,16 +547,19 @@ def test_a_signed_in_search_sends_what_the_user_chose_and_stops_when_it_is_clear
     plugin.commands.search_command(host, "exa:instant")
     provider = plugin.GrounderWebSearchProvider()
     provider.search("q")
-    assert _sent(lists) == {"query": "q", "top_k": 5, "text_max_chars": 800, "routing_settings": {"providers": {"exa": {"use": "always", "modes": {"instant": "always"}}}}}
+    assert _sent(lists) == {"query": "q", "top_k": 5, "text_max_chars": 800,
+                            "routing_settings": {"providers": {"exa": {"use": "always", "modes": {"instant": "always"}}}, "exclusive": True, "fallback": True}}
     assert signed_in.calls[-1]["json"] == _sent(lists)
     plugin.commands.search_command(host, "exa")
     provider.search("q")
-    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always"}}}  # no fallback setting: the pin is "always included", and the account's own setting stands
+    # The pin is exclusive, and `fallback` is sent with it whatever the account's own setting is: if the provider finds nothing, Grounder picks.
+    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": True}
     plugin.commands.presets_command(host, "deep")  # a preset clears the pin
     provider.search("q")
     assert _sent(lists) == {"query": "q", "top_k": 5, "text_max_chars": 800, "profile": "deep"}
     plugin.commands.search_command(host, "polymarket")
     provider.search("q")
+    # A pinned live-data API stays as it was: always on, nothing exclusive about it.
     assert _sent(lists)["routing_settings"] == {"specialized": {"polymarket": {"use": "always"}}} and "profile" not in _sent(lists)
     plugin.commands.search_command(host, "auto")
     provider.search("q")
@@ -566,7 +569,7 @@ def test_a_signed_in_search_sends_what_the_user_chose_and_stops_when_it_is_clear
 def test_each_live_data_api_turned_off_is_sent_off_and_a_pinned_one_stays_on(plugin, signed_in, lists, tmp_path):
     _config(tmp_path, grounder={"live_data_off": ["espn", "polymarket"], "server": "provider:exa", "server_mode": "deep"})
     plugin.GrounderWebSearchProvider().search("q")
-    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always", "modes": {"deep": "always"}}},
+    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always", "modes": {"deep": "always"}}}, "exclusive": True, "fallback": True,
                                                  "specialized": {"espn": {"use": "off"}, "polymarket": {"use": "off"}}}
     _config(tmp_path, grounder={"live_data_off": ["espn", "polymarket"], "server": "api:espn"})
     plugin.GrounderWebSearchProvider().search("q")
@@ -578,7 +581,7 @@ def test_a_search_with_a_key_sends_them_too(plugin, keyed, lists, tmp_path):
     _config(tmp_path, grounder={"preset": "fast", "server": "provider:tavily", "live_data_off": ["espn"]})
     plugin.GrounderWebSearchProvider().search("q")
     assert _sent(lists)["profile"] == "fast"
-    assert _sent(lists)["routing_settings"] == {"providers": {"tavily": {"use": "always"}}, "specialized": {"espn": {"use": "off"}}}
+    assert _sent(lists)["routing_settings"] == {"providers": {"tavily": {"use": "always"}}, "exclusive": True, "fallback": True, "specialized": {"espn": {"use": "off"}}}
 
 
 def test_a_free_search_sends_none_of_what_the_user_chose(plugin, free, lists, tmp_path):
@@ -586,7 +589,7 @@ def test_a_free_search_sends_none_of_what_the_user_chose(plugin, free, lists, tm
     provider = plugin.GrounderWebSearchProvider()
     provider.search("q")
     provider.search_tool({"query": "q"})
-    assert len(_searches(lists)) == 2 and all("routing_settings" not in body and "profile" not in body for body in _searches(lists))
+    assert len(_searches(lists)) == 2 and all("routing_settings" not in body and "profile" not in body and "exclusive" not in json.dumps(body) for body in _searches(lists))
     assert all("Authorization" not in r["headers"] for r in lists.requests if r["path"] == "/v1/search")
 
 
@@ -594,7 +597,7 @@ def test_a_free_search_sends_none_of_what_the_user_chose(plugin, free, lists, tm
     ({"preset": "Not An Id!", "server": "exa", "server_mode": "x"}, None),
     ({"preset": 7, "server": ["provider:exa"], "live_data_off": "espn"}, None),
     ({"preset": "", "server": " ", "live_data_off": [3, "Bad Id!", None]}, None),
-    ({"server": "provider:exa", "server_mode": 7}, {"providers": {"exa": {"use": "always"}}}),  # a mode that is not a string is dropped, the pin stays
+    ({"server": "provider:exa", "server_mode": 7}, {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": True}),  # a mode that is not a string is dropped, the pin stays
     ("deep", None), (None, None)])
 def test_a_saved_value_of_another_shape_reads_as_unset(plugin, keyed, lists, tmp_path, grounder, routing):
     _config(tmp_path, grounder=grounder)
@@ -618,14 +621,17 @@ def test_the_user_chose_wins_over_what_the_model_passes_for_the_same_provider_or
     provider = plugin.GrounderWebSearchProvider()
     provider.search_tool({"query": "q"})
     assert _sent(lists)["profile"] == "deep"
-    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "specialized": {"espn": {"use": "off"}}}
-    # The model chooses its own preset for one search; what it says about other settings is added, and the user's stand where both speak.
-    provider.search_tool({"query": "q", "profile": "fast", "routing_settings": {"fallback": False}})
+    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": True, "specialized": {"espn": {"use": "off"}}}
+    # The model chooses its own preset for one search; what it says about other settings is added, and the user's stand where both speak: a model cannot make a pin
+    # inclusive or switch its fallback off.
+    provider.search_tool({"query": "q", "profile": "fast", "routing_settings": {"caps": {"search": {"sources": 5}}}})
     assert _sent(lists)["profile"] == "fast"
-    assert _sent(lists)["routing_settings"] == {"fallback": False, "providers": {"exa": {"use": "always"}}, "specialized": {"espn": {"use": "off"}}}
+    assert _sent(lists)["routing_settings"] == {"caps": {"search": {"sources": 5}}, "providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": True, "specialized": {"espn": {"use": "off"}}}
+    provider.search_tool({"query": "q", "routing_settings": {"fallback": False, "exclusive": False}})
+    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": True, "specialized": {"espn": {"use": "off"}}}
     provider.search_tool({"query": "q", "routing_settings": {"specialized": {"espn": {"use": "always"}, "polymarket": {"use": "always"}},
                                                                    "providers": {"exa": {"use": "off"}, "brave": {"use": "always"}}}})
-    assert _sent(lists)["routing_settings"] == {"specialized": {"espn": {"use": "off"}, "polymarket": {"use": "always"}},
+    assert _sent(lists)["routing_settings"] == {"specialized": {"espn": {"use": "off"}, "polymarket": {"use": "always"}}, "exclusive": True, "fallback": True,
                                                  "providers": {"exa": {"use": "always"}, "brave": {"use": "always"}}}
 
 
@@ -660,8 +666,8 @@ _OK = (200, {"query": "q", "results": [{"title": "T", "url": "https://example.co
     ({"preset": "turbo"}, 'No such search profile: turbo. GET /v1/search-profiles lists them; "auto" is none.', {"preset": None}, "the preset `turbo`"),
     ({"preset": "turbo"}, "No such search profile: turbo.", {"preset": None}, "the preset `turbo`"),
     ({"server": "provider:exa", "server_mode": "bogusmode"}, "providers.exa.modes: no mode bogusmode; its modes are default, instant, deep",
-     {"server": "provider:exa", "server_mode": None}, "the `bogusmode` mode of exa you always included"),
-    ({"server": "provider:defunct", "server_mode": "x"}, "No such provider: defunct", {"server": None, "server_mode": None}, "the provider `defunct` you always included"),
+     {"server": "provider:exa", "server_mode": None}, "the `bogusmode` mode of exa you chose to search with"),
+    ({"server": "provider:defunct", "server_mode": "x"}, "No such provider: defunct", {"server": None, "server_mode": None}, "the provider `defunct` you chose to search with"),
     ({"server": "api:gone-api"}, "No such specialized API: gone-api", {"server": None}, "the live-data API `gone-api` you always included"),
     ({"live_data_off": ["gone-api", "espn"]}, "No such specialized API: gone-api", {"live_data_off": ["espn"]}, "the live-data API `gone-api` you turned off"),
 ])
@@ -687,7 +693,7 @@ def test_two_stale_choices_are_dropped_one_400_at_a_time_and_both_are_told(plugi
     lists.search_script = [_refused("No such search profile: turbo. GET /v1/search-profiles lists them."), _refused("No such provider: defunct"), _OK]
     result = plugin.GrounderWebSearchProvider().search_tool({"query": "q"})
     data = json.loads(result)["data"]
-    assert "the preset `turbo` or the provider `defunct` you always included" in data["notice"] and len(_searches(lists)) == 3
+    assert "the preset `turbo` or the provider `defunct` you chose to search with" in data["notice"] and len(_searches(lists)) == 3
     assert _saved(tmp_path, "preset") is None and _saved(tmp_path, "server") is None
     assert "profile" not in _sent(lists) and "routing_settings" not in _sent(lists)
 
@@ -725,3 +731,99 @@ def test_a_config_that_cannot_be_written_leaves_the_choice_and_says_the_400(plug
     monkeypatch.setattr(plugin.provider, "save_settings", lambda **changes: (_ for _ in ()).throw(OSError("read-only")))
     result = plugin.GrounderWebSearchProvider().search("q")
     assert result["success"] is False and "No such search profile: turbo" in result["error"] and _saved(tmp_path, "preset") == "turbo"
+
+
+# --- an exclusive pin (Grounder 0.8.16) -------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("saved,exclusive", [
+    ({"server": "provider:exa"}, True),
+    ({"server": "provider:exa", "server_mode": "deep"}, True),
+    ({"server": "provider:exa", "preset": "fast"}, True),  # both saved by hand: the pin goes, as it always did, and is exclusive
+    ({"preset": "fast"}, False),
+    ({}, False),
+    ({"server": "api:espn"}, False),  # a pinned live-data API stays as it was
+    ({"live_data_off": ["espn"]}, False),
+])
+def test_only_a_pinned_provider_makes_a_search_exclusive_and_it_always_sends_fallback_on_with_it(plugin, keyed, lists, tmp_path, saved, exclusive):
+    _config(tmp_path, grounder=saved)
+    plugin.GrounderWebSearchProvider().search("q")
+    routing = _sent(lists).get("routing_settings", {})
+    assert (routing.get("exclusive") is True and routing.get("fallback") is True) is exclusive
+    if not exclusive:
+        assert "exclusive" not in json.dumps(_sent(lists)) and "fallback" not in routing
+
+
+def test_a_search_the_user_chose_nothing_for_sends_no_exclusive_and_neither_does_a_preset_or_auto(plugin, signed_in, lists, tmp_path):
+    host = Host()
+    provider = plugin.GrounderWebSearchProvider()
+    for choice in ("fast", "auto"):
+        plugin.commands.search_command(host, choice)
+        provider.search("q")
+        assert "exclusive" not in json.dumps(_sent(lists))
+    plugin.commands.search_command(host, "exa")
+    provider.search("q")
+    assert _sent(lists)["routing_settings"]["exclusive"] is True
+    plugin.commands.search_command(host, "auto")  # "Let Grounder pick" clears it
+    provider.search("q")
+    assert "exclusive" not in json.dumps(_sent(lists)) and "routing_settings" not in _sent(lists)
+
+
+@pytest.mark.parametrize("fixture_name", ["keyed", "signed_in"])
+def test_against_a_grounder_from_before_exclusive_the_pin_is_sent_once_as_always_included_and_the_result_says_so(request, plugin, lists, tmp_path, fixture_name):
+    request.getfixturevalue(fixture_name)
+    _config(tmp_path, grounder={"server": "provider:exa", "server_mode": "instant", "live_data_off": ["espn"]})
+    lists.search_script = [_refused("Unknown setting: exclusive"), _OK]
+    data = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q"}))["data"]
+    assert len(data["web"]) == 1
+    first, second = _searches(lists)
+    assert len(_searches(lists)) == 2 and first["query"] == second["query"] == "q"
+    pinned = {"providers": {"exa": {"use": "always", "modes": {"instant": "always"}}}, "specialized": {"espn": {"use": "off"}}}
+    assert first["routing_settings"] == {**pinned, "exclusive": True, "fallback": True}
+    assert second["routing_settings"] == pinned  # the older form: always included, nothing else changed
+    assert "cannot yet search with only the provider the user chose" in data["notice"] and "Tell the user this" in data["notice"]
+    assert "no longer offers" not in data["notice"]
+    # The choice is the user's and stays: the next search tries exclusive again.
+    assert _saved(tmp_path, "server") == "provider:exa" and _saved(tmp_path, "server_mode") == "instant"
+    lists.search_script = [_OK]
+    plugin.GrounderWebSearchProvider().search("q")
+    assert _sent(lists)["routing_settings"]["exclusive"] is True
+
+
+def test_the_older_form_is_tried_once_and_only_for_a_400_that_does_not_know_exclusive(plugin, keyed, lists, tmp_path):
+    _config(tmp_path, grounder={"server": "provider:exa"})
+    provider = plugin.GrounderWebSearchProvider()
+    lists.search_script = [_refused("Unknown setting: exclusive"), _refused("Unknown setting: exclusive")]
+    assert provider.search("q") == {"success": False, "error": "Grounder returned HTTP 400: Unknown setting: exclusive"}
+    assert len(_searches(lists)) == 2  # one more, never a loop
+    lists.requests.clear()
+    # A newer Grounder's own 400 about exclusive is not that: nothing is sent again.
+    lists.search_script = [_refused("exclusive needs a provider (or one of its modes) set to always: the search then calls only those.")]
+    assert provider.search("q")["success"] is False
+    assert len(_searches(lists)) == 1
+    lists.requests.clear()
+    # And a pin that is refused for what it names is dropped as before, with the exclusive form still the one sent.
+    lists.search_script = [_refused("No such provider: exa"), _OK]
+    data = provider.search("q")["data"]
+    assert "the provider `exa` you chose to search with" in data["notice"] and "cannot yet" not in data["notice"]
+
+
+def test_a_free_search_never_retries_for_exclusive(plugin, free, lists, tmp_path):
+    _config(tmp_path, grounder={"server": "provider:exa"})
+    lists.search_script = [_refused("Unknown setting: exclusive")]
+    assert plugin.GrounderWebSearchProvider().search("q")["success"] is False
+    assert len(_searches(lists)) == 1 and "exclusive" not in json.dumps(_searches(lists)[0])
+
+
+def test_the_words_everywhere_say_only_that_provider_and_that_grounder_picks_when_it_finds_nothing(plugin, signed_in, lists):
+    note = plugin.commands.PIN_NOTE
+    assert note == "Only this provider; if it finds nothing, Grounder picks for you."
+    host = Host()
+    plugin.commands.search_command(host, "exa:instant")
+    assert "only Exa's instant mode; if it finds nothing, Grounder picks for you." in plugin.commands.search_command(Host(), "exa:instant")
+    docs = {name: (PLUGIN_DIR / name).read_text() for name in ("README.md", "after-install.md")}
+    docs["plugin.yaml"] = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())["description"]
+    for name, text in docs.items():
+        assert "to always include" not in text and "always included in a search" not in text, name
+        assert "if it finds nothing, Grounder picks for you" in text, name
+    source = "\n".join((PLUGIN_DIR / name).read_text() for name in ("commands.py", "provider.py"))
+    assert "Grounder will always include" in source and 'f"Grounder will always include {found' not in source  # only the live-data API's words keep it

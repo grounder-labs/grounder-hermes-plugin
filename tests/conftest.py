@@ -247,6 +247,10 @@ def plugin(stub, tmp_path, monkeypatch):
     safety.is_safe_url = lambda url: "resolves-private" not in url
     monkeypatch.setitem(sys.modules, "tools.url_safety", safety)
     module = _load_plugin()
+    # ``register`` asks the import system whether this Hermes bundles its own Grounder provider (``_bundled``, ``find_spec("plugins.web.grounder")``), and the answer is
+    # the machine's: a Hermes checkout on ``PYTHONPATH``, or run from in, holds one, and then every test that registers the commands finds none. 0.6.1's run
+    # of this suite failed 6 such tests once in four, by where it was started from. Every test starts with no bundled provider; one that needs the other answer says so.
+    monkeypatch.setattr(module, "find_spec", lambda name: None)
     real = module.provider._open
 
     def to_stub(request, timeout):
