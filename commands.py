@@ -49,7 +49,6 @@ PIN_NOTE = "Always included in a search; Grounder may add other providers when y
 SURFACE_CHOICE_CAPS = {"discord": 24, "whatsapp_cloud": 10}
 _MORE, _BACK = "__more__", "__back__"
 MAX_TOGGLES = 80  # a switch-one-at-a-time card is asked again after each switch, so it ends here if nobody ends it
-MAX_LISTED = 8  # the most names a preset's "includes" line spells out in a step
 # A provider's default search under another name (workers/router/src/lib/routing-settings.ts DEFAULT_ALIASES): Grounder lists it as an offering but refuses
 # it as a mode of its own (a request that names it is a 400), so it is the provider itself and has no row of its own.
 DEFAULT_ALIASES = {"parallel": "fast", "valyu": "all"}
@@ -313,10 +312,12 @@ def _form(ctx, catalog: Catalog, saved: dict[str, Any], pages: list[dict[str, An
 
 
 def _preset_text(preset: dict[str, Any], catalog: Catalog) -> str:
-    """A preset's description, and where Grounder says which providers and modes it uses, those (a few of them) by name."""
-    names = [catalog.name(value) for value in catalog.includes(preset)]
-    more = f" and {len(names) - MAX_LISTED} more" if len(names) > MAX_LISTED else ""
-    return preset["description"] + (f" Uses {', '.join(names[:MAX_LISTED])}{more}." if names else "")
+    """A preset's description, and where Grounder says which providers and modes it uses, how many of each (a list of names would be most of the catalog)."""
+    values = catalog.includes(preset)
+    owners = len(dict.fromkeys(value.partition(":")[2].partition(":")[0] for value in values))
+    modes = sum(value.startswith("mode:") for value in values)
+    uses = f" Uses {owners} provider{'s' if owners != 1 else ''}" + (f" and {modes} mode{'s' if modes != 1 else ''}" if modes else "") + "."
+    return preset["description"] + (uses if values else "")
 
 
 def _step_pick(ctx, catalog: Catalog) -> Optional[str]:

@@ -218,9 +218,9 @@ def test_the_preset_step_lists_each_preset_with_what_it_uses_where_grounder_says
     (_, _), (question, choices) = host.asked
     assert question == "Which preset should Grounder search with?"
     assert [c["value"] for c in choices] == ["preset:fast", "preset:cheap", "preset:live", "preset:deep", "preset:code", "preset:balanced"]
-    assert choices[0]["description"] == "Quick answers Uses Exa instant, Tavily."
+    assert choices[0]["description"] == "Quick answers Uses 2 providers and 1 mode."
     assert choices[1]["description"] == "Lowest cost"  # no includes from an API before 0.8.15: nothing is said
-    assert choices[3]["description"] == "Thorough research Uses Exa deep."  # an offering Grounder does not list is left out
+    assert choices[3]["description"] == "Thorough research Uses 1 provider and 1 mode."  # an offering Grounder does not list is left out
     assert _saved(tmp_path, "preset") == "fast" and _saved(tmp_path, "server") is None
 
 
