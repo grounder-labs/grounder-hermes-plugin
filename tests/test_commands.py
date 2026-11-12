@@ -109,8 +109,10 @@ def test_register_adds_both_commands_with_their_hints(plugin):
     host = Host()
     plugin.register(host)
     assert set(host.commands) == {"search", "search_presets"}
-    assert host.commands["search"].args_hint == "[provider|provider:mode|preset|auto|apis]" and host.commands["search_presets"].args_hint == "[preset|auto]"
-    assert all("Grounder" in command.description for command in host.commands.values())
+    assert host.commands["search"].args_hint == "[optimized|preset|provider|provider:mode|apis]" and host.commands["search_presets"].args_hint == "[preset|optimized]"
+    assert host.commands["search"].description == ("Choose how Grounder searches: Grounder optimized, a Grounder preset, or Grounder direct (one provider and its mode), "
+                                                   "and which live-data APIs it may use (on Slack: /hermes search)")
+    assert host.commands["search_presets"].description == "Choose the Grounder preset, or go back to Grounder optimized"
     assert [p.name for p in host.providers] == ["grounder"]  # the backend is registered beside them
 
 
@@ -178,8 +180,8 @@ def test_another_plugins_commands_are_left_alone_and_this_plugins_own_are_replac
 def test_the_registered_handlers_run_the_commands(plugin, signed_in, tmp_path):
     host = Host()
     plugin.register(host)
-    assert host.commands["search"].handler("exa") == "Grounder will search with only Exa; if it finds nothing, Grounder picks for you."
-    assert host.commands["search_presets"].handler("deep") == "Grounder will search with the Deep preset."
+    assert host.commands["search"].handler("exa") == "Grounder direct: Grounder will search with only Exa and return what it finds, even when that is nothing."
+    assert host.commands["search_presets"].handler("deep") == "Grounder preset Deep: Grounder will pick the best provider for it on each search."
     assert _saved(tmp_path, "server") is None and _saved(tmp_path, "preset") == "deep"  # a preset clears a pinned provider
 
 
@@ -190,21 +192,24 @@ def test_with_no_key_and_no_sign_in_a_command_says_how_to_sign_in_and_asks_nothi
     host = Host(["exa"])
     reply = getattr(plugin.commands, command)(host, "")
     assert reply.startswith(f"Sign in to choose {what}: run `{SIGN_IN}`, or set a search key in `GROUNDER_API_KEY` (https://grounder.net/account/keys).")
-    assert "free searches" in reply
+    assert reply.endswith("Until then Grounder searches with Grounder optimized, on its free searches.")
     assert host.asked == [] and _lists_read(lists) == [] and not (tmp_path / "config.yaml").exists()
     assert getattr(plugin.commands, command)(host, "exa") == reply  # an id typed is no different: nothing is saved
 
 
 # --- /search: the steps every released Hermes asks in ------------------------------------------------------------------
 
-def test_search_asks_let_grounder_pick_a_preset_a_provider_or_the_live_data_apis_first(plugin, signed_in, tmp_path):
+def test_search_asks_grounder_optimized_a_grounder_preset_grounder_direct_or_the_live_data_apis_first(plugin, signed_in, tmp_path):
     host = Host(["auto"])
     reply = plugin.commands.search_command(host, "")
     (question, choices), = host.asked
     assert question == "How should Grounder search?"
     assert [c["value"] for c in choices] == ["auto", "presets", "providers", "apis"]
-    assert choices[0]["label"] == "Let Grounder pick for you based on your prompt"
-    assert reply == "Grounder will pick the providers, modes and any preset for each search from your prompt."
+    assert [c["label"] for c in choices] == ["Grounder optimized", "Grounder preset…", "Grounder direct…", "Live-data APIs…"]
+    assert [c["description"] for c in choices] == [
+        "Grounder picks the provider for your question (the default)", "Fast, Cheap, Live, Deep, Code, Balanced",
+        "you pick the provider, and optionally its mode: only this provider", "choose which ones Grounder may use"]
+    assert reply == "Grounder optimized: Grounder will pick the provider for each search from your question."
     # Signed in, the lists are read through Hermes, which attaches the token: the plugin adds no credential, and spends no search.
     assert [(c["method"], c["url"]) for c in signed_in.calls] == [("GET", "https://api.grounder.net/v1/providers"), ("GET", "https://api.grounder.net/v1/search-profiles")]
     assert not {name.lower() for call in signed_in.calls for name in call["headers"]} & {"authorization", "cookie"}
@@ -214,21 +219,21 @@ def test_search_asks_let_grounder_pick_a_preset_a_provider_or_the_live_data_apis
 
 def test_the_preset_step_lists_each_preset_with_what_it_uses_where_grounder_says(plugin, signed_in, tmp_path):
     host = Host(["presets", "preset:fast"])
-    assert plugin.commands.search_command(host, "") == "Grounder will search with the Fast preset."
+    assert plugin.commands.search_command(host, "") == "Grounder preset Fast: Grounder will pick the best provider for it on each search."
     (_, _), (question, choices) = host.asked
-    assert question == "Which preset should Grounder search with?"
+    assert question == "Which Grounder preset?"
     assert [c["value"] for c in choices] == ["preset:fast", "preset:cheap", "preset:live", "preset:deep", "preset:code", "preset:balanced"]
-    assert choices[0]["description"] == "Quick answers Uses 2 providers and 1 mode."
-    assert choices[1]["description"] == "Lowest cost"  # no includes from an API before 0.8.15: nothing is said
-    assert choices[3]["description"] == "Thorough research Uses 1 provider and 1 mode."  # an offering Grounder does not list is left out
+    assert choices[0]["description"] == "Quick answers Grounder picks the best provider for this preset. Uses 2 providers and 1 mode."
+    assert choices[1]["description"] == "Lowest cost Grounder picks the best provider for this preset."  # no includes from an API before 0.8.15: nothing more is said
+    assert choices[3]["description"] == "Thorough research Grounder picks the best provider for this preset. Uses 1 provider and 1 mode."  # an offering Grounder does not list is left out
     assert _saved(tmp_path, "preset") == "fast" and _saved(tmp_path, "server") is None
 
 
 def test_the_provider_step_then_asks_for_a_mode_and_saves_both(plugin, signed_in, tmp_path):
     host = Host(["providers", "provider:exa", "mode:exa:instant"])
-    assert plugin.commands.search_command(host, "") == "Grounder will search with only Exa's instant mode; if it finds nothing, Grounder picks for you."
+    assert plugin.commands.search_command(host, "") == "Grounder direct: Grounder will search with only Exa's instant mode and return what it finds, even when that is nothing."
     (_, _), (question, providers), (mode_question, modes) = host.asked
-    assert question == "Which provider should Grounder search with, and only it?"
+    assert question == "Which provider should Grounder direct search with?"
     assert [c["value"] for c in providers] == ["provider:exa", "provider:tavily", "provider:parallel"]
     assert providers[0]["description"] == "2 modes" and providers[1]["description"] == ""
     assert mode_question == "Which Exa mode?"
@@ -251,7 +256,7 @@ def test_any_mode_keeps_the_provider_and_drops_a_mode_pinned_before(plugin, sign
 
 def test_a_provider_with_no_modes_is_picked_in_one_step(plugin, signed_in, tmp_path):
     host = Host(["providers", "provider:tavily"])
-    assert plugin.commands.search_command(host, "") == "Grounder will search with only Tavily; if it finds nothing, Grounder picks for you."
+    assert plugin.commands.search_command(host, "") == "Grounder direct: Grounder will search with only Tavily and return what it finds, even when that is nothing."
     assert len(host.asked) == 2 and _saved(tmp_path, "server") == "provider:tavily"
 
 
@@ -265,13 +270,14 @@ def test_the_live_data_step_switches_one_api_at_a_time_and_saves_only_the_ones_o
 
 def test_cancelling_a_step_saves_nothing_and_lists_what_there_is(plugin, signed_in, tmp_path):
     reply = plugin.commands.search_command(Host(["providers", "provider:exa"]), "")
-    assert reply.startswith("Grounder's presets:") and "  exa (Exa): instant, deep" in reply and "  tavily (Tavily)\n" in reply
+    assert reply.startswith("Grounder optimized (`/search optimized`, the default): Grounder picks the provider for your question.\nGrounder preset (`/search <preset>`):\n")
+    assert "  exa (Exa): instant, deep" in reply and "  tavily (Tavily)\n" in reply
     assert _saved(tmp_path, "server") is None
 
 
 def test_with_a_search_key_the_lists_are_read_with_no_credential_and_never_through_hermes(plugin, keyed, hermes, lists, tmp_path):
     assert plugin.commands.search_command(Host(), "api:polymarket") == "Grounder will always include Polymarket in searches."
-    assert plugin.commands.presets_command(Host(["fast"]), "") == "Grounder will search with the Fast preset. It no longer always includes polymarket."  # a preset clears a pin
+    assert plugin.commands.presets_command(Host(["fast"]), "") == "Grounder preset Fast: Grounder will pick the best provider for it on each search. It no longer always includes polymarket."  # a preset clears a pin
     assert hermes.calls == [] and _lists_read(lists) == ["/v1/providers", "/v1/search-profiles", "/v1/search-profiles"]
     assert all("Authorization" not in r["headers"] for r in lists.requests)
     assert _saved(tmp_path, "server") is None and _saved(tmp_path, "preset") == "fast"
@@ -280,15 +286,15 @@ def test_with_a_search_key_the_lists_are_read_with_no_credential_and_never_throu
 # --- /search with an argument ------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arg,saved,words", [
-    ("exa", {"server": "provider:exa", "server_mode": None, "preset": None}, "Grounder will search with only Exa; if it finds nothing, Grounder picks for you."),
-    ("EXA", {"server": "provider:exa", "server_mode": None, "preset": None}, "Grounder will search with only Exa; if it finds nothing, Grounder picks for you."),
-    ("provider:tavily", {"server": "provider:tavily", "server_mode": None, "preset": None}, "Grounder will search with only Tavily; if it finds nothing, Grounder picks for you."),
-    ("exa:instant", {"server": "provider:exa", "server_mode": "instant", "preset": None}, "Grounder will search with only Exa's instant mode; if it finds nothing, Grounder picks for you."),
-    ("mode:exa:deep", {"server": "provider:exa", "server_mode": "deep", "preset": None}, "Grounder will search with only Exa's deep mode; if it finds nothing, Grounder picks for you."),
-    ("fast", {"server": None, "server_mode": None, "preset": "fast"}, "Grounder will search with the Fast preset."),
-    ("Fast", {"server": None, "server_mode": None, "preset": "fast"}, "Grounder will search with the Fast preset."),
-    ("preset:deep", {"server": None, "server_mode": None, "preset": "deep"}, "Grounder will search with the Deep preset."),
-    ("mode:fast", {"server": None, "server_mode": None, "preset": "fast"}, "Grounder will search with the Fast preset."),  # what 0.5 called a preset
+    ("exa", {"server": "provider:exa", "server_mode": None, "preset": None}, "Grounder direct: Grounder will search with only Exa and return what it finds, even when that is nothing."),
+    ("EXA", {"server": "provider:exa", "server_mode": None, "preset": None}, "Grounder direct: Grounder will search with only Exa and return what it finds, even when that is nothing."),
+    ("provider:tavily", {"server": "provider:tavily", "server_mode": None, "preset": None}, "Grounder direct: Grounder will search with only Tavily and return what it finds, even when that is nothing."),
+    ("exa:instant", {"server": "provider:exa", "server_mode": "instant", "preset": None}, "Grounder direct: Grounder will search with only Exa's instant mode and return what it finds, even when that is nothing."),
+    ("mode:exa:deep", {"server": "provider:exa", "server_mode": "deep", "preset": None}, "Grounder direct: Grounder will search with only Exa's deep mode and return what it finds, even when that is nothing."),
+    ("fast", {"server": None, "server_mode": None, "preset": "fast"}, "Grounder preset Fast: Grounder will pick the best provider for it on each search."),
+    ("Fast", {"server": None, "server_mode": None, "preset": "fast"}, "Grounder preset Fast: Grounder will pick the best provider for it on each search."),
+    ("preset:deep", {"server": None, "server_mode": None, "preset": "deep"}, "Grounder preset Deep: Grounder will pick the best provider for it on each search."),
+    ("mode:fast", {"server": None, "server_mode": None, "preset": "fast"}, "Grounder preset Fast: Grounder will pick the best provider for it on each search."),  # what 0.5 called a preset
     ("polymarket", {"server": "api:polymarket", "server_mode": None, "preset": None}, "Grounder will always include Polymarket in searches."),
     ("api:polymarket", {"server": "api:polymarket", "server_mode": None, "preset": None}, "Grounder will always include Polymarket in searches."),
 ])
@@ -306,9 +312,12 @@ def test_a_provider_pinned_after_a_preset_clears_it_and_a_preset_after_a_provide
     assert (_saved(tmp_path, "preset"), _saved(tmp_path, "server"), _saved(tmp_path, "server_mode")) == ("cheap", None, None)
 
 
-def test_search_auto_clears_the_pick_and_keeps_the_rest(plugin, signed_in, tmp_path):
+@pytest.mark.parametrize("word", ["auto", "optimized", "OPTIMIZED"])
+def test_search_optimized_or_auto_clears_the_pick_and_keeps_the_rest(plugin, signed_in, tmp_path, word):
     _config(tmp_path, search_backend="grounder", grounder={"server": "provider:exa", "server_mode": "deep", "preset": "deep", "live_data_off": ["espn"]})
-    assert plugin.commands.search_command(Host(), "auto") == "Grounder will pick the providers, modes and any preset for each search from your prompt."
+    host = Host()
+    assert plugin.commands.search_command(host, word) == "Grounder optimized: Grounder will pick the provider for each search from your question."
+    assert host.asked == []
     assert (_saved(tmp_path, "server"), _saved(tmp_path, "server_mode"), _saved(tmp_path, "preset")) == (None, None, None)
     assert _saved(tmp_path, "live_data_off") == ["espn"]
     assert yaml.safe_load((tmp_path / "config.yaml").read_text())["web"]["search_backend"] == "grounder"
@@ -318,7 +327,7 @@ def test_search_with_an_unknown_argument_or_the_default_search_alias_lists_what_
     for arg in ("nope", "parallel:fast"):
         reply = plugin.commands.search_command(Host(), arg)
         assert reply.splitlines()[0] == f"Grounder has no preset, provider or mode called {arg}."
-        assert "  exa (Exa): instant, deep" in reply and "  polymarket (Polymarket)" in reply and "  fast (Fast): Quick answers" in reply and "`/search auto`" in reply
+        assert "  exa (Exa): instant, deep" in reply and "  polymarket (Polymarket)" in reply and "  fast (Fast): Quick answers" in reply and "`/search optimized`" in reply
         assert _saved(tmp_path, "server") is None and _saved(tmp_path, "preset") is None
 
 
@@ -331,9 +340,13 @@ def test_an_id_that_is_more_than_one_kind_of_thing_needs_its_prefix(plugin, sign
 
 def test_when_nothing_can_ask_search_lists_what_there_is(plugin, signed_in, tmp_path):
     reply = plugin.commands.search_command(Host(), "")
-    assert reply.startswith("Grounder's presets:\n  fast (Fast): Quick answers\n")
-    assert "Grounder's providers, each with its modes:\n  exa (Exa): instant, deep\n  tavily (Tavily)\n  parallel (Parallel): turbo\n" in reply
+    assert reply.startswith("Grounder optimized (`/search optimized`, the default): Grounder picks the provider for your question.\n"
+                            "Grounder preset (`/search <preset>`):\n  fast (Fast): Quick answers\n")
+    assert ("Grounder direct (`/search <provider>` or `/search <provider>:<mode>`), each provider with its modes:\n"
+            "  exa (Exa): instant, deep\n  tavily (Tavily)\n  parallel (Parallel): turbo\n") in reply
     assert "Live-data APIs, all on unless turned off:\n  polymarket (Polymarket)\n" in reply and "`/search <id>`" in reply
+    assert reply.splitlines()[-1] == ("Use `/search <id>` to choose a Grounder preset or search with only one provider (Grounder direct; `/search <provider>:<mode>` for one of its modes), "
+                                      "`/search optimized` to let Grounder pick the provider, or `/search apis` to choose the live-data APIs.")
     assert _saved(tmp_path, "server") is None
 
 
@@ -342,7 +355,7 @@ def test_when_nothing_can_ask_search_lists_what_there_is(plugin, signed_in, tmp_
 def test_a_provider_card_a_surface_caps_is_asked_in_pages_each_with_a_way_on_and_back(plugin, signed_in, lists, tmp_path):
     lists.providers_body = {"providers": [{"provider": f"p{n}", "display_name": f"P{n}"} for n in range(30)], "live_data_apis": []}
     host = Host(["providers", "__more__", "__back__", "__more__", "provider:p25"], surface="discord")
-    assert plugin.commands.search_command(host, "") == "Grounder will search with only P25; if it finds nothing, Grounder picks for you."
+    assert plugin.commands.search_command(host, "") == "Grounder direct: Grounder will search with only P25 and return what it finds, even when that is nothing."
     assert [len(choices) for _, choices in host.asked] == [4, 23, 9, 23, 9]  # 22 providers and More…, then 8 and ← Previous
     pages = [[c["value"] for c in choices] for _, choices in host.asked[1:]]
     assert pages[0][-1] == "__more__" and "__back__" not in pages[0] and pages[1][-1] == "__back__" and "__more__" not in pages[1]
@@ -372,30 +385,48 @@ def test_presets_offers_auto_then_every_preset_the_api_lists(plugin, signed_in, 
     host = Host(["deep"])
     reply = plugin.commands.presets_command(host, "")
     (question, choices), = host.asked
-    assert question == "Which preset should Grounder search with?"
+    assert question == "Which Grounder preset?"
     assert [c["value"] for c in choices] == ["auto", "fast", "cheap", "live", "deep", "code", "balanced"]
-    assert choices[0]["label"] == "Let Grounder pick for you based on your prompt" and choices[4]["label"] == "Deep" and choices[4]["description"] == "Thorough research"
-    assert reply == "Grounder will search with the Deep preset." and _saved(tmp_path, "preset") == "deep"
+    assert choices[0] == {"value": "auto", "label": "Grounder optimized", "description": "Grounder picks the provider for your question"}
+    assert choices[4]["label"] == "Deep" and choices[4]["description"] == "Thorough research"
+    assert reply == "Grounder preset Deep: Grounder will pick the best provider for it on each search." and _saved(tmp_path, "preset") == "deep"
     assert [c["url"] for c in signed_in.calls] == ["https://api.grounder.net/v1/search-profiles"]
 
 
 @pytest.mark.parametrize("arg", ["deep", "DEEP", "Deep"])
 def test_presets_with_an_id_or_a_name_skips_the_question(plugin, signed_in, tmp_path, arg):
     host = Host()
-    assert plugin.commands.presets_command(host, arg) == "Grounder will search with the Deep preset."
+    assert plugin.commands.presets_command(host, arg) == "Grounder preset Deep: Grounder will pick the best provider for it on each search."
     assert host.asked == [] and _saved(tmp_path, "preset") == "deep"
 
 
-def test_presets_auto_clears_the_preset_and_keeps_a_pinned_provider(plugin, signed_in, tmp_path):
+@pytest.mark.parametrize("word", ["auto", "optimized"])
+def test_presets_auto_or_optimized_clears_the_preset_and_keeps_a_pinned_provider(plugin, signed_in, tmp_path, word):
     _config(tmp_path, grounder={"server": "provider:exa", "server_mode": "instant", "preset": "deep"})
-    assert plugin.commands.presets_command(Host(), "auto") == "Grounder will pick the preset for each search from your prompt."
+    assert plugin.commands.presets_command(Host(), word) == "Grounder preset cleared. Grounder direct still searches with only Exa."
     assert _saved(tmp_path, "preset") is None and _saved(tmp_path, "server") == "provider:exa" and _saved(tmp_path, "server_mode") == "instant"
+
+
+def test_presets_optimized_with_no_provider_pinned_says_grounder_optimized_picks(plugin, signed_in, tmp_path):
+    _config(tmp_path, grounder={"preset": "deep", "live_data_off": ["espn"]})
+    assert plugin.commands.presets_command(Host(), "optimized") == "Grounder preset cleared. Grounder optimized will pick the provider for each search from your question."
+    assert _saved(tmp_path, "preset") is None and _saved(tmp_path, "live_data_off") == ["espn"]
+    _config(tmp_path, grounder={"server": "api:espn", "preset": "deep"})  # a live-data API pinned by an earlier version is no provider
+    assert plugin.commands.presets_command(Host(), "auto").endswith("Grounder optimized will pick the provider for each search from your question.")
+
+
+def test_the_presets_choice_asks_which_grounder_preset_and_optimized_is_a_first_choice_that_clears_it(plugin, signed_in, tmp_path):
+    _config(tmp_path, grounder={"preset": "deep"})
+    host = Host(["auto"])
+    assert plugin.commands.presets_command(host, "") == "Grounder preset cleared. Grounder optimized will pick the provider for each search from your question."
+    assert host.asked[0][0] == "Which Grounder preset?" and host.asked[0][1][0]["value"] == "auto" and _saved(tmp_path, "preset") is None
 
 
 def test_presets_with_an_unknown_preset_lists_the_presets_and_when_nothing_can_ask_lists_them_too(plugin, signed_in, tmp_path):
     reply = plugin.commands.presets_command(Host(), "nope")
     assert reply.splitlines()[0] == "Grounder has no preset called nope."
-    assert "  fast (Fast): Quick answers" in reply and "`/search_presets auto`" in reply
+    assert "  fast (Fast): Quick answers" in reply and "`/search_presets optimized`" in reply
+    assert reply.splitlines()[-1] == "Use `/search_presets <id>` to choose a Grounder preset, or `/search_presets optimized` to go back to Grounder optimized."
     assert plugin.commands.presets_command(Host(), "").startswith("Grounder's presets:\n  fast (Fast): Quick answers")
     assert _saved(tmp_path, "preset") is None
 
@@ -412,36 +443,47 @@ def test_a_hermes_with_ask_form_gets_two_pages_the_presets_in_a_row_the_modes_un
     values = [c["value"] for c in pick["choices"] if "value" in c]
     assert values == ["auto", "preset:fast", "preset:cheap", "preset:live", "preset:deep", "preset:code", "preset:balanced",
                       "provider:exa", "mode:exa:instant", "mode:exa:deep", "provider:tavily", "provider:parallel", "mode:parallel:turbo"]
-    assert pick["choices"][0]["label"] == "Let Grounder pick for you based on your prompt"
-    assert pick["choices"][1] == {"header": "Presets", "row": True} and {"header": "Providers"} in pick["choices"]
+    # The three modes in order, each under its header: Grounder optimized (one row), Grounder preset (a row of presets), Grounder direct (the providers).
+    assert pick["choices"][:3] == [{"header": "Grounder optimized"},
+                                   {"value": "auto", "label": "Grounder picks the provider for your question",
+                                    "description": "The default. Results are what the provider returns, uncut and in its own order."},
+                                   {"header": "Grounder preset", "row": True}]
+    headers = [c["header"] for c in pick["choices"] if "header" in c]
+    assert headers == ["Grounder optimized", "Grounder preset", "Grounder direct"] and {"header": "Grounder direct"} in pick["choices"]
+    assert pick["choices"].index({"header": "Grounder direct"}) == 3 + 6  # after the six presets
     by_value = {c["value"]: c for c in pick["choices"] if "value" in c}
+    # A preset's row says what it does and, from /v1/search-profiles, what it includes; a preset that does not say includes only what it does.
+    assert by_value["preset:fast"]["description"] == "Quick answers Grounder picks the best provider for this preset. Uses 2 providers and 1 mode."
+    assert by_value["preset:cheap"]["description"] == "Lowest cost Grounder picks the best provider for this preset."
+    assert by_value["preset:deep"]["description"] == "Thorough research Grounder picks the best provider for this preset. Uses 1 provider and 1 mode."
     assert by_value["preset:fast"]["lights"] == ["mode:exa:instant", "provider:tavily"] and by_value["preset:deep"]["lights"] == ["mode:exa:deep"]
     assert "lights" not in by_value["preset:cheap"]  # an API that does not say what a preset includes lights nothing
     assert by_value["mode:exa:instant"]["parent"] == "provider:exa" and "parent" not in by_value["provider:exa"]
-    assert "parallel:fast" not in str(pick) and by_value["provider:exa"]["description"].startswith("Embeddings search. Only this provider; if it finds nothing, Grounder picks for you.")
+    assert "parallel:fast" not in str(pick) and by_value["provider:exa"]["description"] == "Embeddings search. Only this provider."
+    assert by_value["mode:exa:instant"]["description"] == "Exa's instant mode. Only this provider." and by_value["provider:tavily"]["description"] == "Only this provider."
     assert (apis["id"], apis["tab"], apis["multi_select"], apis["optional"]) == ("apis", "Live-data APIs", True, True)
     assert [c["value"] for c in apis["choices"]] == ["polymarket", "espn"] and apis["checked"] == ["polymarket"]  # ESPN was turned off
 
 
 def test_what_the_form_answers_is_saved_and_the_live_apis_left_unchecked_are_the_ones_off(plugin, signed_in, tmp_path):
     host = Host(form={"pick": "mode:exa:deep", "apis": ["polymarket"]})
-    assert plugin.commands.search_command(host, "") == "Grounder will search with only Exa's deep mode; if it finds nothing, Grounder picks for you. Live-data APIs turned off: ESPN."
+    assert plugin.commands.search_command(host, "") == "Grounder direct: Grounder will search with only Exa's deep mode and return what it finds, even when that is nothing. Live-data APIs turned off: ESPN."
     assert (_saved(tmp_path, "server"), _saved(tmp_path, "server_mode"), _saved(tmp_path, "preset"), _saved(tmp_path, "live_data_off")) == ("provider:exa", "deep", None, ["espn"])
     assert plugin.commands.search_command(Host(form={"pick": "auto", "apis": ["polymarket", "espn"]}), "") == (
-        "Grounder will pick the providers, modes and any preset for each search from your prompt. Every live-data API is on.")
+        "Grounder optimized: Grounder will pick the provider for each search from your question. Every live-data API is on.")
     assert _saved(tmp_path, "server") is None and _saved(tmp_path, "live_data_off") is None  # nothing off: the key is not kept
 
 
 def test_a_form_that_changes_only_the_live_data_page_leaves_the_pick_it_cannot_show_alone(plugin, signed_in, tmp_path):
     for saved in ({"server": "api:espn"}, {"server": "provider:defunct", "server_mode": "x"}, {"preset": "gone"}):
         _config(tmp_path, grounder=saved)
-        host = Host(form={"pick": "auto", "apis": ["polymarket"]})  # page one answers as it started: on "Let Grounder pick", the nearest row
+        host = Host(form={"pick": "auto", "apis": ["polymarket"]})  # page one answers as it started: on Grounder optimized, the nearest row
         assert plugin.commands.search_command(host, "") == "Live-data APIs turned off: ESPN."
         assert {k: _saved(tmp_path, k) for k in saved} == saved and _saved(tmp_path, "live_data_off") == ["espn"]
     _config(tmp_path, grounder={"preset": "fast"})
     assert plugin.commands.search_command(Host(form={"pick": "preset:fast", "apis": ["polymarket", "espn"]}), "") == "Nothing changed."
     assert plugin.commands.search_command(Host(form={"pick": "auto", "apis": ["polymarket", "espn"]}), "") == (
-        "Grounder will pick the providers, modes and any preset for each search from your prompt.")
+        "Grounder optimized: Grounder will pick the provider for each search from your question.")
 
 
 def test_a_form_of_one_page_has_no_tab_hint(plugin, signed_in, lists, tmp_path):
@@ -473,13 +515,13 @@ def test_a_cancelled_form_changes_nothing_and_search_apis_is_the_second_page_alo
 def test_a_hermes_whose_form_is_not_available_here_asks_in_steps(plugin, signed_in, tmp_path):
     host = Host(["auto"], form=None)
     host.supports_form = lambda: False
-    assert plugin.commands.search_command(host, "").startswith("Grounder will pick") and host.pages is None and len(host.asked) == 1
+    assert plugin.commands.search_command(host, "").startswith("Grounder optimized: Grounder will pick") and host.pages is None and len(host.asked) == 1
 
 
-def test_a_saved_api_pin_from_an_earlier_version_starts_the_form_on_let_grounder_pick_and_the_next_pick_replaces_it(plugin, signed_in, tmp_path):
+def test_a_saved_api_pin_from_an_earlier_version_starts_the_form_on_grounder_optimized_and_the_next_pick_replaces_it(plugin, signed_in, tmp_path):
     _config(tmp_path, grounder={"server": "api:polymarket"})
     host = Host(form={"pick": "preset:deep", "apis": ["polymarket", "espn"]})
-    assert plugin.commands.search_command(host, "").startswith("Grounder will search with the Deep preset. It no longer always includes Polymarket.")
+    assert plugin.commands.search_command(host, "").startswith("Grounder preset Deep: Grounder will pick the best provider for it on each search. It no longer always includes Polymarket.")
     assert host.pages[0]["selected"] == "auto" and _saved(tmp_path, "server") is None and _saved(tmp_path, "preset") == "deep"
 
 
@@ -527,7 +569,7 @@ def test_a_sign_in_hermes_refuses_is_said_not_raised(plugin, hermes, lists):
 def test_on_slack_the_steps_run_with_no_form_and_every_provider_is_on_one_card(plugin, signed_in, lists, tmp_path):
     lists.providers_body = {"providers": [{"provider": f"p{n}", "display_name": f"P{n}"} for n in range(22)], "live_data_apis": []}
     host = Host(["providers", "provider:p21"], surface="slack")  # `/hermes search`: Slack's own /search is not this command
-    assert plugin.commands.search_command(host, "") == "Grounder will search with only P21; if it finds nothing, Grounder picks for you."
+    assert plugin.commands.search_command(host, "") == "Grounder direct: Grounder will search with only P21 and return what it finds, even when that is nothing."
     assert [len(choices) for _, choices in host.asked] == [4, 22]
     assert _saved(tmp_path, "server") == "provider:p21"
 
@@ -547,29 +589,29 @@ def test_a_signed_in_search_sends_what_the_user_chose_and_stops_when_it_is_clear
     plugin.commands.search_command(host, "exa:instant")
     provider = plugin.GrounderWebSearchProvider()
     provider.search("q")
-    assert _sent(lists) == {"query": "q", "top_k": 5, "text_max_chars": 800,
-                            "routing_settings": {"providers": {"exa": {"use": "always", "modes": {"instant": "always"}}}, "exclusive": True, "fallback": True}}
+    assert _sent(lists) == {"query": "q", "top_k": 5, "mode": "direct",
+                            "routing_settings": {"providers": {"exa": {"use": "always", "modes": {"instant": "always"}}}, "exclusive": True, "fallback": False}}
     assert signed_in.calls[-1]["json"] == _sent(lists)
     plugin.commands.search_command(host, "exa")
     provider.search("q")
-    # The pin is exclusive, and `fallback` is sent with it whatever the account's own setting is: if the provider finds nothing, Grounder picks.
-    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": True}
+    # The pin is exclusive, and `fallback` is sent off with it whatever the account's own setting is: if the provider finds nothing, nothing comes back.
+    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": False} and _sent(lists)["mode"] == "direct"
     plugin.commands.presets_command(host, "deep")  # a preset clears the pin
     provider.search("q")
-    assert _sent(lists) == {"query": "q", "top_k": 5, "text_max_chars": 800, "profile": "deep"}
+    assert _sent(lists) == {"query": "q", "top_k": 5, "mode": "preset", "profile": "deep"}
     plugin.commands.search_command(host, "polymarket")
     provider.search("q")
     # A pinned live-data API stays as it was: always on, nothing exclusive about it.
-    assert _sent(lists)["routing_settings"] == {"specialized": {"polymarket": {"use": "always"}}} and "profile" not in _sent(lists)
+    assert _sent(lists)["routing_settings"] == {"specialized": {"polymarket": {"use": "always"}}} and "profile" not in _sent(lists) and _sent(lists)["mode"] == "optimized"
     plugin.commands.search_command(host, "auto")
     provider.search("q")
-    assert _sent(lists) == {"query": "q", "top_k": 5, "text_max_chars": 800}
+    assert _sent(lists) == {"query": "q", "top_k": 5, "mode": "optimized"}
 
 
 def test_each_live_data_api_turned_off_is_sent_off_and_a_pinned_one_stays_on(plugin, signed_in, lists, tmp_path):
     _config(tmp_path, grounder={"live_data_off": ["espn", "polymarket"], "server": "provider:exa", "server_mode": "deep"})
     plugin.GrounderWebSearchProvider().search("q")
-    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always", "modes": {"deep": "always"}}}, "exclusive": True, "fallback": True,
+    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always", "modes": {"deep": "always"}}}, "exclusive": True, "fallback": False,
                                                  "specialized": {"espn": {"use": "off"}, "polymarket": {"use": "off"}}}
     _config(tmp_path, grounder={"live_data_off": ["espn", "polymarket"], "server": "api:espn"})
     plugin.GrounderWebSearchProvider().search("q")
@@ -580,8 +622,12 @@ def test_each_live_data_api_turned_off_is_sent_off_and_a_pinned_one_stays_on(plu
 def test_a_search_with_a_key_sends_them_too(plugin, keyed, lists, tmp_path):
     _config(tmp_path, grounder={"preset": "fast", "server": "provider:tavily", "live_data_off": ["espn"]})
     plugin.GrounderWebSearchProvider().search("q")
-    assert _sent(lists)["profile"] == "fast"
-    assert _sent(lists)["routing_settings"] == {"providers": {"tavily": {"use": "always"}}, "exclusive": True, "fallback": True, "specialized": {"espn": {"use": "off"}}}
+    # Saved by hand, a preset and a pinned provider are both there: the direct choice wins, so the search is direct and carries no profile.
+    assert "profile" not in _sent(lists) and _sent(lists)["mode"] == "direct"
+    assert _sent(lists)["routing_settings"] == {"providers": {"tavily": {"use": "always"}}, "exclusive": True, "fallback": False, "specialized": {"espn": {"use": "off"}}}
+    _config(tmp_path, grounder={"preset": "fast", "live_data_off": ["espn"]})
+    plugin.GrounderWebSearchProvider().search("q")
+    assert _sent(lists)["profile"] == "fast" and _sent(lists)["mode"] == "preset"
 
 
 def test_a_free_search_sends_none_of_what_the_user_chose(plugin, free, lists, tmp_path):
@@ -597,12 +643,12 @@ def test_a_free_search_sends_none_of_what_the_user_chose(plugin, free, lists, tm
     ({"preset": "Not An Id!", "server": "exa", "server_mode": "x"}, None),
     ({"preset": 7, "server": ["provider:exa"], "live_data_off": "espn"}, None),
     ({"preset": "", "server": " ", "live_data_off": [3, "Bad Id!", None]}, None),
-    ({"server": "provider:exa", "server_mode": 7}, {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": True}),  # a mode that is not a string is dropped, the pin stays
+    ({"server": "provider:exa", "server_mode": 7}, {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": False}),  # a mode that is not a string is dropped, the pin stays
     ("deep", None), (None, None)])
 def test_a_saved_value_of_another_shape_reads_as_unset(plugin, keyed, lists, tmp_path, grounder, routing):
     _config(tmp_path, grounder=grounder)
     plugin.GrounderWebSearchProvider().search("q")
-    assert _sent(lists) == {"query": "q", "top_k": 5, "text_max_chars": 800, **({"routing_settings": routing} if routing else {})}
+    assert _sent(lists) == {"query": "q", "top_k": 5, "mode": "direct" if routing else "optimized", **({"routing_settings": routing} if routing else {})}
 
 
 def test_a_config_that_cannot_be_read_changes_nothing_about_a_search(plugin, keyed, lists, monkeypatch):
@@ -613,25 +659,25 @@ def test_a_config_that_cannot_be_read_changes_nothing_about_a_search(plugin, key
 
     monkeypatch.setattr(config, "load_config", broken)
     assert plugin.GrounderWebSearchProvider().search("q")["success"]
-    assert _sent(lists) == {"query": "q", "top_k": 5, "text_max_chars": 800}
+    assert _sent(lists) == {"query": "q", "top_k": 5, "mode": "optimized"}
 
 
 def test_the_user_chose_wins_over_what_the_model_passes_for_the_same_provider_or_api(plugin, keyed, lists, tmp_path):
     _config(tmp_path, grounder={"preset": "deep", "server": "provider:exa", "live_data_off": ["espn"]})
     provider = plugin.GrounderWebSearchProvider()
     provider.search_tool({"query": "q"})
-    assert _sent(lists)["profile"] == "deep"
-    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": True, "specialized": {"espn": {"use": "off"}}}
-    # The model chooses its own preset for one search; what it says about other settings is added, and the user's stand where both speak: a model cannot make a pin
-    # inclusive or switch its fallback off.
+    assert "profile" not in _sent(lists) and _sent(lists)["mode"] == "direct"  # both saved by hand: the pin wins, and a direct search has no preset
+    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": False, "specialized": {"espn": {"use": "off"}}}
+    # What the model says about other settings is added, and the user's stand where both speak: a model cannot make a pin inclusive or switch its fallback on,
+    # nor put a preset of its own over a provider the user chose.
     provider.search_tool({"query": "q", "profile": "fast", "routing_settings": {"caps": {"search": {"sources": 5}}}})
-    assert _sent(lists)["profile"] == "fast"
-    assert _sent(lists)["routing_settings"] == {"caps": {"search": {"sources": 5}}, "providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": True, "specialized": {"espn": {"use": "off"}}}
-    provider.search_tool({"query": "q", "routing_settings": {"fallback": False, "exclusive": False}})
-    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": True, "specialized": {"espn": {"use": "off"}}}
+    assert "profile" not in _sent(lists) and _sent(lists)["mode"] == "direct"
+    assert _sent(lists)["routing_settings"] == {"caps": {"search": {"sources": 5}}, "providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": False, "specialized": {"espn": {"use": "off"}}}
+    provider.search_tool({"query": "q", "routing_settings": {"fallback": True, "exclusive": False}})
+    assert _sent(lists)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": False, "specialized": {"espn": {"use": "off"}}}
     provider.search_tool({"query": "q", "routing_settings": {"specialized": {"espn": {"use": "always"}, "polymarket": {"use": "always"}},
                                                                    "providers": {"exa": {"use": "off"}, "brave": {"use": "always"}}}})
-    assert _sent(lists)["routing_settings"] == {"specialized": {"espn": {"use": "off"}, "polymarket": {"use": "always"}}, "exclusive": True, "fallback": True,
+    assert _sent(lists)["routing_settings"] == {"specialized": {"espn": {"use": "off"}, "polymarket": {"use": "always"}}, "exclusive": True, "fallback": False,
                                                  "providers": {"exa": {"use": "always"}, "brave": {"use": "always"}}}
 
 
@@ -744,11 +790,11 @@ def test_a_config_that_cannot_be_written_leaves_the_choice_and_says_the_400(plug
     ({"server": "api:espn"}, False),  # a pinned live-data API stays as it was
     ({"live_data_off": ["espn"]}, False),
 ])
-def test_only_a_pinned_provider_makes_a_search_exclusive_and_it_always_sends_fallback_on_with_it(plugin, keyed, lists, tmp_path, saved, exclusive):
+def test_only_a_pinned_provider_makes_a_search_exclusive_and_it_always_sends_fallback_off_with_it(plugin, keyed, lists, tmp_path, saved, exclusive):
     _config(tmp_path, grounder=saved)
     plugin.GrounderWebSearchProvider().search("q")
     routing = _sent(lists).get("routing_settings", {})
-    assert (routing.get("exclusive") is True and routing.get("fallback") is True) is exclusive
+    assert (routing.get("exclusive") is True and routing.get("fallback") is False) is exclusive
     if not exclusive:
         assert "exclusive" not in json.dumps(_sent(lists)) and "fallback" not in routing
 
@@ -778,7 +824,7 @@ def test_against_a_grounder_from_before_exclusive_the_pin_is_sent_once_as_always
     first, second = _searches(lists)
     assert len(_searches(lists)) == 2 and first["query"] == second["query"] == "q"
     pinned = {"providers": {"exa": {"use": "always", "modes": {"instant": "always"}}}, "specialized": {"espn": {"use": "off"}}}
-    assert first["routing_settings"] == {**pinned, "exclusive": True, "fallback": True}
+    assert first["routing_settings"] == {**pinned, "exclusive": True, "fallback": False}
     assert second["routing_settings"] == pinned  # the older form: always included, nothing else changed
     assert "cannot yet search with only the provider the user chose" in data["notice"] and "Tell the user this" in data["notice"]
     assert "no longer offers" not in data["notice"]
@@ -814,16 +860,62 @@ def test_a_free_search_never_retries_for_exclusive(plugin, free, lists, tmp_path
     assert len(_searches(lists)) == 1 and "exclusive" not in json.dumps(_searches(lists)[0])
 
 
-def test_the_words_everywhere_say_only_that_provider_and_that_grounder_picks_when_it_finds_nothing(plugin, signed_in, lists):
-    note = plugin.commands.PIN_NOTE
-    assert note == "Only this provider; if it finds nothing, Grounder picks for you."
+def test_the_direct_words_follow_the_fallback_switch(plugin, signed_in, lists, monkeypatch):
+    assert plugin.commands.search_command(Host(), "exa") == "Grounder direct: Grounder will search with only Exa and return what it finds, even when that is nothing."
+    monkeypatch.setattr(plugin.provider, "DIRECT_FALLBACK", True)
+    assert plugin.commands.search_command(Host(), "exa") == "Grounder direct: Grounder will search with only Exa; if it finds nothing, Grounder picks for you."
+
+
+def test_the_words_everywhere_say_only_that_provider_and_that_what_it_finds_is_what_you_get_even_when_that_is_nothing(plugin, signed_in, lists):
+    assert plugin.commands.PIN_NOTE == "Only this provider."
     host = Host()
     plugin.commands.search_command(host, "exa:instant")
-    assert "only Exa's instant mode; if it finds nothing, Grounder picks for you." in plugin.commands.search_command(Host(), "exa:instant")
+    assert "only Exa's instant mode and return what it finds, even when that is nothing." in plugin.commands.search_command(Host(), "exa:instant")
     docs = {name: (PLUGIN_DIR / name).read_text() for name in ("README.md", "after-install.md")}
     docs["plugin.yaml"] = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())["description"]
     for name, text in docs.items():
         assert "to always include" not in text and "always included in a search" not in text, name
-        assert "if it finds nothing, Grounder picks for you" in text, name
+        assert "even when that is nothing" in text and "Grounder picks for you" not in text, name
     source = "\n".join((PLUGIN_DIR / name).read_text() for name in ("commands.py", "provider.py"))
     assert "Grounder will always include" in source and 'f"Grounder will always include {found' not in source  # only the live-data API's words keep it
+
+
+# --- Grounder's three modes: optimized, preset, direct --------------------------------------------------------------------
+
+def test_the_three_modes_are_named_by_the_constants_the_hermes_copy_uses(plugin):
+    commands = plugin.commands
+    assert (commands.OPTIMIZED_HEADER, commands.PRESETS_HEADER, commands.PROVIDERS_HEADER) == ("Grounder optimized", "Grounder preset", "Grounder direct")
+    assert commands.AUTO_LABEL == "Grounder picks the provider for your question"
+    assert commands.AUTO_NOTE == "The default. Results are what the provider returns, uncut and in its own order."
+    assert commands.PRESET_NOTE == "Grounder picks the best provider for this preset."
+    assert commands.PIN_NOTE == "Only this provider."
+
+
+def test_every_document_and_docstring_names_the_three_modes_and_none_says_the_old_words(plugin):
+    texts = {name: (PLUGIN_DIR / name).read_text() for name in ("README.md", "after-install.md", "commands.py", "provider.py", "__init__.py")}
+    texts["plugin.yaml"] = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())["description"]
+    for name, text in texts.items():
+        for mode in ("Grounder optimized", "Grounder preset", "Grounder direct"):
+            assert mode in text, (name, mode)
+        assert "based on your prompt" not in text and "Let Grounder pick for you" not in text and "let Grounder pick for you" not in text, name
+    for name in ("README.md", "after-install.md", "plugin.yaml"):
+        assert "uncut" in texts[name] and "reranked" in texts[name], name  # every mode returns what the provider returns
+    readme = texts["README.md"]
+    assert all(f"| **{mode}** |" in readme for mode in ("Grounder optimized", "Grounder preset", "Grounder direct"))  # the table of the three modes
+    for stale in ("800 characters", "6,000", "30,000", "20 rows", "two notes", "saves no page to a file"):
+        assert not any(stale in text for name, text in texts.items() if name in ("README.md", "after-install.md", "plugin.yaml")), stale
+
+
+def test_the_step_that_asks_for_a_provider_and_a_mode_says_which_mode_it_is_choosing(plugin, signed_in, tmp_path):
+    host = Host(["providers", "provider:exa", "mode:exa:deep"])
+    plugin.commands.search_command(host, "")
+    assert [question for question, _ in host.asked] == ["How should Grounder search?", "Which provider should Grounder direct search with?", "Which Exa mode?"]
+    assert host.asked[0][1][2]["label"] == "Grounder direct…"
+
+
+def test_a_pick_words_still_say_grounder_direct_for_a_mode_or_provider_grounder_no_longer_lists(plugin, signed_in):
+    catalog, _ = plugin.commands._catalog()
+    saved = plugin.provider.settings()
+    assert plugin.commands._pick_words("mode:exa:gone", catalog, saved) == "Grounder direct: Grounder will search with only exa:gone and return what it finds, even when that is nothing."
+    assert plugin.commands._pick_words("provider:gone", catalog, saved) == "Grounder direct: Grounder will search with only gone and return what it finds, even when that is nothing."
+    assert plugin.commands._pick_words("preset:gone", catalog, saved) == "Grounder preset gone: Grounder will pick the best provider for it on each search."

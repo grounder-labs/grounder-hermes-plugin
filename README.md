@@ -25,7 +25,7 @@ Once Grounder is listed in the Hermes plugin catalog, `hermes plugins install gr
 
 With no search key and no sign-in, a search is one of Grounder's free searches. It carries no credential and runs within the free
 limits Grounder sets; this plugin repeats none of them, so a limit Grounder changes needs no change here. A free search cannot
-choose a preset, a provider or a mode, so it sends none of them, and a `grounder_search` that asks for a profile, routing settings or a workspace
+choose how Grounder searches (a preset, or a provider and its mode), so it sends none of them and no mode name, and a `grounder_search` that asks for a profile, routing settings or a workspace
 runs without them and says so. When the free searches are used up, the search answers with a message that says where to sign up and
 where to add credit, with the links Grounder returned, as its result: Hermes would serve a failed search from its keyless free tier and
 the message would never reach you. Sign up, then connect your account as below.
@@ -96,27 +96,26 @@ Until you connect your account, your searches are Grounder's free searches.
 
 ## What Hermes gets
 
-Each search returns up to 20 rows (Hermes asks for 5 unless told otherwise), in Grounder's order:
+Each search returns the rows Hermes asked for, up to 100 (Hermes asks for 5 unless told otherwise), in Grounder's order. This plugin cuts, reranks and reorders nothing
+of what Grounder returns, in any of its three modes:
 
 | Field | From Grounder |
 |---|---|
 | `title` | The result's title |
 | `url` | The result's address |
-| `description` | Its summary, or its text on one line: the passages that best match your search, chosen by Grounder to fit 800 characters |
+| `description` | Its summary, or its text, as Grounder returned it, with its white space made one line: no word is cut |
 | `position` | The number the answer cites it by. The results of one answer are numbered on from 1 across its searches and reads, and a page found twice keeps its first number |
 | `date` | When it was published, when Grounder knows |
 
 Where each result came from (whose it is, the feature and provider that found it, why it may be served) stays in Grounder's
 records and in its API response; the model does not read it row by row, and the line under the answer names the providers.
 
-The first result Grounder serves in a turn, a search or a read, ends with two notes the model then has for its answer: `pages`,
-which says each text is part of its page, how to ask for another part and that Grounder saves no page to a file (Hermes's own
-`web_extract` saves a long page's text for `read_file`, and a model expecting that guessed file names), then `cite_sources`, which
+The first result Grounder serves in a turn, a search or a read, ends with a note the model then has for its answer, `cite_sources`, which
 asks the model to cite each result it uses by its number in square brackets, like `[3]`, and to write no Sources list, since
 the plugin adds one. A result's number belongs to the answer that searched: the numbers run on across that turn's searches and
 page reads, a page keeps its number within the turn, and the next answer that searches starts again at `[1]`. An answer cites only
 its own turn's results; one that made no search cites nothing by number, and the model is told to search again when it needs a
-source. The turn's later results carry neither note, which saves about 420 characters on each.
+source. The turn's later results carry no note, which saves about 680 characters on each.
 
 `web_extract` reads up to 5 pages in a call and returns one entry for each, in the order asked:
 
@@ -124,16 +123,16 @@ source. The turn's later results carry neither note, which saves about 420 chara
 |---|---|
 | `url` | The address you asked for |
 | `title` | The page's title, or its address when it has none |
-| `content` | What in the page best answers the `web_search` that found it, or your latest message when no search found it, in the page's own order, at most 6,000 characters, or what the model's `char_limit` asks for up to 30,000. A page that fits comes back whole, and with no search and no message a page comes back from its start, or from the section its address names (`#Books`) |
+| `content` | The page's text as Grounder returned it, whole: the plugin sends no `text_max_chars` and cuts nothing. Hermes itself applies a model's `char_limit` to the whole page |
 | `error` | Only on a page that could not be read and that no search returned. It says why when Grounder knows: the address does not exist, the site refused the read, or the read ran out of time. The other pages still return. A page a search returned that cannot be read comes back without an error, as the text that search showed of it, which says so |
 
-A `web_extract` keeps less than a whole page on purpose, to spare your model the tokens. Run a `web_search` first to get the
-parts that matter. A read that is the turn's first Grounder result carries the two notes too.
+A `web_extract` returns whole pages, so a long page is long: Hermes applies the `char_limit` the model asks for. A read that is the turn's first Grounder result
+carries the citation note too.
 
-For another part of a page, a `web_search` whose query holds the page's address reads that page for the query's other words,
-for example `https://en.wikipedia.org/wiki/Jamie_Oliver books`. It returns the part that answers, at most 6,000 characters,
-as the result's `description`, and counts as one search. Hermes's `web_extract` takes only addresses and answers a repeated read
-from its own cache, so without this a model that needed more of a page fetched it with its own tools.
+A `web_search` whose query holds a page's address reads that page for the query's other words, for example
+`https://en.wikipedia.org/wiki/Jamie_Oliver books`. It returns the page whole, as Grounder returned it, as the result's `description`, and counts as one search.
+Hermes's `web_extract` takes only addresses and answers a repeated read from its own cache, so this reads a page again for a new question. The plugin does not
+tell the model about it.
 The pages you ask for always lead what Grounder returns, ahead of anything its search found beside them.
 
 An answer that cites a Grounder result ends with a Sources list the plugin writes: one plain bullet for each result the answer cites
@@ -142,8 +141,10 @@ The model writes only the numbers, which spares it the
 slowest tokens it makes; an answer that wrote its own list, under a Sources or References heading or label, gets none added, and
 neither does a bracketed number inside code, like `items[2]`, make one. Only `http` and `https` addresses are listed, and a title
 is shown as plain words: a page's own title cannot add a link or a heading to your answer. Then an answer that searched ends with
-one line saying who answered, how many sources the model was shown and how long you waited, for example
-`Searched with Grounder · via Exa, Brave · 8 sources · 1.4 s`. Both are added by the plugin. Hermes keeps them with the answer,
+one line saying which Grounder mode it searched in, who answered, how many sources the model was shown and how long you waited, for example
+`Searched with Grounder optimized · via Exa, Brave · 8 sources · 1.4 s`, `Searched with Grounder preset (Fast) · via Exa · 3 sources · 600 ms` or
+`Searched with Grounder direct · via Exa · 5 sources · 1.1 s`. Searches of one answer that ran in different modes name each once, and where no mode is known
+(a free search, whose response names none) the line says only `Searched with Grounder`. Both are added by the plugin. Hermes keeps them with the answer,
 so they are also in the history later turns send. A host that does not say which answer a search serves gets no list: there
 the model is asked to write its own, as in any client.
 
@@ -181,29 +182,40 @@ workspaces on your [account](https://grounder.net/account).
 
 ## Choose how Grounder searches: `/search` and `/search_presets`
 
-Two commands choose how Grounder searches. Both offer Grounder's own lists, read when you run them, so a preset, provider, mode or live-data
+Grounder has three modes. Every one returns exactly what the provider returns, uncut and not reranked, by Grounder or by this plugin.
+
+| Mode | What it is | How to choose it |
+|---|---|---|
+| **Grounder optimized** | Grounder picks the provider for your question. The default | `/search optimized` (or `/search auto`), or pick it in `/search` |
+| **Grounder preset** | Fast, Cheap, Live, Deep, Code or Balanced: Grounder picks the best provider for that preset | `/search <preset>`, for example `/search fast`; `/search_presets`; or pick one in `/search` |
+| **Grounder direct** | You pick the provider, and optionally one of its modes: only that provider is called, and what it finds is what you get, even when that is nothing | `/search <provider>` or `/search <provider>:<mode>`, for example `/search exa:instant`; or pick one in `/search` |
+
+Two commands choose between them. Both offer Grounder's own lists, read when you run them, so a preset, provider, mode or live-data
 API Grounder adds is on offer at once.
 
 | Command | What it does |
 |---|---|
-| `/search` | Asks how Grounder should search: **let Grounder pick for you based on your prompt** (the default), **a preset** (Fast, Cheap, Live, Deep, Code or Balanced), or **one provider to search with, and only it**, then which of that provider's modes, or any; if it finds nothing, Grounder picks for you. It also asks which live-data APIs Grounder may use: all are on unless you turn one off. `/search auto` goes back to Grounder picking |
-| `/search_presets` | The shortcut to the presets. `/search_presets <preset>` chooses without asking, and `/search_presets auto` goes back to Grounder picking the preset |
+| `/search` | Asks which mode: **Grounder optimized**, **a Grounder preset**, or **Grounder direct**, then which provider and which of its modes, or any. It also asks which live-data APIs Grounder may use: all are on unless you turn one off. `/search optimized` goes back to Grounder optimized |
+| `/search_presets` | The shortcut to the presets. `/search_presets <preset>` chooses without asking, and `/search_presets optimized` clears the preset: Grounder optimized again, or Grounder direct when you have a provider chosen |
 
-Typed arguments skip the questions: `/search exa`, `/search exa:instant` (a provider's mode), `/search fast` (a preset), `/search auto`, `/search apis`
+Typed arguments skip the questions: `/search exa`, `/search exa:instant` (a provider's mode), `/search fast` (a preset), `/search optimized` (or `/search auto`), `/search apis`
 (the live-data APIs). `/search api:<id>` still always includes one live-data API, as it did before 0.6.0; a choice made in `/search` replaces it.
 
-A preset and a provider you pick clear each other. A provider you pick is the only one a search calls (Grounder 0.8.16's `exclusive`, sent with `fallback` on): if it
-finds nothing, Grounder picks for you, as it does when you pick nothing. Against a Grounder from before 0.8.16, which has no such setting, the provider is sent once as
+A preset and a provider you pick clear each other. A provider you pick is the only one a search calls (Grounder 0.8.16's `exclusive`, sent with `fallback` off): if it
+finds nothing, the search returns nothing and Grounder picks no other provider. Against a Grounder from before 0.8.16, which has no such setting, the provider is sent once as
 always included and the result says so: Grounder may then add other providers when your prompt needs them. The questions are asked in steps on every Hermes released today: first
-Let Grounder pick, a preset or a provider, then which preset or which of the provider's modes; the live-data APIs are a card that switches one
+Grounder optimized, a Grounder preset or Grounder direct, then which preset, or which provider and which of its modes; the live-data APIs are a card that switches one
 at a time, with Done on every page where a messaging app limits a card. **On Slack, `/search` is Slack's own search**, so type `/hermes search`;
 `/search_presets` works as it is. (A Hermes that offers `ctx.ask_form` would show the same choices as one form with the presets side by side and
 a drop-down of each provider's modes; no released Hermes offers it yet.)
 
 They save `web.grounder.preset`, `web.grounder.server` and `web.grounder.server_mode`, and the live-data APIs you turned off as `web.grounder.live_data_off`
 (only the ones off, so an API Grounder adds later is on), in your profile's `config.yaml`. A search made with your search key or sign-in sends them: the
-preset as the search's `profile`, the provider and its mode as an always-on, exclusive setting (`exclusive` and `fallback` on), and each API you turned off as an off setting. `grounder_search` sends
-them too: its `profile` stands over your preset for that search, and what you chose for a provider or API wins over what the model passes for the same one,
+preset as the search's `profile`, the provider and its mode as an always-on, exclusive setting (`exclusive` on and `fallback` off), and each API you turned off as an off setting. The search also
+names its mode in `mode`: `direct` when a provider is chosen, or the model names one with `requested_provider` or `providers` (no `profile` is sent with it: a direct choice wins over a preset, whether yours or the model's),
+otherwise `preset` when a preset is chosen or the model passes a `profile`, and otherwise `optimized`. A Grounder from before
+0.9.0 ignores `mode` and maps the same fields itself. A search with neither a key nor a sign-in, and a page read, send no `mode`. `grounder_search` sends
+them too: its `profile` stands over your preset for that search (not over a provider you chose: that search is Grounder direct, and sends no `profile`), and what you chose for a provider or API wins over what the model passes for the same one,
 so the model cannot switch back on an API you turned off. If Grounder stops offering something you chose (a preset, provider, mode or API it has
 removed), the search that finds out drops that choice, says so in its result, and is sent again without it. A page read (`web_extract`, or a
 `web_search` of an address) sends none of this. Hermes's own Grounder provider reads the same keys, so a choice made here stands in a Hermes release
@@ -216,8 +228,8 @@ cannot register a command or ask a choice gets none, and search works the same.
 ## What is sent
 
 Each `web_search` query, up to its first 2,000 characters, goes to `https://api.grounder.net/v1/search` with the number
-of results wanted, the 800 characters of text it wants for each result, your search key or, when you signed in, the
-access token Hermes attaches (a free search sends neither), the preset, provider, mode and live-data APIs you chose with `/search` and `/search_presets` when
+of results wanted, your search key or, when you signed in, the
+access token Hermes attaches (a free search sends neither), the preset, provider, mode and live-data APIs you chose with `/search` and `/search_presets`, and the Grounder mode they make (`optimized`, `preset` or `direct`), when
 you are signed in or use a key, a user agent naming this plugin and its version, two random tokens, one for the session and one for the prompt, so one prompt's searches can be told from the next, and the name of the model whose answer asked for the search, as Hermes reports it. The tokens carry no Hermes id or message. Nothing else from Hermes goes with a search: not the conversation, the
 model's other output or what other tools returned. An address in a query or in `urls` that carries what looks like a key or token
 (Hermes's own check for `web_extract`, on the address and its decoded form, and your own search key), or that is not a public web
@@ -225,10 +237,9 @@ address, is never sent: the call is refused and says why. The plugin follows no 
 Grounder and nowhere else. When a search fails for a transient reason, Hermes may send the same query to its keyless
 free tier, as "What Hermes gets" says; that is Hermes's own behaviour, not Grounder's.
 
-Each `web_extract` sends the addresses of its pages, the characters of text it wants for each (6,000, or the model's `char_limit` up to 30,000), the same credential and
+Each `web_extract` sends the addresses of its pages, the same credential and
 user agent, and a question to read them for: the query of the `web_search` that found them, when one did, and otherwise your
-latest message in the session, up to its first 2,000 characters, so a page you paste or the model reads by address comes back
-as the part that answers you rather than its first 6,000 characters. The plugin keeps both in memory only, for the last 500
+latest message in the session, up to its first 2,000 characters. No `text_max_chars` or other option that cuts a page goes with it. The plugin keeps both in memory only, for the last 500
 pages found and the last 64 sessions. With neither, the addresses are sent as the query. The question is recorded as a
 search's query is. Your other messages, and the rest of the conversation, are never sent.
 

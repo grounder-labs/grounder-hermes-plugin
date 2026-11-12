@@ -10,8 +10,10 @@ time it runs in a profile, selects it (``_select_once``). Sign-in is Hermes's ow
 this plugin keeps no credential of its own. Two hooks ask the model to cite a read
 Grounder served and end an answer that searched with the line Grounder's card shows. Two tools
 carry what Hermes's ``web_search`` cannot: every option of Grounder's MCP search, and its feature list.
-``/search`` and ``/search_presets`` choose the server and the mode a signed-in search uses (``commands``); a Hermes that
-bundles its own Grounder provider has both, so there ``register`` adds neither (``_commands_taken``).
+Grounder has three modes, and ``/search`` and ``/search_presets`` choose which a signed-in search uses (``commands``): Grounder optimized (Grounder picks the provider for the
+question; the default), a Grounder preset (Fast, Cheap, Live, Deep, Code or Balanced) or Grounder direct (the user picks the provider, and optionally its mode). Every mode returns exactly
+what the provider returns: this plugin cuts and reranks nothing of it. A Hermes that
+bundles its own Grounder provider has both commands, so there ``register`` adds neither (``_commands_taken``).
 """
 
 from __future__ import annotations

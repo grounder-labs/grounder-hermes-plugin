@@ -12,6 +12,11 @@ in the browser, paste a search key from https://grounder.net/account/keys, or st
   free searches instead.
 - Search key: the user runs `hermes config set GROUNDER_API_KEY <their-key>` themselves, so the key is not in the chat.
 
-Once connected, `/search` chooses how Grounder searches: let Grounder pick for you based on your prompt, a preset (Fast, Cheap, Live, Deep, Code or Balanced), or a
-provider to search with and only it (if it finds nothing, Grounder picks for you), with one of its modes if you like, and which live-data APIs it may use. `/search_presets` is the shortcut to the presets, and `/search auto`
-lets Grounder pick again. On Slack, `/search` is Slack's own command: type `/hermes search`.
+Once connected, `/search` chooses how Grounder searches, from three modes:
+
+- Grounder optimized: Grounder picks the provider for your question. This is the default.
+- Grounder preset: Fast, Cheap, Live, Deep, Code or Balanced. Grounder picks the best provider for the preset.
+- Grounder direct: you pick the provider to search with, and only it (what it finds is what you get, even when that is nothing), with one of its modes if you like.
+
+`/search` also chooses which live-data APIs Grounder may use. Every mode returns what the provider returns, uncut and not reranked. `/search_presets` is the shortcut
+to the presets, and `/search optimized` goes back to Grounder optimized. On Slack, `/search` is Slack's own command: type `/hermes search`.
