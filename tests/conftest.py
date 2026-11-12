@@ -14,6 +14,7 @@ import abc
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import types
@@ -98,11 +99,13 @@ def _install_hermes_stand_ins():
         path = home() / "config.yaml"
         return (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
 
+    redact = types.ModuleType("agent.redact")
+    redact._PREFIX_RE = re.compile(r"(?<![A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})")
     config.is_managed = lambda: False
     config.load_config = load_config
     config.save_config = save_config
     config.save_env_value = save_env_value
-    for module in (agent, web, scope, hermes_cli, constants, requests, config):
+    for module in (agent, web, scope, hermes_cli, constants, requests, config, redact):
         sys.modules[module.__name__] = module
 
 
@@ -131,6 +134,7 @@ class Stub:
     def __init__(self):
         self.requests = []
         self.search_status = 200
+        self.search_headers = {}  # extra headers on the /v1/search answer, e.g. a redirect's Location
         self.search_body = {"query": "q", "results": []}  # bytes are sent as they are, not as JSON
         self.features_body = {"features": []}
         self.providers_body = {"providers": [], "live_data_apis": []}
@@ -208,6 +212,8 @@ def stub():
             data = payload if raw else json.dumps(payload).encode()
             self.send_response(status)
             self.send_header("Content-Type", "text/html" if raw else "application/json")
+            for name, value in state.search_headers.items():
+                self.send_header(name, value)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -226,21 +232,32 @@ def plugin(stub, tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("GROUNDER_API_KEY", raising=False)
     monkeypatch.delenv("GROUNDER_OAUTH_CLIENT_ID", raising=False)
-    real = urllib.request.urlopen
+    # urlopen follows redirects, and with them a search key: the plugin sends every request through its own opener (``_open``), which follows none.
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_k: pytest.fail("the plugin called urlopen, which follows redirects; use provider._open"))
+    # Hermes's address check asks DNS; a test must not. This stand-in answers from the name alone: a host named ``resolves-private`` is one that resolves to a private address.
+    try:
+        import tools  # noqa: F401
+    except ImportError:
+        monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
+    safety = types.ModuleType("tools.url_safety")
+    safety.normalize_url_for_request = lambda url: url
+    safety.is_safe_url = lambda url: "resolves-private" not in url
+    monkeypatch.setitem(sys.modules, "tools.url_safety", safety)
+    module = _load_plugin()
+    real = module.provider._open
 
-    def to_stub(request, *args, **kwargs):
+    def to_stub(request, timeout):
         """The plugin's own requests (a key's search, a free search, a public list) reach the stub where they would reach Grounder; any other address fails the test."""
-        url = request if isinstance(request, str) else request.full_url
+        url = request.full_url
         if url.startswith("https://api.grounder.net/"):
-            moved = stub.origin + url[len("https://api.grounder.net"):]
-            request = moved if isinstance(request, str) else urllib.request.Request(
-                moved, data=request.data, headers=dict(request.header_items()), method=request.get_method())
+            request = urllib.request.Request(stub.origin + url[len("https://api.grounder.net"):], data=request.data,
+                                             headers=dict(request.header_items()), method=request.get_method())
         else:
             assert url.startswith(stub.origin) or url.startswith("http://127.0.0.1:"), f"a test reached {url}, not the stub"
-        return real(request, *args, **kwargs)
+        return real(request, timeout)
 
-    monkeypatch.setattr(urllib.request, "urlopen", to_stub)
-    return _load_plugin()
+    monkeypatch.setattr(module.provider, "_open", to_stub)
+    return module
 
 
 @pytest.fixture
@@ -262,3 +279,9 @@ def keyed(plugin, stub, monkeypatch):
 def free(hermes):
     """No key and no grant: Hermes raises ``ProviderNotSignedIn``, and a free search goes to the stub with no credential."""
     return hermes
+
+
+@pytest.fixture
+def in_chat(monkeypatch):
+    """The session the tests' hooks name (``session_id="s"``) is the one the tool calls run in, as in Hermes."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "s")

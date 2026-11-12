@@ -50,13 +50,25 @@ def test_a_free_search_sends_neither_the_chosen_server_nor_the_mode(plugin, stub
     assert json.loads(_searches(stub)[0]["body"]) == {"query": "q", "top_k": 5, "text_max_chars": 800}
 
 
-def test_a_free_search_the_model_asked_options_for_is_left_for_grounder_to_refuse(plugin, stub, free):
-    # Grounder refuses a caller with no account a profile, routing settings and a workspace; the plugin neither drops them nor invents them.
-    stub.search_status = 400
-    stub.search_body = {"error": {"code": "invalid_request", "message": "profile changes how a search runs on a Grounder account; search with your account's key or connection."}}
-    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "profile": "fast"}))
-    assert json.loads(_searches(stub)[0]["body"])["profile"] == "fast"
-    assert out["success"] is False and "account's key or connection" in out["error"]
+def test_a_free_search_drops_the_options_grounder_refuses_a_caller_with_no_account_and_says_so(plugin, stub, free):
+    # Grounder answers a caller with no account 400 for a profile, routing settings or a workspace: nothing is sent that it would refuse, so no round trip is wasted.
+    stub.search_body = {"query": "q", "results": [RESULT]}
+    provider = plugin.GrounderWebSearchProvider()
+    out = json.loads(provider.search_tool({"query": "q", "profile": "fast", "routing_settings": {"providers": {"exa": {"use": "always"}}},
+                                            "workspace": "team", "top_k": 3}))
+    sent = json.loads(_searches(stub)[0]["body"])
+    assert len(_searches(stub)) == 1 and sent["top_k"] == 3
+    assert not {"profile", "routing_settings", "workspace"} & set(sent)
+    assert out["success"] is True and out["data"]["web"] and "profile, routing_settings, workspace were not sent" in out["note"] and SIGN_IN in out["note"]
+    # One that asked for none gets no note, and a search with a key sends all three.
+    assert "note" not in json.loads(provider.search_tool({"query": "q"}))
+
+
+def test_a_signed_in_search_keeps_the_options_a_free_one_drops(plugin, stub, hermes):
+    hermes.token = "t"
+    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "profile": "fast", "workspace": "team"}))
+    sent = json.loads(_searches(stub)[0]["body"])
+    assert sent["profile"] == "fast" and sent["workspace"] == "team" and "note" not in out
 
 
 def test_a_free_search_that_reaches_a_limit_says_where_to_sign_up_and_add_credit(plugin, stub, free):
@@ -64,16 +76,19 @@ def test_a_free_search_that_reaches_a_limit_says_where_to_sign_up_and_add_credit
     provider = plugin.GrounderWebSearchProvider()
     stub.search_status = 429
     stub.search_body = {"error": {"code": "daily_limit_reached", "message": "the API's own words", "details": {"daily_limit": 50, **links}}}
+    said = ("You've used Grounder's free searches. Sign up at https://grounder.net/account, then add credit at https://grounder.net/account/billing. "
+            f"Then sign in with `{SIGN_IN}`, or set a search key in `GROUNDER_API_KEY`.")
+    # Hermes serves a FAILED search from its keyless ring of other vendors, which would hide this: it is a successful result that carries the words (GRO-832).
     daily = provider.search("q")
-    assert daily == {"success": False, "error": (
-        "You've used Grounder's free searches. Sign up at https://grounder.net/account, then add credit at https://grounder.net/account/billing. "
-        f"Then sign in with `{SIGN_IN}`, or set a search key in `GROUNDER_API_KEY`.")}
+    assert daily["success"] is True and daily["data"][plugin.provider.NOTICE_KEY] == "act"
+    [row] = daily["data"]["web"]
+    assert said in row["description"] and row["url"] == "https://grounder.net/account" and row["description"].startswith("Grounder did not run this search.")
     stub.search_status = 503
     stub.search_body = {"error": {"code": "capacity_reached", "message": "the API's own words", "details": links}}
-    capacity = provider.search("q")["error"]
-    assert capacity.startswith("Grounder's free searches have reached their limit for now. Sign up at https://grounder.net/account, then add credit at ")
+    capacity = provider.search("q")["data"]["web"][0]["description"]
+    assert "Grounder's free searches have reached their limit for now. Sign up at https://grounder.net/account, then add credit at " in capacity
     # The plugin names no limit of its own: a number in these words would be one Grounder can change.
-    assert not re.search(r"\d", daily["error"].replace(links["signup_url"], "").replace(links["billing_url"], "")) and not re.search(r"\d", capacity)
+    assert not re.search(r"\d", row["description"].replace(links["signup_url"], "").replace(links["billing_url"], "")) and not re.search(r"\d", capacity.replace(links["signup_url"], "").replace(links["billing_url"], ""))
     stub.search_status = 200
 
 
@@ -84,10 +99,12 @@ def test_a_per_minute_limit_with_no_links_keeps_the_apis_words(plugin, stub, fre
 
 
 def test_a_limit_on_a_search_with_a_key_is_not_a_free_search_limit(plugin, stub, keyed):
-    # With a key the search is not free, so Grounder's sign-up words are not its answer to it.
+    # With a key the search is not free, so Grounder's sign-up words are not its answer to it: its own words, the account's, are.
     stub.search_status = 429
     stub.search_body = {"error": {"code": "daily_limit_reached", "message": "add credit", "details": {"signup_url": "https://grounder.net/account"}}}
-    assert plugin.GrounderWebSearchProvider().search("q") == {"success": False, "error": "Grounder rate limit reached: add credit"}
+    [row] = plugin.GrounderWebSearchProvider().search("q")["data"]["web"]
+    assert row["description"] == "Grounder did not run this search. add credit Tell the user this; the same search fails again until they have."
+    assert "Sign up" not in row["description"]
 
 
 def test_signed_in_search_goes_through_hermes_which_attaches_the_token(plugin, stub, hermes):
@@ -256,15 +273,34 @@ def test_key_in_environment_wins_and_goes_without_hermes(plugin, stub, hermes, k
     assert json.loads(request["body"]) == {"query": "q", "top_k": 5, "text_max_chars": 800}
 
 
-def test_a_refused_key_and_a_refused_sign_in_each_say_what_to_fix(plugin, stub, hermes, monkeypatch):
+def _said(result):
+    """The words of a result that is Grounder's message to the user in place of rows."""
+    assert result["success"] is True and result["data"][NOTICE] == "act", result
+    return result["data"]["web"][0]["description"]
+
+
+NOTICE = "grounder_notice"
+
+
+def test_a_refused_key_a_refused_sign_in_and_a_refused_free_search_each_say_their_own_true_thing(plugin, stub, hermes, monkeypatch):
     hermes.token = "revoked-token"
-    assert plugin.GrounderWebSearchProvider().search("q") == {
-        "success": False, "error": "Grounder rejected the sign-in. Run `hermes auth add grounder:grounder`."}
+    assert f"Grounder rejected the sign-in. Run `{SIGN_IN}`." in _said(plugin.GrounderWebSearchProvider().search("q"))
     monkeypatch.setenv("GROUNDER_API_KEY", "revoked-key")
     monkeypatch.setattr(plugin.provider, "SEARCH_URL", f"{stub.origin}/v1/search")
-    assert plugin.GrounderWebSearchProvider().search("q") == {
-        "success": False, "error": "Grounder rejected the search key in `GROUNDER_API_KEY`."}
+    key = _said(plugin.GrounderWebSearchProvider().search("q"))
+    assert "Grounder rejected the search key in `GROUNDER_API_KEY`." in key and "grounder.net/account/keys" in key
     assert len(_searches(stub)) == 2 and len(hermes.calls) == 1
+    # A free search carries no key: it must never be told it sent one (seen live on 0.5.14, which said "rejected the search key in GROUNDER_API_KEY" with none set).
+    monkeypatch.delenv("GROUNDER_API_KEY")
+    monkeypatch.setattr(plugin.provider, "SEARCH_URL", f"{plugin.provider.ORIGIN}/v1/search")
+    hermes.token = None
+    stub.search_status, stub.search_body = 401, {"error": {"code": "unauthorized", "message": "expired"}}
+    free = _said(plugin.GrounderWebSearchProvider().search("q"))
+    assert "GROUNDER_API_KEY`." in free and "rejected the search key" not in free and "rejected the sign-in" not in free and SIGN_IN in free
+    # The same words reach a page read, as the page's content with no error, so Hermes serves nothing in its place.
+    [page] = plugin.GrounderWebSearchProvider().extract(["https://example.com/a"])
+    assert "error" not in page and "no account" in page["content"] and page["url"] == plugin.provider.GROUNDER_SITE
+    stub.search_status = 200
 
 
 def test_what_hermes_raises_becomes_a_failure_not_an_exception(plugin, stub, hermes):
@@ -272,11 +308,12 @@ def test_what_hermes_raises_becomes_a_failure_not_an_exception(plugin, stub, her
     hermes.raises = plugin.provider.AuthError(
         "grounder:grounder: GROUNDER_OAUTH_CLIENT_ID is not set.", provider="grounder:grounder",
         code="oauth_client_id_missing")
-    assert provider.search("q") == {"success": False, "error":
-                                    "Grounder sign-in failed: grounder:grounder: GROUNDER_OAUTH_CLIENT_ID is not set."}
+    # A sign-in the user must fix is Grounder's message to them; a refresh that failed on the network is as transient as a timeout.
+    assert "Grounder sign-in failed: grounder:grounder: GROUNDER_OAUTH_CLIENT_ID is not set." in _said(provider.search("q"))
     hermes.raises = PermissionError("Refusing to send the grounder sign-in to elsewhere.example")
-    assert provider.search("q") == {"success": False, "error":
-                                    "Hermes refused the Grounder sign-in: Refusing to send the grounder sign-in to elsewhere.example"}
+    assert "Hermes refused the Grounder sign-in: Refusing to send the grounder sign-in to elsewhere.example" in _said(provider.search("q"))
+    hermes.raises = plugin.provider.AuthError("refresh failed: timed out", provider="grounder:grounder", code="oauth_refresh_failed")
+    assert provider.search("q") == {"success": False, "error": "Grounder sign-in failed: refresh failed: timed out"}
     hermes.raises = httpx.ConnectTimeout("timed out")
     assert provider.search("q") == {"success": False, "error": "Could not reach Grounder: timed out"}
     assert stub.requests == []
@@ -417,7 +454,7 @@ def test_remembered_searches_are_bounded_and_leave_nothing_on_disk(plugin, stub,
         stub.search_body = {"results": [{**RESULT, "url": f"https://example.com/{turn}/{i}"} for i in range(5)]}
         provider.search(f"q{turn}")
     assert len(provider._found_by) == plugin.provider.REMEMBERED_PAGES
-    assert "example.com/0/0" not in provider._found_by and "example.com/119/4" in provider._found_by
+    assert ("", "example.com/0/0") not in provider._found_by and ("", "example.com/119/4") in provider._found_by
     assert list(tmp_path.iterdir()) == []
 
 
@@ -629,29 +666,66 @@ def test_a_row_says_where_its_result_came_from_as_the_card_does(plugin, stub, ke
 def test_an_answer_that_searched_ends_with_the_card_line_once(plugin, stub, keyed):
     stub.search_body = ROUTED
     provider = plugin.GrounderWebSearchProvider()
-    provider.search("q")
-    assert provider.after_tool("web_search", {"query": "q"}, "{}", session_id="s", turn_id="t") is None
+    shown = json.dumps(provider.search("q"))
+    # A result with no rows is one the model was shown nothing of: it is not a source and not a line.
+    assert provider.after_tool("web_search", {"query": "q"}, "{}", session_id="s", turn_id="t0") is None
+    assert provider.after_answer("The answer.\n", session_id="s", turn_id="t0") is None
+    provider.after_tool("web_search", {"query": "q"}, shown, session_id="s", turn_id="t")
     assert provider.after_answer("The answer.\n", session_id="s", turn_id="t") == "The answer.\n\nSearched with Grounder · via Exa, xAI +1 · 1 source · 1.4 s"
     assert provider.after_answer("Again.", session_id="s", turn_id="t") is None
 
 
-def test_every_search_of_a_turn_is_on_the_one_line(plugin, stub, keyed):
-    stub.search_body = {**ROUTED, "usage": {"latency_ms": 300}, "routing": {"calls": [{"provider": "exa", "status": "ok", "result_count": 1}]}}
+def _two_searches(plugin, stub, monkeypatch, clock, answer="A"):
+    """Two searches of one turn, each of 300 ms by Grounder's count, that end at the times ``clock`` gives; the line under the answer."""
+    ticks = iter(clock)
+    monkeypatch.setattr(plugin.provider, "_clock", lambda: next(ticks))
     provider = plugin.GrounderWebSearchProvider()
     for query in ("one", "two"):
-        provider.search(query)
-        provider.after_tool("web_search", {"query": query}, "{}", session_id="s", turn_id="t")
-    assert provider.after_answer("A", session_id="s", turn_id="t") == "A\n\nSearched with Grounder · via Exa · 2 sources · 600 ms"
+        stub.search_body = {**ROUTED, "usage": {"latency_ms": 300}, "routing": {"calls": [{"provider": "exa", "status": "ok", "result_count": 1}]},
+                            "results": [{**RESULT, "url": f"https://example.com/{query}"}]}
+        provider.after_tool("web_search", {"query": query}, json.dumps(provider.search(query)), session_id="s", turn_id="t")
+    return provider.after_answer(answer, session_id="s", turn_id="t")
+
+
+def test_every_search_of_a_turn_is_on_the_one_line_and_the_time_is_what_the_user_waited(plugin, stub, keyed, monkeypatch):
+    # One after the other, the waits add up.
+    assert _two_searches(plugin, stub, monkeypatch, [10.0, 20.0]) == "A\n\nSearched with Grounder · via Exa · 2 sources · 600 ms"
+
+
+def test_searches_that_ran_together_share_their_time_and_the_line_counts_the_pages_once(plugin, stub, keyed, monkeypatch):
+    # Two that overlap (parallel tool calls) took 400 ms of the user's time, not 600: 0.5.14 summed the latencies ("39 sources · 37.7 s" for five).
+    assert _two_searches(plugin, stub, monkeypatch, [10.0, 10.1]) == "A\n\nSearched with Grounder · via Exa · 2 sources · 400 ms"
+
+
+def test_the_line_counts_the_rows_the_model_was_shown_not_the_rows_hermes_asked_for(plugin, stub, keyed):
+    # Hermes asks the backend for a bucketed number of rows (3 becomes 10) and cuts them to the model's limit before the hook sees the result.
+    stub.search_body = _routed(*(f"https://example.com/{i}" for i in range(10)))
+    provider = plugin.GrounderWebSearchProvider()
+    got = provider.search("q", limit=10)
+    assert len(got["data"]["web"]) == 10
+    cut = json.dumps({**got, "data": {"web": got["data"]["web"][:3]}})
+    provider.after_tool("web_search", {"query": "q", "limit": 3}, cut, session_id="s", turn_id="t")
+    assert provider.after_answer("A", session_id="s", turn_id="t").endswith("· 3 sources · 1.4 s")
+
+
+def test_a_search_answered_again_from_hermess_cache_is_counted_but_not_timed_again(plugin, stub, keyed):
+    stub.search_body = ROUTED
+    provider = plugin.GrounderWebSearchProvider()
+    shown = json.dumps(provider.search("q"))
+    provider.after_tool("web_search", {"query": "q"}, shown, session_id="s", turn_id="t1")
+    assert provider.after_answer("A", session_id="s", turn_id="t1").endswith("· 1 source · 1.4 s")
+    provider.after_tool("web_search", {"query": "q"}, shown, session_id="s", turn_id="t2")  # the plugin was not asked: Hermes had the answer
+    assert provider.after_answer("A", session_id="s", turn_id="t2").endswith("· 1 source")
 
 
 def test_no_line_for_a_turn_grounder_did_not_search(plugin, stub, keyed):
     stub.search_body = ROUTED
     provider = plugin.GrounderWebSearchProvider()
-    provider.search("q")
-    provider.after_tool("web_search", {"query": "another backend answered this"}, "{}", session_id="s", turn_id="t")
+    shown = json.dumps(provider.search("q"))
+    provider.after_tool("web_search", {"query": "another backend answered this"}, shown, session_id="s", turn_id="t")
     provider.after_tool("terminal", {"command": "ls"}, "{}", session_id="s", turn_id="t")
     assert provider.after_answer("A", session_id="s", turn_id="t") is None
-    provider.after_tool("web_search", {"query": "q"}, "{}", session_id="s", turn_id="t")
+    provider.after_tool("web_search", {"query": "q"}, shown, session_id="s", turn_id="t")
     assert provider.after_answer("A", session_id="other", turn_id="t") is None
 
 
@@ -674,7 +748,7 @@ def test_a_read_grounder_served_asks_for_citations_outside_the_page(plugin, stub
     assert data["pages"] == plugin.provider.FILES_NOTE and "read_file finds none" in data["pages"]
 
 
-def test_the_notes_come_once_a_turn_on_its_first_result_grounder_served(plugin, stub, keyed):
+def test_the_notes_come_once_a_turn_on_its_first_result_grounder_served(plugin, stub, keyed, in_chat):
     # GRO-698: every search of a turn repeated about 420 characters of notes; an answer needs them once.
     url = "https://example.com/a"
     stub.search_body = {"query": "q", "results": [{**RESULT, "url": url, "text": "page text"}]}
@@ -710,7 +784,7 @@ def _routed(*urls):
     return {**ROUTED, "results": [{**RESULT, "url": url, "title": f"Title {url[-1]}"} for url in urls]}
 
 
-def test_results_are_numbered_across_the_turn_and_a_page_keeps_its_number(plugin, stub, keyed):
+def test_results_are_numbered_across_the_chat_and_a_page_keeps_its_number(plugin, stub, keyed, in_chat):
     provider = plugin.GrounderWebSearchProvider()
     searched = lambda query, turn="t": json.loads(provider.after_tool("web_search", {"query": query}, json.dumps(provider.search(query)),
                                                                       session_id="s", turn_id=turn))
@@ -726,9 +800,9 @@ def test_results_are_numbered_across_the_turn_and_a_page_keeps_its_number(plugin
                                     {"url": "https://example.com/e", "title": "", "content": "", "error": "could not read"}]})
     read = json.loads(provider.after_tool("web_extract", {}, pages, session_id="s", turn_id="t"))["results"]
     assert [page.get("position") for page in read] == [2, 4, None]
-    # The next turn starts again at 1.
-    stub.search_body = _routed(PAGE_C)
-    assert searched("three", "t2")["data"]["web"][0]["position"] == 1
+    # The next turn goes on from there, as the model was told to cite across the whole chat: a page the chat numbered keeps its number, and a new one is the next.
+    stub.search_body = _routed(PAGE_C, "https://example.com/z")
+    assert [row["position"] for row in searched("three", "t2")["data"]["web"]] == [3, 5]
 
 
 def test_the_plugin_writes_the_sources_list_of_what_the_answer_cites_then_the_card_line(plugin, stub, keyed):
@@ -757,7 +831,7 @@ def test_no_list_is_added_to_an_answer_that_wrote_its_own_or_cites_none(plugin, 
     provider.extract([PAGE_A])
     page = json.dumps({"results": [{"url": PAGE_A, "title": "T", "content": "x", "error": None}]})
     provider.after_tool("web_extract", {}, page, session_id="s", turn_id="t4")
-    assert provider.after_answer("Read [1].", session_id="s", turn_id="t4") == f"Read [1].\n\nSources:\n- T — {PAGE_A}"
+    assert provider.after_answer("Read [1].", session_id="s", turn_id="t4") == f"Read [1].\n\nSources:\n- Title a — {PAGE_A}"
 
 
 def test_a_host_that_names_no_turn_keeps_the_searchs_positions_and_the_model_writes_the_list(plugin, stub, keyed):
@@ -808,7 +882,7 @@ def test_a_page_read_by_search_that_fails_says_so_and_sends_one_search(plugin, s
 
 # --- a failed read keeps what the search showed (GRO-694) -----------------------------------------------------------
 
-def test_a_failed_read_of_a_page_a_search_returned_gives_what_that_search_showed(plugin, stub, keyed):
+def test_a_failed_read_of_a_page_a_search_returned_gives_what_that_search_showed(plugin, stub, keyed, in_chat):
     provider = plugin.GrounderWebSearchProvider()
     stub.search_body = {"results": [{**RESULT, "url": PAGE_A, "title": "Page A", "text": "the passage the search showed"}]}
     provider.search("q")
@@ -897,8 +971,8 @@ def test_grounder_search_reads_pages_at_the_page_budget_and_reports_failures(plu
 def test_grounder_search_gets_the_card_line(plugin, stub, keyed):
     stub.search_body = ROUTED
     provider = plugin.GrounderWebSearchProvider()
-    provider.search_tool({"query": "q"})
-    provider.after_tool("grounder_search", {"query": "q"}, "{}", session_id="s", turn_id="t")
+    shown = provider.search_tool({"query": "q"})
+    provider.after_tool("grounder_search", {"query": "q"}, shown, session_id="s", turn_id="t")
     assert "Searched with Grounder" in provider.after_answer("A", session_id="s", turn_id="t")
 
 

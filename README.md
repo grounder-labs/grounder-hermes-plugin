@@ -25,8 +25,10 @@ Once Grounder is listed in the Hermes plugin catalog, `hermes plugins install gr
 
 With no search key and no sign-in, a search is one of Grounder's free searches. It carries no credential and runs within the free
 limits Grounder sets; this plugin repeats none of them, so a limit Grounder changes needs no change here. A free search cannot
-choose its server or its mode, so it sends neither. When the free searches are used up, the search fails with a message that says
-where to sign up and where to add credit, with the links Grounder returned. Sign up, then connect your account as below.
+choose its server or its mode, so it sends neither, and a `grounder_search` that asks for a profile, routing settings or a workspace
+runs without them and says so. When the free searches are used up, the search answers with a message that says where to sign up and
+where to add credit, with the links Grounder returned, as its result: Hermes would serve a failed search from its keyless free tier and
+the message would never reach you. Sign up, then connect your account as below.
 
 ## Connect your account
 
@@ -47,14 +49,12 @@ Hermes keeps it in your profile's `.env`, and the plugin sends it with each sear
 ### By signing in
 
 ```sh
-hermes config set GROUNDER_OAUTH_CLIENT_ID https://api.grounder.net/oauth/clients/hermes-agent
 hermes auth add grounder:grounder
 ```
 
-The first line names Grounder's public sign-in client for Hermes: the same for everyone and not a secret, set once because
-Hermes reads a plugin's client from your profile's `.env`. The plugin writes the same line itself when it first loads, so
-it is only needed if you sign in before starting Hermes. The second opens Grounder's sign-in page. Sign in or create an
-account, then allow Hermes Agent to search for it. There is no key to copy. Hermes keeps the grant in your profile,
+This opens Grounder's sign-in page. Sign in or create an account, then allow Hermes Agent to search for it. There is nothing to
+set first: the plugin writes Grounder's public sign-in client (the same for everyone, not a secret) to your profile's `.env` itself
+when it first loads. There is no key to copy. Hermes keeps the grant in your profile,
 refreshes it and attaches it to each search; the plugin never sees a token. The grant searches and nothing else: it cannot
 reach your account's settings, keys or billing.
 
@@ -91,7 +91,7 @@ first time it loads this version. It happens once per profile: to use another ba
 `extract_backend` can stay on another backend while Grounder searches.
 
 With no search key, the plugin also writes `GROUNDER_OAUTH_CLIENT_ID` to your profile's `.env`. It is Grounder's public
-sign-in client, the same for everyone and not a secret, and it saves you the `hermes config set` before `hermes auth add`.
+sign-in client, the same for everyone and not a secret, which Hermes needs before `hermes auth add` can sign in.
 Until you connect your account, your searches are Grounder's free searches.
 
 ## What Hermes gets
@@ -113,7 +113,8 @@ The first result Grounder serves in a turn, a search or a read, ends with two no
 which says each text is part of its page, how to ask for another part and that Grounder saves no page to a file (Hermes's own
 `web_extract` saves a long page's text for `read_file`, and a model expecting that guessed file names), then `cite_sources`, which
 asks the model to cite each result it uses by its number in square brackets, like `[3]`, and to write no Sources list, since
-the plugin adds one. The turn's later results carry neither, which saves about 420 characters on each.
+the plugin adds one. A result's number is its number in the whole chat: the numbers go on from one turn to the next, and a page
+keeps its number. The turn's later results carry neither note, which saves about 420 characters on each.
 
 `web_extract` reads up to 5 pages in a call and returns one entry for each, in the order asked:
 
@@ -134,24 +135,31 @@ from its own cache, so without this a model that needed more of a page fetched i
 The pages you ask for always lead what Grounder returns, ahead of anything its search found beside them.
 
 An answer that cites a Grounder result ends with a Sources list the plugin writes: one plain bullet for each result the answer cites
-by number, with its title and link. The model writes only the numbers, which spares it the slowest tokens it makes; an
-answer that wrote its own list, under a Sources or References heading, gets none added. Then an answer that searched ends with
-one line saying who answered, how many sources came back and how long it took, for example
+by number, with its title and link, whichever turn of the chat found it. The model writes only the numbers, which spares it the
+slowest tokens it makes; an answer that wrote its own list, under a Sources or References heading or label, gets none added, and
+neither does a bracketed number inside code, like `items[2]`, make one. Only `http` and `https` addresses are listed, and a title
+is shown as plain words: a page's own title cannot add a link or a heading to your answer. Then an answer that searched ends with
+one line saying who answered, how many sources the model was shown and how long you waited, for example
 `Searched with Grounder · via Exa, Brave · 8 sources · 1.4 s`. Both are added by the plugin. Hermes keeps them with the answer,
 so they are also in the history later turns send. A host that does not say which answer a search serves gets no list: there
 the model is asked to write its own, as in any client.
 
-A failed search returns `success: false` and one of these errors. Hermes then retries the search on its own keyless free
-tier and, if that answers, returns those results with `rescued_from: grounder` and the error in `backend_error`. If it
+Two kinds of failure reach the model differently. One you must act on (the free searches or your account's limit reached,
+a search key or sign-in Grounder no longer accepts) comes back as the search's result, with Grounder's message and what to do
+about it, so Hermes does not replace it with another vendor's results and the message reaches you. A transient one (the network, a
+timeout, a rate limit, a 5xx) comes back as `success: false` and one of these errors; Hermes then retries the search on its own
+keyless free tier and, if that answers, returns those results with `rescued_from: grounder` and the error in `backend_error`. If it
 does not, Hermes passes the error to the model. `web.keyless_fallback: false` in `config.yaml` turns off Hermes's keyless
-tier.
+tier, and a Hermes that honours a provider's `keyless_rescue` setting never rescues this plugin's failures.
 
 | Error | What to do |
 |---|---|
 | Grounder rejected the search key in `GROUNDER_API_KEY` | Check the key on your Search keys page, or remove it to use the sign-in |
 | You've used Grounder's free searches, or Grounder's free searches have reached their limit for now | Sign up at the link in the message and, to search past the free ones, add credit at the second link; then set a search key or run `hermes auth add grounder:grounder` |
 | Grounder rejected the sign-in | Run `hermes auth add grounder:grounder` |
-| Grounder sign-in failed | Follow Hermes's reason in the message, such as setting `GROUNDER_OAUTH_CLIENT_ID` |
+| Grounder refused a search with no account | Sign in with `hermes auth add grounder:grounder`, or set a search key |
+| Grounder sign-in failed | Follow Hermes's reason in the message |
+| Blocked: an address carries a key or token, or is not public | Leave that address out: nothing was sent to Grounder |
 | Grounder rate limit reached | Wait; the message says which limit |
 | Could not reach Grounder | Check the network, then search again |
 
@@ -194,7 +202,10 @@ Each `web_search` query, up to its first 2,000 characters, goes to `https://api.
 of results wanted, the 800 characters of text it wants for each result, your search key or, when you signed in, the
 access token Hermes attaches (a free search sends neither), the server and mode you chose with `/search` and `/search_presets` when
 you are signed in or use a key, a user agent naming this plugin and its version, two random tokens, one for the session and one for the prompt, so one prompt's searches can be told from the next, and the name of the model whose answer asked for the search, as Hermes reports it. The tokens carry no Hermes id or message. Nothing else from Hermes goes with a search: not the conversation, the
-model's other output or what other tools returned. When a search fails, Hermes may send the same query to its keyless
+model's other output or what other tools returned. An address in a query or in `urls` that carries what looks like a key or token
+(Hermes's own check for `web_extract`, on the address and its decoded form, and your own search key), or that is not a public web
+address, is never sent: the call is refused and says why. The plugin follows no redirect from Grounder, so a search key goes to
+Grounder and nowhere else. When a search fails for a transient reason, Hermes may send the same query to its keyless
 free tier, as "What Hermes gets" says; that is Hermes's own behaviour, not Grounder's.
 
 Each `web_extract` sends the addresses of its pages, the characters of text it wants for each (6,000, or the model's `char_limit` up to 30,000), the same credential and

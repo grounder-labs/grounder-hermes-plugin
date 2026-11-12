@@ -10,7 +10,9 @@ URL, description, position). An extract reads the pages it is given and returns
 what in each answers the ``web_search`` that found it, at most ``EXTRACT_CHARS``
 characters; a page no search led to comes back from its start. Every failure is
 reported, never raised: ``{"success": False, "error": ...}`` for a search, the
-page's own ``error`` for an extract.
+page's own ``error`` for an extract. A failure the user must act on (a limit reached, a key or
+sign-in Grounder no longer accepts) is reported as a result that carries Grounder's message (``_notice``),
+because Hermes serves a failed search from its keyless ring of other vendors' results, and the message would never reach the user.
 
 A result Grounder served asks the model to cite what it uses by number, and an
 answer ends with the Sources list of what it cites and, when it searched, the line
@@ -25,8 +27,9 @@ A call uses the Grounder search key in ``GROUNDER_API_KEY`` when one is set, and
 for the ``oauth:`` client in ``plugin.yaml`` (``hermes auth add grounder:grounder``):
 Hermes signs in, stores and refreshes that grant and attaches its token to the
 request, so this plugin never holds a token. With neither, a search is one of Grounder's free searches: it carries no
-credential, and neither the server nor the mode the user chose, which Grounder refuses a caller with no account. A free
-search that reaches Grounder's limit says where to sign up and add credit, with the links the API gave.
+credential, and neither the server nor the mode the user chose, nor a profile, routing settings or workspace the model asked for, which Grounder refuses a caller
+with no account. A free search that reaches Grounder's limit says where to sign up and add credit, with the links the API gave. No request the plugin makes follows
+a redirect (``_open``), and no address that carries a key or is not public is sent (``_refusal``).
 
 ``/search`` and ``/search_presets`` (``commands.py``) save the server and the mode to ``web.grounder.server`` and
 ``web.grounder.preset``, the same keys Hermes's own Grounder provider reads, and a signed-in ``web_search`` or
@@ -36,17 +39,21 @@ search that reaches Grounder's limit says where to sign up and add credit, with 
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import logging
 import os
 import secrets
 import re
+import socket
 import threading
+import time
+import unicodedata
 import urllib.error
 import urllib.request
 from collections import Counter
 from typing import Any, Optional
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -64,7 +71,7 @@ PROVIDERS_URL = f"{ORIGIN}/v1/providers"  # public: the search providers and the
 PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the search modes, which /search_presets offers
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.14"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.15"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -76,6 +83,8 @@ MAX_EXTRACT_CHARS = 30000  # the most a model's char_limit raises that to (GRO-7
 MAX_PAGES = 10  # Grounder's limit on the pages one call reads; Hermes asks for at most 5
 REMEMBERED_PAGES = 500  # how many pages the plugin remembers the web_search of, in memory only
 REMEMBERED_TURNS = 200  # how many searches and unfinished turns it remembers for the line under an answer, in memory only
+REMEMBERED_CHATS = 64  # how many chats it keeps the numbered sources of, in memory only
+REMEMBERED_SOURCES = 200  # how many sources of one chat it keeps; a number is never given twice, so the oldest simply stop being listed
 # Two notes the model reads once an answer, on the first of the turn's results Grounder served (GRO-698): every search of a turn repeating them cost
 # about 420 characters a search, and an answer needs them once. `after_tool` adds them, as the result's last fields, so the citation request is
 # the last thing read; a host that names no turn gets them on every result.
@@ -83,7 +92,7 @@ CITE_KEY = "cite_sources"
 # The model cites by number and `after_answer` writes the Sources list from what Grounder served (GRO-701): a list of titles and links was a third of an
 # answer, in the model's slowest and dearest tokens, and the plugin already holds every word of it. A result's `position` is its number across the turn.
 CITE_REQUEST = ("Cite every result your answer uses by its position in square brackets, like [3], in this answer and in every later one in this chat, "
-                "not only the first. Positions run on across this answer's searches and page reads, so each number names one result. "
+                "not only the first. Positions run on across every search and page read of this chat, so each number names one result for the whole chat. "
                 "End the answer with its last sentence: write no Sources, References or Citations list and no links, since Grounder adds the list of "
                 "every cited result's title and link under the answer, and one you write costs tokens for nothing.")
 # For a host that names no turn the plugin cannot tell which answer a result serves, so the model writes the list itself. The first sentence is word for
@@ -101,10 +110,13 @@ FILES_NOTE = ("Each text is the part of its page that answers the query. For ano
 # to fetch the page itself, and Hermes wrote itself a skill to do so whenever Grounder erred (GRO-688).
 SHOWN_NOTE = "Grounder could not read this page in full. This is what its search showed of it."
 ADDRESS = re.compile(r"https?://[^\s<>\"'`]+", re.I)
-# A heading or label that starts a Sources list the model wrote itself, so the plugin adds none.
-LISTED = re.compile(r"^[ \t>]*(?:#{1,6}[ \t]*|\*\*|__)?(?:sources|references|citations)\b", re.I | re.M)
+# A heading or label that starts a Sources list the model wrote itself, so the plugin adds none: the word alone on its line (`Sources`, `## Sources`,
+# `**Sources**`), or as a label with a colon (`Sources:`, `**Sources:** [1] ...`). A sentence that begins with the word ("Sources differ slightly ...") is not one.
+LISTED = re.compile(r"^[ \t>]*(?:#{1,6}[ \t]*)?(?:\*\*|__)?(?:sources|references|citations)(?:\*\*|__)?[ \t]*(?::|$)", re.I | re.M)
 # A citation: [3], [3, 5] or [3-5].
 CITED = re.compile(r"\[(\d{1,3}(?:\s*[,–-]\s*\d{1,3})*)\]")
+# Code, which is never a citation: a fenced block (to its closing fence, or the end of the text) and an inline span (`items[2]`).
+CODE = re.compile(r"(?s)(?:```|~~~).*?(?:```|~~~|\Z)|(`+)(?!`)(?:(?!\n\n).)+?(?<!`)\1(?!`)")
 SEARCH_TOOL = "grounder_search"
 LIST_PROVIDERS_TOOL = "grounder_list_providers"
 TOOLSET = "grounder"
@@ -127,8 +139,8 @@ SEARCH_SCHEMA = {
         "requested_provider": {"type": "string", "description": f"Provider the user explicitly asked for, by id ({LIST_PROVIDERS_TOOL} lists them)."},
         "providers": {"type": "array", "items": {"type": "string"}, "description": "Explicit provider override: ids as for requested_provider."},
         "routing_settings": {"type": "object", "description": "This search's routing settings over the account's saved ones; not saved. Pass only what differs, "
-                                                              'when the user or the task calls for it, e.g. {"providers": {"exa": {"use": "always"}}}.'},
-        "workspace": {"type": "string", "description": "Slug of the workspace to search under; the default one when left out. An unknown slug is refused, never replaced by the default."},
+                                                              'when the user or the task calls for it, e.g. {"providers": {"exa": {"use": "always"}}}. Needs the user to be signed in to Grounder.'},
+        "workspace": {"type": "string", "description": "Slug of the workspace to search under; the default one when left out. An unknown slug is refused, never replaced by the default. Needs the user to be signed in to Grounder."},
         "profile": {"type": "string", "description": f"A search mode by id, which changes how this search runs ({LIST_PROVIDERS_TOOL} lists them under search_modes); `auto` is none. "
                                                       "Left out, the user's own choice stands. Needs the user to be signed in to Grounder."},
         "user_location": {"type": "string", "description": 'Where the user is, only if the user said so in this chat, e.g. "Austin, Texas". Never guess it.'},
@@ -181,29 +193,59 @@ def _row(result: dict[str, Any], position: int, chars: int = 0) -> dict[str, Any
     response, and the line under an answer names the providers; the model reads none of it per result (GRO-698: about 100 characters a result).
     """
     date = str(result.get("published_date") or "")[:10]
-    return {"title": str(result.get("title", "")), "url": str(result.get("url", "")),
+    return {"title": str(result.get("title") or ""), "url": str(result.get("url") or ""),
             "description": _description(result, chars or DESCRIPTION_CHARS), "position": position, **({"date": date} if date else {})}
 
 
+def _listed(value: Any) -> list[Any]:
+    """``value`` when it is a list, else none: a response whose list is another shape is read as having none."""
+    return value if isinstance(value, list) else []
+
+
+def _results(body: dict[str, Any]) -> list[dict[str, Any]]:
+    """The result rows of a response: each one that is an object with an address (every result has one). A null among them, a row with none, or a ``results``
+    that is not a list, never fails the search."""
+    return [result for result in _listed(body.get("results")) if isinstance(result, dict) and isinstance(result.get("url"), str) and result["url"].strip()]
+
+
+# Where this process reads the time of a search, so the time under an answer can be tested.
+_clock = time.monotonic
+
+
 def _summary(body: dict[str, Any], sources: int) -> dict[str, Any]:
-    """What the line under an answer needs of one search: who answered, how many sources it returned and how long it took."""
+    """What the line under an answer needs of one search: who answered, how long it took and when it ran.
+
+    ``sources`` is how many results the plugin got, which says whether it found any; the line counts the ones the model was shown (``after_tool``).
+    """
     routing = body.get("routing") if isinstance(body.get("routing"), dict) else {}
-    calls = [*(routing.get("calls") or []), *(routing.get("live_calls") or [])]
+    calls = [*_listed(routing.get("calls")), *_listed(routing.get("live_calls"))]
     answered = [str(c.get("provider")) for c in calls if isinstance(c, dict) and c.get("status") == "ok" and c.get("result_count")]
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     latency = usage.get("latency_ms")
-    return {"via": [_provider_name(p) for p in dict.fromkeys(answered)], "sources": sources,
-            "ms": latency if isinstance(latency, int) else 0}
+    ms = latency if isinstance(latency, int) and not isinstance(latency, bool) else 0
+    return {"via": [_provider_name(p) for p in dict.fromkeys(answered)], "sources": sources, "ms": ms,
+            "from": _clock() - ms / 1000, "fresh": True}
+
+
+def _waited(searches: list[dict[str, Any]]) -> int:
+    """The milliseconds the searches of one answer took, with the time two that ran together shared counted once."""
+    spans = sorted((search["from"], search["from"] + search["ms"] / 1000) for search in searches if search["ms"])
+    total, end = 0.0, None
+    for start, finish in spans:
+        start = start if end is None else max(start, end)
+        total += max(0.0, finish - start)
+        end = finish if end is None else max(end, finish)
+    return round(total * 1000)
 
 
 def _card_line(searches: list[dict[str, Any]]) -> str:
-    """The line Grounder's card shows for a search, for every search of one answer: the providers that answered, the sources and the time."""
+    """The line Grounder's card shows for a search, for every search of one answer: the providers that answered, the sources the model was shown and the time."""
     via = list(dict.fromkeys(name for search in searches for name in search["via"]))
     parts = ["Searched with Grounder"]
     if via:
         parts.append("via " + ", ".join(via[:2]) + (f" +{len(via) - 2}" if len(via) > 2 else ""))
-    parts.append(_plural(sum(search["sources"] for search in searches), "source"))
-    total = sum(search["ms"] for search in searches)
+    parts.append(_plural(len(set().union(*(search["pages"] for search in searches))), "source"))
+    total = _waited(searches)
     if total:
         parts.append(_duration(total))
     return " · ".join(parts)
@@ -212,7 +254,7 @@ def _card_line(searches: list[dict[str, Any]]) -> str:
 def _cited(text: str) -> set[int]:
     """The numbers an answer cites in square brackets, a range counting each number in it."""
     numbers: set[int] = set()
-    for group in CITED.findall(text):
+    for group in CITED.findall(CODE.sub(" ", text)):
         for part in re.split(r"\s*,\s*", group):
             bounds = [int(bound) for bound in re.split(r"\s*[–-]\s*", part) if bound.isdigit()]
             if len(bounds) == 2 and bounds[0] <= bounds[1] <= bounds[0] + 50:
@@ -222,17 +264,36 @@ def _cited(text: str) -> set[int]:
     return numbers
 
 
+_MARKDOWN = re.compile(r"([\\\[\]()*_`#<>|~!])")
+_UNSEEN = ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp")  # control, format (zero-width, right-to-left), surrogate, private, unassigned and line-separator characters
+
+
+def _plain(title: str) -> str:
+    """A title as one line of plain words: no control, zero-width or direction characters, and no markdown, so a page's title cannot add a link, a heading or a list to the answer."""
+    text = " ".join("".join(" " if char.isspace() else char for char in title if char.isspace() or unicodedata.category(char) not in _UNSEEN).split())
+    return _MARKDOWN.sub(r"\\\1", text)
+
+
+def _link(url: str) -> str:
+    """An address as one safe token, or "" when it is not a web address: only http(s) is listed, and a space, quote, angle bracket or invisible character in it is percent-encoded."""
+    if not re.match(r"https?://[^/?#\s]", url, re.I):
+        return ""
+    return "".join("".join(f"%{byte:02X}" for byte in char.encode()) if char in ' <>"`\\{}|^' or unicodedata.category(char) in (*_UNSEEN, "Zs") else char for char in url)
+
+
 def _sources_list(text: str, sources: dict[str, dict[str, Any]]) -> str:
-    """The Sources list under an answer: each result it cites by number, with its title and link. None when it wrote its own or cites none."""
+    """The Sources list under an answer: each result it cites by number, with its title and link. None when it wrote its own or cites none.
+
+    A title and an address are a page's own words, so the list prints them defanged (``_plain``, ``_link``): a result is never listed under a ``javascript:``,
+    ``file:`` or ``data:`` address, and a title cannot carry markup into the answer the user reads.
+    """
     if not sources or LISTED.search(text):
         return ""
     cited = _cited(text)
     used = sorted((source for source in sources.values() if source["n"] in cited), key=lambda source: source["n"])
-    if not used:
-        return ""
     # One plain bullet each, in the order of their numbers (Harlan, 2026-11-11, GRO-731: "a bullet point for each unnumbered").
-    lines = [f"- {source['title'] or source['url']} — {source['url']}" for source in used]
-    return "Sources:\n" + "\n".join(lines)
+    lines = [f"- {_plain(source['title']) or link} — {link}" for source in used if (link := _link(source["url"]))]
+    return "Sources:\n" + "\n".join(lines) if lines else ""
 
 
 def _fail(error: str) -> dict[str, Any]:
@@ -245,6 +306,22 @@ def _key() -> str:
     return str(get_secret(KEY_ENV) or "").strip()
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow no redirect. urllib re-sends a redirected request to its new address with the headers it had, the search key's ``Authorization`` among them, so a
+    redirect to another host would hand that host the key. Hermes's own signed-in requests follow none either; a redirect from Grounder is an error here."""
+
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _open(request: urllib.request.Request, timeout: float) -> Any:
+    """Every request the plugin makes itself goes through here, so none follows a redirect."""
+    return _OPENER.open(request, timeout=timeout)
+
+
 def _post(payload: dict[str, Any], key: str = "") -> tuple[int, bytes]:
     """Send one search, with the user's own search key or, with none, as a free search that carries no credential; return the HTTP status and the body."""
     request = urllib.request.Request(
@@ -252,7 +329,7 @@ def _post(payload: dict[str, Any], key: str = "") -> tuple[int, bytes]:
         {**({"Authorization": f"Bearer {key}"} if key else {}), "Content-Type": "application/json",
          "Accept": "application/json", "User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+        with _open(request, TIMEOUT_S) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()
@@ -270,7 +347,7 @@ def _get(url: str) -> tuple[int, bytes]:
     """GET one of Grounder's public lists with no credential; return the HTTP status and the body."""
     request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=LIST_TIMEOUT_S) as response:
+        with _open(request, LIST_TIMEOUT_S) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()
@@ -332,22 +409,82 @@ def chosen() -> dict[str, Any]:
     return extra
 
 
-def _error_message(status: int, body: Any, via: str) -> str:
-    """A one-line message for a failed search, with Grounder's own reason when it gave one. ``via`` is how the search was made: ``key``, ``sign-in`` or ``free``."""
+ACT_CODES = ("daily_limit_reached", "capacity_reached", "cap_reached")  # a search refused for the user's own allowance, which only the user can change
+GROUNDER_SITE = "https://grounder.net/account"
+NOTICE_KEY = "grounder_notice"  # on a result that is Grounder's message to the user in place of rows: "act" (what the user must do first) or "refused"
+
+
+class _Act(str):
+    """A failure the user must act on: a limit reached, a key or sign-in Grounder no longer accepts. ``url`` is where to do it, when Grounder named one.
+
+    It reads as the plain message. The provider answers it with a result that carries the message, not a failure (``_notice``): Hermes serves a failed
+    search or read from its keyless ring, which hides the message from the user, and a transient failure is the only one it should cover.
+    """
+
+    url = ""
+
+
+def _error_parts(body: Any) -> tuple[dict[str, Any], Optional[str], dict[str, Any]]:
+    """The API's error object, its message and its details, each ``{}``/None when the body has none."""
     error = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), dict) else {}
     detail = error.get("message") if isinstance(error.get("message"), str) else None
     details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    return error, detail, details
+
+
+def _must_act(status: int, body: Any, via: str) -> bool:
+    """Whether a failed search is an answer the user must act on (a limit, a rejected key or sign-in), not a transient failure."""
+    error, _detail, details = _error_parts(body)
+    return status == 401 or (status in (429, 503) and (error.get("code") in ACT_CODES or (via == "free" and bool(details.get("signup_url")))))
+
+
+def _error_message(status: int, body: Any, via: str) -> str:
+    """A one-line message for a failed search, with Grounder's own reason when it gave one. ``via`` is how the search was made: ``key``, ``sign-in`` or ``free``."""
+    error, detail, details = _error_parts(body)
     if via == "free" and status in (429, 503) and details.get("signup_url"):
         # The links are the API's own, and the limits are in no sentence here: Grounder changes them, this plugin does not.
         credit = f", then add credit at {details['billing_url']}" if details.get("billing_url") else ""
         used = "You've used Grounder's free searches" if status == 429 else "Grounder's free searches have reached their limit for now"
         return f"{used}. Sign up at {details['signup_url']}{credit}. Then sign in with `{SIGN_IN}`, or set a search key in `{KEY_ENV}`."
     if status == 401:
-        return (f"Grounder rejected the sign-in. Run `{SIGN_IN}`." if via == "sign-in"
-                else f"Grounder rejected the search key in `{KEY_ENV}`.")
+        if via == "sign-in":
+            return f"Grounder rejected the sign-in. Run `{SIGN_IN}`."
+        if via == "key":
+            return f"Grounder rejected the search key in `{KEY_ENV}`. Check it at {KEYS_URL}, or remove it to search free."
+        return f"Grounder refused a search with no account. Sign in with `{SIGN_IN}`, or set a search key from {KEYS_URL} in `{KEY_ENV}`."
+    if status in (429, 503) and error.get("code") in ACT_CODES:
+        return detail or "This Grounder account has reached its limit for now."  # Grounder's own words say when it resets and where to add credit
     if status == 429:
         return f"Grounder rate limit reached: {detail or 'try again later'}"
+    if 300 <= status < 400:
+        return f"Grounder answered HTTP {status}, a redirect, which this plugin does not follow."
     return f"Grounder returned HTTP {status}" + (f": {detail}" if detail else "")
+
+
+def _act(message: str, url: str = "") -> _Act:
+    failure = _Act(message)
+    failure.url = url
+    return failure
+
+
+def _notice(failure: str, kind: str = "act") -> dict[str, Any]:
+    """A ``web_search`` result that carries Grounder's message as its one row, in place of a failure Hermes would serve from its keyless ring.
+
+    Hermes (0.23) serves any failed search of a non-ring backend from a free ring of other vendors' results, which hid a free-search limit's sign-up link
+    and a rejected key behind unrelated rows; a successful result is never served that way. ``kind`` is ``act`` (the user must do something first, so
+    ``after_tool`` has Hermes forget the result, which it would otherwise serve again for twenty minutes) or ``refused`` (this call is not made at all).
+    """
+    text = (f"Grounder did not run this search. {failure} Tell the user this; the same search fails again until they have." if kind == "act" else str(failure))
+    url = getattr(failure, "url", "") or (GROUNDER_SITE if kind == "act" else "")
+    return {"success": True, "data": {"web": [{"title": "Grounder", "url": url, "description": text, "position": 1}], NOTICE_KEY: kind}}
+
+
+def _notice_pages(urls: list[str], failure: str) -> list[dict[str, Any]]:
+    """The entries of a ``web_extract`` for a failure the user must act on: the message as each page's content, with no ``error``, so Hermes does not serve the
+    pages from its keyless ring. Each is filed under Grounder's own address, not the page's, so Hermes caches none of them as the page's text."""
+    url = getattr(failure, "url", "") or GROUNDER_SITE
+    text = f"Grounder did not read this page. {failure} Tell the user this; the same read fails again until they have."
+    return [{"url": url, "title": "Grounder", "content": text, "raw_content": text} for _ in urls]
 
 
 def _description(result: dict[str, Any], chars: int = DESCRIPTION_CHARS) -> str:
@@ -455,6 +592,13 @@ def _session() -> str:
         return os.environ.get("HERMES_SESSION_ID", "")
 
 
+def _chat(session: str) -> str:
+    """The chat a session belongs to: the conversation Hermes's ``pre_tool_call`` last named for it, else the session. What the plugin remembers of the pages
+    a search found, and the numbers a chat cites, is kept per chat: a gateway runs every user's sessions in one process, and one user's words and results
+    must never reach another's."""
+    return _TURNS.get(session, (session, ""))[0] if session else ""
+
+
 def _token(*parts: str) -> str:
     return hashlib.sha256(_SALT + "\0".join(parts).encode()).hexdigest()[:32]
 
@@ -470,11 +614,16 @@ def _context() -> dict[str, Any]:
     return {"session_ref": _token(conversation), **({"prompt_ref": _token(conversation, turn)} if turn else {}), **({"agent": {"model": model}} if model else {})}
 
 
-def _send(payload: dict[str, Any], extra: Optional[dict[str, Any]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+FREE_REFUSES = ("profile", "routing_settings", "workspace")  # what Grounder refuses a caller with no account (400): they change a search on an account's own settings
+
+
+def _send(payload: dict[str, Any], extra: Optional[dict[str, Any]] = None, dropped: Optional[list[str]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """One POST to Grounder: ``(body, None)``, or ``(None, error)`` when it failed. Never raises, and never retries: a second POST is a second search.
 
     ``extra`` is what only a signed-in search carries, the user's chosen mode and server (``chosen``): it goes with a search key or a sign-in, under anything the
-    request itself already says, and never with a free search, which Grounder refuses a caller with no account. A user with neither a key nor a grant searches free.
+    request itself already says, and never with a free search, which Grounder refuses a caller with no account. A user with neither a key nor a grant searches free,
+    and a free search sends none of ``FREE_REFUSES`` either, which the model may have chosen: the names it asked for are added to ``dropped``, so the result can say so.
+    An error the user must act on comes back as an ``_Act``.
     """
     key = _key()
     context = _context()
@@ -490,11 +639,15 @@ def _send(payload: dict[str, Any], extra: Optional[dict[str, Any]] = None) -> tu
                 status, raw = _post_signed_in(signed)
             except ProviderNotSignedIn:
                 via = "free"
-                status, raw = _post(payload)
+                if dropped is not None:
+                    dropped.extend(name for name in FREE_REFUSES if name in payload)
+                status, raw = _post({name: value for name, value in payload.items() if name not in FREE_REFUSES})
     except AuthError as error:
-        return None, f"Grounder sign-in failed: {error}"
+        message = f"Grounder sign-in failed: {error}"
+        # A refresh that failed on the network or Grounder's token service passes; any other sign-in failure is the user's to fix.
+        return None, message if getattr(error, "code", None) == "oauth_refresh_failed" else _act(message)
     except PermissionError as error:
-        return None, f"Hermes refused the Grounder sign-in: {error}"
+        return None, _act(f"Hermes refused the Grounder sign-in: {error}")
     except (httpx.HTTPError, urllib.error.URLError, TimeoutError, OSError) as error:
         logger.warning("Grounder request error: %s", error)
         return None, f"Could not reach Grounder: {error}"
@@ -505,8 +658,98 @@ def _send(payload: dict[str, Any], extra: Optional[dict[str, Any]] = None) -> tu
             return None, "Could not parse the Grounder response as JSON"
         body = None
     if status != 200 or not isinstance(body, dict):
-        return None, _error_message(status, body, via)
+        message = _error_message(status, body, via)
+        if not _must_act(status, body, via):
+            return None, message
+        link = str(_error_parts(body)[2].get("signup_url") or "") if via == "free" else ""
+        return None, _act(message, link if link.startswith("https://") else "")
     return body, None
+
+
+def _trim_address(address: str) -> str:
+    """An address as it is written in running text: without the punctuation that ends a sentence, and with a closing bracket only when it closes one inside
+    the address (``.../Python_(programming_language)`` keeps its ``)``; ``(see https://example.com/a)`` loses the one that is not the address's)."""
+    opens = {")": "(", "]": "[", "}": "{"}
+    while address:
+        last = address[-1]
+        if last in ".,;:!?" or (last in opens and address.count(last) > address.count(opens[last])):
+            address = address[:-1]
+        else:
+            break
+    return address
+
+
+SECRET_REFUSED = ("Blocked: an address in this call carries what looks like an API key or token, and secrets must not be sent in addresses. "
+                  "Nothing was sent to Grounder; leave that address out.")
+PRIVATE_REFUSED = ("Blocked: an address in this call is not a public web address (a private, loopback or link-local one, or one that does not resolve), "
+                   "so Grounder cannot read it. Nothing was sent to Grounder; leave that address out.")
+# The shapes of a key: Grounder's own, always; and the well-known prefixes, for a Hermes with no ``agent.redact`` (Hermes's own list is used when it has one).
+_OWN_KEY = re.compile(r"(?<![A-Za-z0-9])gr-[A-Za-z0-9]{24,}")
+_KEY_SHAPES = re.compile(r"(?<![A-Za-z0-9])(?:sk-|sk_live_|rk_live_|ghp_|gho_|ghs_|github_pat_|glpat-|xox[abprs]-|AKIA|ASIA|AIza)[A-Za-z0-9_\-]{20,}")
+
+
+def _private_host(host: str) -> bool:
+    """Whether a host name is a private, loopback, link-local or otherwise non-public address, or a name only a local network has."""
+    host = host.lower().rstrip(".")
+    if not host or host == "localhost" or host.endswith((".localhost", ".local", ".internal", ".lan", ".home.arpa")) or "." not in host and ":" not in host:
+        return True
+    try:
+        ip: Any = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            ip = ipaddress.ip_address(socket.inet_aton(host))  # 2130706433, 0x7f.1 and 127.1 are all 127.x
+        except OSError:
+            return False
+    return not (getattr(ip, "ipv4_mapped", None) or ip).is_global  # ::ffff:127.0.0.1 is read as the 127.0.0.1 inside it
+
+
+def _refusal(address: str) -> str:
+    """Why an address must not leave this machine for Grounder's reader, or "" when it may.
+
+    Hermes refuses a ``web_extract`` of an address that carries a key (``agent.redact``'s prefixes, checked on the address and its percent-decoded form) and one
+    that is not a public address (``tools.url_safety``). The same address as a ``web_search`` query or a ``grounder_search`` ``urls`` is read by Grounder's
+    reader just the same, so each goes through the same checks first. Hermes's own are used when this Hermes has them; a host with a password in it, a literal
+    private address, ``localhost`` and a local-only name are refused here either way. The reason never repeats the address.
+    """
+    forms = [address, unquote(address)]
+    try:
+        from tools.url_safety import normalize_url_for_request
+        normalized = normalize_url_for_request(address)
+        forms += [normalized, unquote(normalized)]
+    except Exception:  # a Hermes without it
+        pass
+    try:
+        from agent.redact import _PREFIX_RE as shapes
+    except ImportError:
+        shapes = _KEY_SHAPES
+    own = _key()
+    if any(shapes.search(form) or _OWN_KEY.search(form) or (own and own in form) for form in forms):
+        return SECRET_REFUSED
+    try:
+        parts = urlsplit(address)
+        if parts.scheme.lower() not in ("http", "https") or parts.username or parts.password or _private_host(parts.hostname or ""):
+            return PRIVATE_REFUSED
+    except ValueError:
+        return PRIVATE_REFUSED
+    try:
+        from tools.url_safety import is_safe_url
+    except ImportError:  # a Hermes without it
+        return ""
+    return "" if is_safe_url(address) else PRIVATE_REFUSED
+
+
+def _forget(args: Any) -> None:
+    """Have Hermes drop the result it just cached for this ``web_search``. It caches every successful result for twenty minutes by query, and a notice that
+    asks the user to act is one: without this a retry once they have signed in or added a key would be answered with the notice again. A Hermes that keeps
+    no such cache, or keeps it another way, leaves it to expire."""
+    try:
+        from tools.web_result_cache import search_memo
+        args = args if isinstance(args, dict) else {}
+        key = search_memo._key("grounder", str(args.get("query") or ""), int(args.get("limit") or 5))
+        with search_memo._store_lock:
+            search_memo._store.pop(key, None)
+    except Exception as error:
+        logger.debug("Could not drop a Grounder notice from Hermes's cache: %s", type(error).__name__)
 
 
 def _page_key(url: str, with_query: bool = True) -> str:
@@ -635,19 +878,29 @@ def search_modes() -> list[dict[str, str]]:
 class GrounderWebSearchProvider(WebSearchProvider):
     """Grounder's search API as a Hermes web search and extract provider."""
 
+    # Where Hermes honours it (newer Hermes, and the Grounder provider it bundles), a call that failed here is not served from Hermes's keyless ring of other
+    # vendors, so Grounder's own message reaches the user. Hermes 0.23 reads only the config key ``web.keyless_rescue`` and ignores this: there, a failure the
+    # user must act on comes back as a result instead (``_notice``), and only a transient one (a timeout, a network error, another 5xx) is left to the ring.
+    keyless_rescue = False
+
     def __init__(self) -> None:
-        # Each page a search returned and that search's query, oldest first, so an extract can be ranked against it. In memory only.
-        self._found_by: dict[str, str] = {}
+        # Each page a search returned and that search's query, oldest first, so an extract can be ranked against it, by chat and page: another user's session
+        # in the same process must not read them. In memory only.
+        self._found_by: dict[tuple[str, str], str] = {}
         # Each such page's title and the text the search showed of it, for a read of it that fails. In memory only.
-        self._shown: dict[str, tuple[str, str]] = {}
-        # The pages Grounder read, and each search's summary by its query: how the hooks tell Grounder's results from another backend's. In memory only.
-        self._read: dict[str, bool] = {}
+        self._shown: dict[tuple[str, str], tuple[str, str]] = {}
+        # The pages Grounder read. In memory only.
+        self._read: dict[tuple[str, str], bool] = {}
+        # Each search's summary by its query: how the hooks tell Grounder's results from another backend's, and what Hermes's own cache serves again. It holds
+        # providers, counts and times, never words of a result, so a search Hermes answers from its cache for another session still gets its line.
         self._searched: dict[str, dict[str, Any]] = {}
         # The searches of each turn not yet answered, by session and turn, and the turns whose model has read the notes.
         self._turns: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._noted: dict[tuple[str, str], bool] = {}
-        # Each turn's results Grounder served, by page, with the number the model cites it by and its title and link.
-        self._sources: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+        # Each chat's results Grounder served, by page, with the number the model cites it by and its title and link, and the last number given: numbers run on
+        # across the chat's turns, so a later answer can cite what an earlier one found.
+        self._sources: dict[str, dict[str, dict[str, Any]]] = {}
+        self._numbered: dict[str, int] = {}
         self._lock = threading.Lock()
 
     @property
@@ -674,18 +927,19 @@ class GrounderWebSearchProvider(WebSearchProvider):
 
     def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Search Grounder for up to ``limit`` results (1 to ``MAX_RESULTS``), or read the pages a query names (``_read_part``)."""
-        pages = list(dict.fromkeys(address.rstrip(".,;:!?)]}") for address in ADDRESS.findall(query)))[:MAX_PAGES]
-        if pages:
-            return self._read_part(query, pages)
+        addresses = [address for address in dict.fromkeys(_trim_address(found) for found in ADDRESS.findall(query)) if address]
+        if addresses:
+            # Every address in the query is checked before any is read: one that carries a key, or is not public, ends the call and nothing is sent.
+            why = next((reason for address in addresses if (reason := _refusal(address))), "")
+            return _notice(why, "refused") if why else self._read_part(query, addresses[:MAX_PAGES])
         # Grounder fills each result's text with the passages that best match the query, within the budget.
         payload = {"query": query[:MAX_QUERY_CHARS],
                    "top_k": max(1, min(int(limit), MAX_RESULTS)),
                    "text_max_chars": DESCRIPTION_CHARS}
         body, error = _send(payload, chosen())
         if body is None:
-            return _fail(error or "Grounder returned no answer")
-        results = body.get("results") or []
-        rows = [_row(r, i + 1) for i, r in enumerate(results[:max(1, int(limit))])]
+            return _notice(error) if isinstance(error, _Act) else _fail(error or "Grounder returned no answer")
+        rows = [_row(r, i + 1) for i, r in enumerate(_results(body)[:max(1, int(limit))])]
         self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows)))
         # The count only: a query is the user's words, and a log line outlives the search.
         logger.info("Grounder search: %d results", len(rows))
@@ -695,27 +949,35 @@ class GrounderWebSearchProvider(WebSearchProvider):
         """Read ``urls`` in one search, so it counts once: an entry per URL in their order, with an ``error`` on each page not read.
 
         Grounder keeps what in each page answers the question and at most ``EXTRACT_CHARS`` of it, to spare the model the rest, or as much as the
-        model's ``char_limit`` asked for, up to ``MAX_EXTRACT_CHARS`` (``note_turn``). Hermes's ``format`` and other ``kwargs`` change nothing.
+        model's ``char_limit`` asked for, up to ``MAX_EXTRACT_CHARS`` (``note_turn``). Hermes's ``format`` and other ``kwargs`` change nothing. An address that
+        carries a key or is not public is not sent (Hermes refuses most before this point): its entry says so, and the others are read.
         """
         asked = [str(url) for url in urls]
         pages = list(dict.fromkeys(asked))[:MAX_PAGES]
         if not pages:
             return []
+        refused = {page: reason for page in pages if (reason := _refusal(page))}
+        pages = [page for page in pages if page not in refused]
+        if not pages:
+            return [_page_error(url, refused[url]) for url in asked]
+        chat = _chat(_session())
         chars = _LIMITS.pop(_session(), EXTRACT_CHARS)
         body, error = _send({"query": self._question(pages), "urls": pages, "top_k": len(pages),
                              "text_max_chars": chars, "features": ["page-text"]})
         if body is None:
-            return [_page_error(url, error or "Grounder returned no answer") for url in asked]
-        found = _pages_found(pages, body.get("results") or [])
+            failed = _notice_pages(asked, error) if isinstance(error, _Act) else [_page_error(url, error or "Grounder returned no answer") for url in asked]
+            return [_page_error(url, refused[url]) if url in refused else entry for url, entry in zip(asked, failed)]
+        found = _pages_found(pages, _results(body))
         # The count only: an address says what the user is reading, and a log line outlives the search.
         logger.info("Grounder extract: %d of %d pages read", len(found), len(pages))
         with self._lock:
-            shown = {page: self._shown[_page_key(page)] for page in pages if page not in found and _page_key(page) in self._shown}
+            shown = {page: self._shown[(chat, _page_key(page))] for page in pages if page not in found and (chat, _page_key(page)) in self._shown}
             for page in [*found, *shown]:
-                self._read[_page_key(page)] = True
+                self._read[(chat, _page_key(page))] = True
             _bounded(self._read, REMEMBERED_PAGES)
         why = _unread(body)
-        return [_page_shown(url, shown[url]) if url in shown else _page_row(url, found.get(url), why.get(_page_key(url), ""), chars) for url in asked]
+        return [_page_error(url, refused[url]) if url in refused else
+                _page_shown(url, shown[url]) if url in shown else _page_row(url, found.get(url), why.get(_page_key(url), ""), chars) for url in asked]
 
     def _read_part(self, query: str, pages: list[str]) -> dict[str, Any]:
         """A ``web_search`` whose query holds pages' addresses: read those pages for the query's other words, in ``web_search``'s shape (GRO-691).
@@ -724,17 +986,18 @@ class GrounderWebSearchProvider(WebSearchProvider):
         fetched it with its own tools. Hermes keys its search cache by the query, so a new question reaches Grounder. A query of addresses alone is
         ranked as an extract is, against the search that found the pages.
         """
+        chat = _chat(_session())
         question = " ".join(ADDRESS.sub(" ", query).split())[:MAX_QUERY_CHARS] or self._question(pages)
         body, error = _send({"query": question, "urls": pages, "top_k": len(pages),
                              "text_max_chars": EXTRACT_CHARS, "features": ["page-text"]})
         if body is None:
-            return _fail(error or "Grounder returned no answer")
-        found = _pages_found(pages, body.get("results") or [])
+            return _notice(error) if isinstance(error, _Act) else _fail(error or "Grounder returned no answer")
+        found = _pages_found(pages, _results(body))
         logger.info("Grounder read by search: %d of %d pages read", len(found), len(pages))
         with self._lock:
-            shown = {page: self._shown[_page_key(page)] for page in pages if page not in found and _page_key(page) in self._shown}
+            shown = {page: self._shown[(chat, _page_key(page))] for page in pages if page not in found and (chat, _page_key(page)) in self._shown}
             for page in [*found, *shown]:
-                self._read[_page_key(page)] = True
+                self._read[(chat, _page_key(page))] = True
             _bounded(self._read, REMEMBERED_PAGES)
         if not found and not shown:
             why = _unread(body)
@@ -750,12 +1013,14 @@ class GrounderWebSearchProvider(WebSearchProvider):
         self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows)), found_by=False)
         return {"success": True, "data": {"web": rows}}
 
-    def after_tool(self, tool_name: str = "", args: Any = None, result: Any = None, session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
-        """Hermes's ``transform_tool_result``: note a search for the line under the answer, number each result Grounder served across the turn, and add
+    def after_tool(self, tool_name: str = "", args: Any = None, result: Any = None, session_id: str = "", turn_id: str = "", conversation_id: str = "",
+                   **_: Any) -> Optional[str]:
+        """Hermes's ``transform_tool_result``: note a search for the line under the answer, number each result Grounder served across the chat, and add
         the notes to the turn's first one.
 
         Hermes keeps only a page's url, title, content and error from an extract, so its number and the notes are added here, after that trim, and never
-        inside a page's text.
+        inside a page's text. What the line under the answer counts is what the model was shown, which is this result: Hermes asks for more rows than a
+        model's ``limit`` and cuts them to it before this hook sees them.
         """
         if tool_name not in ("web_search", SEARCH_TOOL, "web_extract"):
             return None
@@ -764,32 +1029,47 @@ class GrounderWebSearchProvider(WebSearchProvider):
         except (TypeError, ValueError):
             data = None
         data = data if isinstance(data, dict) else {}
+        if isinstance(data.get("data"), dict) and data["data"].get(NOTICE_KEY):
+            # Grounder's message to the user, not a search: nothing in it is a source. Hermes cached it for twenty minutes, and a retry once the user has
+            # acted must reach Grounder.
+            if data["data"][NOTICE_KEY] == "act":
+                _forget(args)
+            return None
         turn = (session_id, turn_id)
+        chat = conversation_id or _chat(session_id)
         # A host that names no turn cannot say which answer a result serves: positions stay the search's own, and every result gets the notes.
         named = all(turn)
         with self._lock:
             if tool_name == "web_extract":
                 entries = data.get("results") if isinstance(data.get("results"), list) else []
                 served = [entry for entry in entries if isinstance(entry, dict) and entry.get("content") and entry.get("url")
-                          and _page_key(str(entry["url"])) in self._read]
+                          and (chat, _page_key(str(entry["url"]))) in self._read]
             else:
                 summary = self._searched.get(str((args or {}).get("query", ""))[:MAX_QUERY_CHARS])
-                searched = summary is not None and bool(summary["sources"])
-                if searched:
-                    self._turns.setdefault(turn, []).append(summary)
-                    _bounded(self._turns, REMEMBERED_TURNS)
                 rows = (data.get("data") or {}).get("web") if isinstance(data.get("data"), dict) else None
-                served = [row for row in rows if isinstance(row, dict) and row.get("url")] if searched and isinstance(rows, list) else []
+                served = [row for row in rows if isinstance(row, dict) and row.get("url")] if summary is not None and summary["sources"] and isinstance(rows, list) else []
+                if served and summary is not None:
+                    # A search is timed once, when it ran: the same query answered again from Hermes's cache took no time.
+                    ran, summary["fresh"] = summary["fresh"], False
+                    self._turns.setdefault(turn, []).append({"via": summary["via"], "ms": summary["ms"] if ran else 0, "from": summary["from"],
+                                                             "pages": {_page_key(str(row["url"])) for row in served}})
+                    _bounded(self._turns, REMEMBERED_TURNS)
             if not served:
                 return None
             if named:
-                sources = self._sources.setdefault(turn, {})
-                _bounded(self._sources, REMEMBERED_TURNS)
+                sources = self._sources.pop(chat, {})
+                self._sources[chat] = sources  # a chat in use moves to the newest place
+                number = self._numbered.pop(chat, 0)
                 for entry in served:
                     key = _page_key(str(entry["url"]))
                     if key not in sources:
-                        sources[key] = {"n": len(sources) + 1, "title": " ".join(str(entry.get("title") or "").split()), "url": str(entry["url"])}
+                        number += 1
+                        sources[key] = {"n": number, "title": " ".join(str(entry.get("title") or "").split()), "url": str(entry["url"])}
                     entry["position"] = sources[key]["n"]
+                self._numbered[chat] = number
+                _bounded(sources, REMEMBERED_SOURCES)
+                _bounded(self._sources, REMEMBERED_CHATS)
+                _bounded(self._numbered, REMEMBERED_CHATS)
             notes = not named or turn not in self._noted
             if named and notes:
                 self._noted[turn] = True
@@ -799,13 +1079,15 @@ class GrounderWebSearchProvider(WebSearchProvider):
 
     def after_answer(self, response_text: str = "", session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
         """Hermes's ``transform_llm_output``: end an answer with the Sources list of what it cites and, when it searched, Grounder's card line.
-        Appends only, so Hermes keeps streaming the answer."""
+        The list names every result the answer cites that Grounder served in this chat, this turn's or an earlier one's. Appends only, so Hermes keeps
+        streaming the answer."""
+        chat = _chat(session_id)
         with self._lock:
             searches = self._turns.pop((session_id, turn_id), None)
-            sources = self._sources.pop((session_id, turn_id), None)
+            sources = dict(self._sources.get(chat) or {})
         if not response_text:
             return None
-        tail = [part for part in (_sources_list(response_text, sources or {}), _card_line(searches) if searches else "") if part]
+        tail = [part for part in (_sources_list(response_text, sources), _card_line(searches) if searches else "") if part]
         return f"{response_text.rstrip()}\n\n" + "\n\n".join(tail) if tail else None
 
     def search_tool(self, args: dict[str, Any], **_: Any) -> str:
@@ -813,22 +1095,29 @@ class GrounderWebSearchProvider(WebSearchProvider):
         query = str(args.get("query") or "").strip()[:MAX_QUERY_CHARS]
         if not query:
             return json.dumps(_fail("grounder_search needs a query"))
+        asked = args.get("urls")
+        why = next((reason for address in ([asked] if isinstance(asked, str) else asked if isinstance(asked, list) else []) if (reason := _refusal(str(address)))), "")
+        if why:
+            return json.dumps(_fail(why))
         chars = EXTRACT_CHARS if args.get("urls") else DESCRIPTION_CHARS
         # A page read is not shaped by a server the user chose for searches, so it carries only what the model asked.
-        body, error = _send(_options(args, query, chars), None if args.get("urls") else chosen())
+        dropped: list[str] = []
+        body, error = _send(_options(args, query, chars), None if args.get("urls") else chosen(), dropped)
         if body is None:
             return json.dumps(_fail(error or "Grounder returned no answer"))
-        rows = [_row(r, i + 1, chars) for i, r in enumerate(body.get("results") or [])]
+        rows = [_row(r, i + 1, chars) for i, r in enumerate(_results(body))]
         self._remember(query, rows, _summary(body, len(rows)))
         logger.info("Grounder search: %d results", len(rows))
         features = {"features": body["features"]} if body.get("features") else {}
-        return json.dumps({"success": True, "data": {"web": rows}, **features}, indent=2, ensure_ascii=False)
+        note = {"note": f"No Grounder account is connected, so {', '.join(dropped)} {'was' if len(dropped) == 1 else 'were'} not sent and this ran as a free search. "
+                        f"Sign in with `{SIGN_IN}`, or set a search key in `{KEY_ENV}`, to use {'it' if len(dropped) == 1 else 'them'}."} if dropped else {}
+        return json.dumps({"success": True, "data": {"web": rows}, **features, **note}, indent=2, ensure_ascii=False)
 
     def list_providers_tool(self, args: dict[str, Any], **_: Any) -> str:
         """The ``grounder_list_providers`` tool: what Grounder's MCP ``list_providers`` says, from the public feature list. Sends no credential and is not a search."""
         request = urllib.request.Request(FEATURES_URL, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+            with _open(request, TIMEOUT_S) as response:
                 body = json.loads(response.read())
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
             return json.dumps(_fail(f"Could not reach Grounder: {error}"))
@@ -841,9 +1130,10 @@ class GrounderWebSearchProvider(WebSearchProvider):
     def _remember(self, query: str, rows: list[dict[str, Any]], summary: dict[str, Any], found_by: bool = True) -> None:
         """Note the query that found each of a search's pages, for the extract that may read them next, and the search's summary.
         A read by search names its pages rather than finding them, so it leaves the query that found them in place."""
+        chat = _chat(_session())
         with self._lock:
             for row in rows if found_by else []:
-                key = _page_key(row["url"])
+                key = (chat, _page_key(row["url"]))
                 self._found_by.pop(key, None)  # a page found again moves to the newest place
                 self._found_by[key] = query
                 if row.get("description"):
@@ -856,10 +1146,11 @@ class GrounderWebSearchProvider(WebSearchProvider):
             _bounded(self._searched, REMEMBERED_TURNS)
 
     def _question(self, pages: list[str]) -> str:
-        """What to rank the pages against: the web_search that found the most of them, else the user's latest message, else their addresses, which ask
-        nothing."""
+        """What to rank the pages against: the web_search of this chat that found the most of them, else the user's latest message, else their addresses, which
+        ask nothing."""
+        chat = _chat(_session())
         with self._lock:
-            found = [self._found_by.get(_page_key(page)) for page in pages]
+            found = [self._found_by.get((chat, _page_key(page))) for page in pages]
         counts = Counter(query for query in found if query)
         if counts:
             return counts.most_common(1)[0][0]
