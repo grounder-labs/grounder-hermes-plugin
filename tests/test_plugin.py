@@ -646,7 +646,7 @@ def test_a_search_asks_for_citations_last_and_only_with_results(plugin, stub, ke
     first = json.loads(provider.after_tool("web_search", {"query": "q"}, json.dumps(provider.search("q")), session_id="s", turn_id="t"))
     assert list(first)[-2:] == ["pages", "cite_sources"]
     assert "saves no page to a file" in first["pages"] and "web_search its address" in first["pages"]
-    assert first["cite_sources"].startswith("Cite every result your answer uses by its position in square brackets, like [3], in this answer and in every later one")
+    assert first["cite_sources"].startswith("Cite every result your answer uses by its position in square brackets, like [3]. Positions belong to this answer alone")
     assert "write no Sources, References or Citations list" in first["cite_sources"]
     stub.search_body = {"query": "q", "results": []}
     empty = plugin.GrounderWebSearchProvider().search("q")
@@ -784,7 +784,7 @@ def _routed(*urls):
     return {**ROUTED, "results": [{**RESULT, "url": url, "title": f"Title {url[-1]}"} for url in urls]}
 
 
-def test_results_are_numbered_across_the_chat_and_a_page_keeps_its_number(plugin, stub, keyed, in_chat):
+def test_results_are_numbered_across_the_turn_and_a_page_keeps_its_number(plugin, stub, keyed, in_chat):
     provider = plugin.GrounderWebSearchProvider()
     searched = lambda query, turn="t": json.loads(provider.after_tool("web_search", {"query": query}, json.dumps(provider.search(query)),
                                                                       session_id="s", turn_id=turn))
@@ -800,9 +800,9 @@ def test_results_are_numbered_across_the_chat_and_a_page_keeps_its_number(plugin
                                     {"url": "https://example.com/e", "title": "", "content": "", "error": "could not read"}]})
     read = json.loads(provider.after_tool("web_extract", {}, pages, session_id="s", turn_id="t"))["results"]
     assert [page.get("position") for page in read] == [2, 4, None]
-    # The next turn goes on from there, as the model was told to cite across the whole chat: a page the chat numbered keeps its number, and a new one is the next.
+    # The next turn starts again at 1, and its answer cites only its own turn's results (GRO-835).
     stub.search_body = _routed(PAGE_C, "https://example.com/z")
-    assert [row["position"] for row in searched("three", "t2")["data"]["web"]] == [3, 5]
+    assert [row["position"] for row in searched("three", "t2")["data"]["web"]] == [1, 2]
 
 
 def test_the_plugin_writes_the_sources_list_of_what_the_answer_cites_then_the_card_line(plugin, stub, keyed):
@@ -818,7 +818,7 @@ def test_the_plugin_writes_the_sources_list_of_what_the_answer_cites_then_the_ca
     assert "- Title b" in provider.after_answer("See [2-3] and [9].", session_id="s", turn_id="t2")
 
 
-def test_no_list_is_added_to_an_answer_that_wrote_its_own_or_cites_none(plugin, stub, keyed):
+def test_no_list_is_added_to_an_answer_that_wrote_its_own_or_cites_none(plugin, stub, keyed, in_chat):
     provider = plugin.GrounderWebSearchProvider()
     stub.search_body = _routed(PAGE_A)
     card = "Searched with Grounder · via Exa, xAI +1 · 1 source · 1.4 s"
@@ -831,7 +831,7 @@ def test_no_list_is_added_to_an_answer_that_wrote_its_own_or_cites_none(plugin, 
     provider.extract([PAGE_A])
     page = json.dumps({"results": [{"url": PAGE_A, "title": "T", "content": "x", "error": None}]})
     provider.after_tool("web_extract", {}, page, session_id="s", turn_id="t4")
-    assert provider.after_answer("Read [1].", session_id="s", turn_id="t4") == f"Read [1].\n\nSources:\n- Title a — {PAGE_A}"
+    assert provider.after_answer("Read [1].", session_id="s", turn_id="t4") == f"Read [1].\n\nSources:\n- T — {PAGE_A}"
 
 
 def test_a_host_that_names_no_turn_keeps_the_searchs_positions_and_the_model_writes_the_list(plugin, stub, keyed):

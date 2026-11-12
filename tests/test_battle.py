@@ -71,43 +71,59 @@ def test_a_notice_is_dropped_from_hermess_cache_so_a_retry_after_the_user_acts_r
     assert _hook(provider, f"https://example.com/?k={FAKE_KEY}", refused) is None and len(Memo._store) == 2
 
 
-# --- 2: numbers and sources belong to the chat ---------------------------------------------------------------------------------------------------
+# --- 2: an answer cites only its own turn's results (GRO-835, reversing 0.5.15's per-chat numbers) ----------------------------------------------------
 
-def test_a_later_answer_lists_the_sources_it_cites_from_an_earlier_turn_and_numbers_go_on(plugin, stub, keyed, in_chat):
+def test_a_follow_up_that_searched_nothing_cites_nothing_by_number_and_gets_no_list(plugin, stub, keyed, in_chat):
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_body = _routed(PAGE_A, PAGE_B)
+    _hook(provider, "one", provider.search("one"), turn="t1")
+    first = provider.after_answer("First [1] [2].", session_id="s", turn_id="t1")
+    assert f"- Title a — {PAGE_A}\n- Title b — {PAGE_B}" in first
+    # Turn 2 made no search: whatever numbers it writes name nothing, so no list and no card line.
+    assert provider.after_answer("As said, [2].", session_id="s", turn_id="t2") is None
+    # The first turn's results were not kept for it, whichever order the turns are answered in.
+    assert provider.after_answer("As said, [1].", session_id="s", turn_id="t1") is None
+
+
+def test_a_follow_up_that_searches_starts_again_at_1_and_lists_only_its_own_results(plugin, stub, keyed, in_chat):
     provider = plugin.GrounderWebSearchProvider()
     stub.search_body = _routed(PAGE_A, PAGE_B)
     _hook(provider, "one", provider.search("one"), turn="t1")
     provider.after_answer("First [1] [2].", session_id="s", turn_id="t1")
-    # Turn 2 searches nothing and cites what turn 1 found: the plugin still has the list for it.
-    answer = provider.after_answer("As said, [2].", session_id="s", turn_id="t2")
-    assert answer == f"As said, [2].\n\nSources:\n- Title b — {PAGE_B}"
-    # Turn 3's new results go on from the chat's last number, and one answer lists numbers from both turns, in order of their numbers.
-    stub.search_body = _routed(PAGE_C)
-    assert _hook(provider, "three", provider.search("three"), turn="t3") and json.loads(_hook(provider, "three", provider.search("three"), turn="t3"))["data"]["web"][0]["position"] == 3
-    listed = provider.after_answer("Now [3] and [1].", session_id="s", turn_id="t3")
-    assert f"- Title a — {PAGE_A}\n- Title c — {PAGE_C}" in listed
+    stub.search_body = _routed(PAGE_C, PAGE_A)
+    second = json.loads(_hook(provider, "two", provider.search("two"), turn="t2"))
+    assert [row["position"] for row in second["data"]["web"]] == [1, 2]
+    answer = provider.after_answer("Now [1] and [2]; the earlier [3] is not here.", session_id="s", turn_id="t2")
+    assert answer.split("\n\nSearched")[0] == f"Now [1] and [2]; the earlier [3] is not here.\n\nSources:\n- Title c — {PAGE_C}\n- Title a — {PAGE_A}"
+    # Page B was turn 1's, and a number turn 1 gave it names nothing in turn 2.
+    assert PAGE_B not in answer
 
 
-def test_two_chats_number_apart_and_the_memory_of_each_is_bounded(plugin, stub, keyed):
+def test_the_citation_note_tells_the_model_to_cite_only_this_answers_results_and_never_an_earlier_number(plugin):
+    note = plugin.provider.CITE_REQUEST
+    assert "Positions belong to this answer alone" in note and "start again at [1] in the next answer that searches" in note
+    assert "an answer that made no search cites nothing by number, and never reuses a number from an earlier answer" in note and "search again when you need a source" in note
+    assert "in every later one in this chat" not in note and "whole chat" not in note
+    # The note for a host that names no turn is the MCP server's own words (the model writes the list, with links), and is not a number.
+    assert "[" not in plugin.provider.CITE_REQUEST_LISTED
+
+
+def test_two_chats_keep_their_results_apart_and_the_memory_of_each_turn_is_bounded(plugin, stub, keyed):
     provider = plugin.GrounderWebSearchProvider()
-    stub.search_body = _routed(PAGE_A)
-    for chat in ("one", "two"):
-        out = json.loads(_hook(provider, "q", provider.search("q"), session=chat, turn="t", conversation_id=chat))
-        assert out["data"]["web"][0]["position"] == 1
-    many = plugin.provider.REMEMBERED_SOURCES + 40
-    for turn in range(many):
-        stub.search_body = {**ROUTED, "results": [{**RESULT, "url": f"https://example.com/p{turn}", "title": f"P{turn}"}]}
+    stub.search_body = _routed(PAGE_A, PAGE_B)
+    _hook(provider, "q", provider.search("q"), session="one", turn="t", conversation_id="one")
+    stub.search_body = _routed(PAGE_C)
+    _hook(provider, "q2", provider.search("q2"), session="two", turn="t", conversation_id="two")
+    # The same turn id in another session is another turn: each answer lists only its own session's results, and nothing is kept once it is answered.
+    two = provider.after_answer("[1]", session_id="two", turn_id="t")
+    assert f"Title c — {PAGE_C}" in two and "Title a" not in two and "Title b" not in two
+    one = provider.after_answer("[1] [2]", session_id="one", turn_id="t")
+    assert "Title a" in one and "Title b" in one and "Title c" not in one
+    assert provider.after_answer("[1]", session_id="one", turn_id="t") is None
+    for turn in range(plugin.provider.REMEMBERED_TURNS + 40):
+        stub.search_body = _routed(PAGE_A)
         _hook(provider, f"q{turn}", provider.search(f"q{turn}"), session="big", turn=f"t{turn}", conversation_id="big")
-    assert len(provider._sources["big"]) == plugin.provider.REMEMBERED_SOURCES
-    # A number is never given twice, whatever was forgotten.
-    assert provider._numbered["big"] == many
-    for chat in range(plugin.provider.REMEMBERED_CHATS + 10):
-        _hook(provider, "q", provider.search("q"), session=f"c{chat}", turn="t", conversation_id=f"c{chat}")
-    assert len(provider._sources) == plugin.provider.REMEMBERED_CHATS and len(provider._numbered) == plugin.provider.REMEMBERED_CHATS
-
-
-def test_the_citation_request_tells_the_model_the_numbers_hold_for_the_whole_chat(plugin):
-    assert "every search and page read of this chat" in plugin.provider.CITE_REQUEST and "for the whole chat" in plugin.provider.CITE_REQUEST
+    assert len(provider._sources) <= plugin.provider.REMEMBERED_TURNS and len(provider._turns) <= plugin.provider.REMEMBERED_TURNS
 
 
 # --- 3: only a heading or a label line is a Sources list the model wrote ---------------------------------------------------------------------------

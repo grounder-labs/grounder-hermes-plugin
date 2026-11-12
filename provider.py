@@ -71,7 +71,7 @@ PROVIDERS_URL = f"{ORIGIN}/v1/providers"  # public: the search providers and the
 PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the search modes, which /search_presets offers
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.5.15"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.5.16"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -83,16 +83,18 @@ MAX_EXTRACT_CHARS = 30000  # the most a model's char_limit raises that to (GRO-7
 MAX_PAGES = 10  # Grounder's limit on the pages one call reads; Hermes asks for at most 5
 REMEMBERED_PAGES = 500  # how many pages the plugin remembers the web_search of, in memory only
 REMEMBERED_TURNS = 200  # how many searches and unfinished turns it remembers for the line under an answer, in memory only
-REMEMBERED_CHATS = 64  # how many chats it keeps the numbered sources of, in memory only
-REMEMBERED_SOURCES = 200  # how many sources of one chat it keeps; a number is never given twice, so the oldest simply stop being listed
 # Two notes the model reads once an answer, on the first of the turn's results Grounder served (GRO-698): every search of a turn repeating them cost
 # about 420 characters a search, and an answer needs them once. `after_tool` adds them, as the result's last fields, so the citation request is
 # the last thing read; a host that names no turn gets them on every result.
 CITE_KEY = "cite_sources"
 # The model cites by number and `after_answer` writes the Sources list from what Grounder served (GRO-701): a list of titles and links was a third of an
-# answer, in the model's slowest and dearest tokens, and the plugin already holds every word of it. A result's `position` is its number across the turn.
-CITE_REQUEST = ("Cite every result your answer uses by its position in square brackets, like [3], in this answer and in every later one in this chat, "
-                "not only the first. Positions run on across every search and page read of this chat, so each number names one result for the whole chat. "
+# answer, in the model's slowest and dearest tokens, and the plugin already holds every word of it. A result's `position` is its number across the turn, and an
+# answer cites only its own turn's results (Harlan, 2026-11-11, GRO-835: "Follow ups should only cite sources from their respective response"): the next answer
+# that searches starts again at [1], and one that searched nothing cites nothing by number, so the model must never reuse an earlier answer's number.
+CITE_REQUEST = ("Cite every result your answer uses by its position in square brackets, like [3]. Positions belong to this answer alone: they run on across "
+                "this answer's searches and page reads, and start again at [1] in the next answer that searches. Cite only results this answer's own searches "
+                "and page reads returned: an answer that made no search cites nothing by number, and never reuses a number from an earlier answer, so search "
+                "again when you need a source. "
                 "End the answer with its last sentence: write no Sources, References or Citations list and no links, since Grounder adds the list of "
                 "every cited result's title and link under the answer, and one you write costs tokens for nothing.")
 # For a host that names no turn the plugin cannot tell which answer a result serves, so the model writes the list itself. The first sentence is word for
@@ -594,7 +596,7 @@ def _session() -> str:
 
 def _chat(session: str) -> str:
     """The chat a session belongs to: the conversation Hermes's ``pre_tool_call`` last named for it, else the session. What the plugin remembers of the pages
-    a search found, and the numbers a chat cites, is kept per chat: a gateway runs every user's sessions in one process, and one user's words and results
+    a search found is kept per chat: a gateway runs every user's sessions in one process, and one user's words and results
     must never reach another's."""
     return _TURNS.get(session, (session, ""))[0] if session else ""
 
@@ -897,10 +899,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
         # The searches of each turn not yet answered, by session and turn, and the turns whose model has read the notes.
         self._turns: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._noted: dict[tuple[str, str], bool] = {}
-        # Each chat's results Grounder served, by page, with the number the model cites it by and its title and link, and the last number given: numbers run on
-        # across the chat's turns, so a later answer can cite what an earlier one found.
-        self._sources: dict[str, dict[str, dict[str, Any]]] = {}
-        self._numbered: dict[str, int] = {}
+        # Each turn's results Grounder served, by page, with the number the model cites it by and its title and link. An answer lists only its own turn's.
+        self._sources: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         self._lock = threading.Lock()
 
     @property
@@ -1015,7 +1015,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
 
     def after_tool(self, tool_name: str = "", args: Any = None, result: Any = None, session_id: str = "", turn_id: str = "", conversation_id: str = "",
                    **_: Any) -> Optional[str]:
-        """Hermes's ``transform_tool_result``: note a search for the line under the answer, number each result Grounder served across the chat, and add
+        """Hermes's ``transform_tool_result``: note a search for the line under the answer, number each result Grounder served across the turn, and add
         the notes to the turn's first one.
 
         Hermes keeps only a page's url, title, content and error from an extract, so its number and the notes are added here, after that trim, and never
@@ -1057,19 +1057,13 @@ class GrounderWebSearchProvider(WebSearchProvider):
             if not served:
                 return None
             if named:
-                sources = self._sources.pop(chat, {})
-                self._sources[chat] = sources  # a chat in use moves to the newest place
-                number = self._numbered.pop(chat, 0)
+                sources = self._sources.setdefault(turn, {})
+                _bounded(self._sources, REMEMBERED_TURNS)
                 for entry in served:
                     key = _page_key(str(entry["url"]))
                     if key not in sources:
-                        number += 1
-                        sources[key] = {"n": number, "title": " ".join(str(entry.get("title") or "").split()), "url": str(entry["url"])}
+                        sources[key] = {"n": len(sources) + 1, "title": " ".join(str(entry.get("title") or "").split()), "url": str(entry["url"])}
                     entry["position"] = sources[key]["n"]
-                self._numbered[chat] = number
-                _bounded(sources, REMEMBERED_SOURCES)
-                _bounded(self._sources, REMEMBERED_CHATS)
-                _bounded(self._numbered, REMEMBERED_CHATS)
             notes = not named or turn not in self._noted
             if named and notes:
                 self._noted[turn] = True
@@ -1079,12 +1073,11 @@ class GrounderWebSearchProvider(WebSearchProvider):
 
     def after_answer(self, response_text: str = "", session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
         """Hermes's ``transform_llm_output``: end an answer with the Sources list of what it cites and, when it searched, Grounder's card line.
-        The list names every result the answer cites that Grounder served in this chat, this turn's or an earlier one's. Appends only, so Hermes keeps
-        streaming the answer."""
-        chat = _chat(session_id)
+        The list names the results the answer cites that this turn's own searches and reads returned, and none from an earlier turn: a turn that searched
+        nothing has no list, and its answer cites nothing by number. Appends only, so Hermes keeps streaming the answer."""
         with self._lock:
             searches = self._turns.pop((session_id, turn_id), None)
-            sources = dict(self._sources.get(chat) or {})
+            sources = self._sources.pop((session_id, turn_id), None) or {}
         if not response_text:
             return None
         tail = [part for part in (_sources_list(response_text, sources), _card_line(searches) if searches else "") if part]

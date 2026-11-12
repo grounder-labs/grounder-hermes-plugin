@@ -113,8 +113,10 @@ The first result Grounder serves in a turn, a search or a read, ends with two no
 which says each text is part of its page, how to ask for another part and that Grounder saves no page to a file (Hermes's own
 `web_extract` saves a long page's text for `read_file`, and a model expecting that guessed file names), then `cite_sources`, which
 asks the model to cite each result it uses by its number in square brackets, like `[3]`, and to write no Sources list, since
-the plugin adds one. A result's number is its number in the whole chat: the numbers go on from one turn to the next, and a page
-keeps its number. The turn's later results carry neither note, which saves about 420 characters on each.
+the plugin adds one. A result's number belongs to the answer that searched: the numbers run on across that turn's searches and
+page reads, a page keeps its number within the turn, and the next answer that searches starts again at `[1]`. An answer cites only
+its own turn's results; one that made no search cites nothing by number, and the model is told to search again when it needs a
+source. The turn's later results carry neither note, which saves about 420 characters on each.
 
 `web_extract` reads up to 5 pages in a call and returns one entry for each, in the order asked:
 
@@ -135,7 +137,8 @@ from its own cache, so without this a model that needed more of a page fetched i
 The pages you ask for always lead what Grounder returns, ahead of anything its search found beside them.
 
 An answer that cites a Grounder result ends with a Sources list the plugin writes: one plain bullet for each result the answer cites
-by number, with its title and link, whichever turn of the chat found it. The model writes only the numbers, which spares it the
+by number, with its title and link, from that answer's own searches and page reads only. A follow-up that searched nothing has no list.
+The model writes only the numbers, which spares it the
 slowest tokens it makes; an answer that wrote its own list, under a Sources or References heading or label, gets none added, and
 neither does a bracketed number inside code, like `items[2]`, make one. Only `http` and `https` addresses are listed, and a title
 is shown as plain words: a page's own title cannot add a link or a heading to your answer. Then an answer that searched ends with
