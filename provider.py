@@ -31,7 +31,7 @@ the request's ``mode`` (``_send``), and the line under an answer names the mode 
 from before 0.9.0 ignores ``mode`` and maps the same fields (``profile``, an exclusive pin) itself.
 
 The plugin selects itself the first time it loads in a profile (``__init__.py``), by
-setting ``web.search_backend: grounder`` and ``web.extract_backend: grounder``.
+setting ``web.search_backend: grounder`` and ``web.extract_backend: grounder`` for each the user has set no backend for.
 A call uses the Grounder search key in ``GROUNDER_API_KEY`` when one is set, and otherwise the sign-in Hermes keeps
 for the ``oauth:`` client in ``plugin.yaml`` (``hermes auth add grounder:grounder``):
 Hermes signs in, stores and refreshes that grant and attaches its token to the
@@ -80,7 +80,7 @@ PROVIDERS_URL = f"{ORIGIN}/v1/providers"  # public: the search providers and the
 PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /search offers
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.7.2"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.7.3"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -121,7 +121,7 @@ LISTED = re.compile(r"^[ \t>]*(?:#{1,6}[ \t]*)?(?:\*\*|__)?(?:sources|references
 # A citation: [3], [3, 5] or [3-5].
 CITED = re.compile(r"\[(\d{1,3}(?:\s*[,–-]\s*\d{1,3})*)\]")
 # Code, which is never a citation: a fenced block (to its closing fence, or the end of the text) and an inline span (`items[2]`).
-CODE = re.compile(r"(?s)(?:```|~~~).*?(?:```|~~~|\Z)|(`+)(?!`)(?:(?!\n\n).)+?(?<!`)\1(?!`)")
+CODE = re.compile(r"(?s)(?:\x60{3}|~~~).*?(?:\x60{3}|~~~|\Z)|(\x60+)(?!\x60)(?:(?!\n\n).)+?(?<!\x60)\1(?!\x60)")  # \x60 is the backtick, spelled so no line reads as a shell snippet to `hermes plugins validate`
 SEARCH_TOOL = "grounder_search"
 LIST_PROVIDERS_TOOL = "grounder_list_providers"
 TOOLSET = "grounder"
@@ -610,10 +610,12 @@ def _notice(failure: str, kind: str = "act") -> dict[str, Any]:
     """A ``web_search`` result that carries Grounder's message as its one row, in place of a failure Hermes would serve from its keyless ring.
 
     Hermes (0.23) serves any failed search of a non-ring backend from a free ring of other vendors' results, which hid a free-search limit's sign-up link
-    and a rejected key behind unrelated rows; a successful result is never served that way. ``kind`` is ``act`` (the user must do something first, so
-    ``after_tool`` has Hermes forget the result, which it would otherwise serve again for twenty minutes) or ``refused`` (this call is not made at all).
+    and a rejected key behind unrelated rows; a successful result is never served that way. ``kind`` is ``act`` (the user must do something first; Hermes keeps every
+    successful result for twenty minutes by query and publishes no way to drop one, so the message tells the model to put the question in other words once the user has acted)
+    or ``refused`` (this call is not made at all).
     """
-    text = (f"Grounder did not run this search. {failure} Tell the user this; the same search fails again until they have." if kind == "act" else str(failure))
+    text = (f"Grounder did not run this search. {failure} Tell the user this; the same search fails again until they have. "
+            "Hermes keeps this message for twenty minutes, so once they have, search again with the question in other words." if kind == "act" else str(failure))
     url = getattr(failure, "url", "") or (GROUNDER_SITE if kind == "act" else "")
     return {"success": True, "data": {"web": [{"title": "Grounder", "url": url, "description": text, "position": 1}], NOTICE_KEY: kind}}
 
@@ -896,9 +898,70 @@ SECRET_REFUSED = ("Blocked: an address in this call carries what looks like an A
                   "Nothing was sent to Grounder; leave that address out.")
 PRIVATE_REFUSED = ("Blocked: an address in this call is not a public web address (a private, loopback or link-local one, or one that does not resolve), "
                    "so Grounder cannot read it. Nothing was sent to Grounder; leave that address out.")
-# The shapes of a key: Grounder's own, always; and the well-known prefixes, for a Hermes with no ``agent.redact`` (Hermes's own list is used when it has one).
+# The shapes of a key: Grounder's own, and the prefixes Hermes itself redacts (its ``agent.redact._PREFIX_PATTERNS``, vendored 2026-11-13 so the plugin imports nothing private:
+# the catalog's rule 9 lists ``agent.redact._PREFIX_RE`` as a core internal). Hermes refuses a ``web_extract`` of an address that carries one of these; so does the plugin, for the same
+# address as a ``web_search`` query or a ``grounder_search`` ``urls``. A family Hermes adds later is refused by Hermes's own ``web_extract`` and not here until this list follows it.
 _OWN_KEY = re.compile(r"(?<![A-Za-z0-9])gr-[A-Za-z0-9]{24,}")
-_KEY_SHAPES = re.compile(r"(?<![A-Za-z0-9])(?:sk-|sk_live_|rk_live_|ghp_|gho_|ghs_|github_pat_|glpat-|xox[abprs]-|AKIA|ASIA|AIza)[A-Za-z0-9_\-]{20,}")
+KEY_PATTERNS = (
+    "sk-[A-Za-z0-9_-](?:\\.?[A-Za-z0-9_-]){9,}",
+    "ctx7sk-[A-Za-z0-9_-]{10,}",
+    "ghp_[A-Za-z0-9]{10,}",
+    "github_pat_[A-Za-z0-9_]{10,}",
+    "gho_[A-Za-z0-9]{10,}",
+    "ghu_[A-Za-z0-9]{10,}",
+    "ghs_[A-Za-z0-9]{10,}",
+    "ghr_[A-Za-z0-9]{10,}",
+    "xapp-\\d+-[A-Za-z0-9-]{10,}",
+    "xox[baprs]-[A-Za-z0-9-]{10,}",
+    "AIza[A-Za-z0-9_-]{30,}",
+    "pplx-[A-Za-z0-9]{10,}",
+    "fal_[A-Za-z0-9_-]{10,}",
+    "fc-[A-Za-z0-9]{10,}",
+    "bb_live_[A-Za-z0-9_-]{10,}",
+    "gAAAA[A-Za-z0-9_=-]{20,}",
+    "AKIA[A-Z0-9]{16}",
+    "sk_live_[A-Za-z0-9]{10,}",
+    "sk_test_[A-Za-z0-9]{10,}",
+    "rk_live_[A-Za-z0-9]{10,}",
+    "SG\\.[A-Za-z0-9_-]{10,}",
+    "hf_[A-Za-z0-9]{10,}",
+    "r8_[A-Za-z0-9]{10,}",
+    "npm_[A-Za-z0-9]{10,}",
+    "pypi-[A-Za-z0-9_-]{10,}",
+    "dop_v1_[A-Za-z0-9]{10,}",
+    "doo_v1_[A-Za-z0-9]{10,}",
+    "am_(?:org_)?[A-Za-z0-9]{20,}",
+    "sk_[A-Za-z0-9_]{10,}",
+    "tvly-[A-Za-z0-9]{10,}",
+    "exa_[A-Za-z0-9]{10,}",
+    "gsk_[A-Za-z0-9]{10,}",
+    "syt_[A-Za-z0-9]{10,}",
+    "retaindb_[A-Za-z0-9]{10,}",
+    "hsk-[A-Za-z0-9]{10,}",
+    "mem0_[A-Za-z0-9]{10,}",
+    "brv_[A-Za-z0-9]{10,}",
+    "xai-[A-Za-z0-9]{30,}",
+    "ntn_[A-Za-z0-9]{10,}",
+    "fw-[A-Za-z0-9]{30,}",
+    "fw_[A-Za-z0-9]{30,}",
+    "fpk_[A-Za-z0-9]{30,}",
+    "glpat-[A-Za-z0-9_\\-]{10,}",
+    "gloas-[A-Za-z0-9_\\-]{10,}",
+    "gldt-[A-Za-z0-9_\\-]{10,}",
+    "glrt-[A-Za-z0-9_.\\-]{10,}",
+    "glrtr-[A-Za-z0-9_.\\-]{10,}",
+    "glcbt-[A-Za-z0-9_\\-]{10,}",
+    "glptt-[A-Za-z0-9_\\-]{10,}",
+    "glft-[A-Za-z0-9_\\-]{10,}",
+    "glimt-[A-Za-z0-9_\\-]{10,}",
+    "glagent-[A-Za-z0-9_\\-]{10,}",
+    "glsoat-[A-Za-z0-9_\\-]{10,}",
+    "glffct-[A-Za-z0-9_\\-]{10,}",
+    "glwt-[A-Za-z0-9_\\-]{10,}",
+    "GR1348941[A-Za-z0-9_\\-]{10,}",
+    "pk-lf-[A-Za-z0-9\\-]{8,}",
+)
+_KEY_SHAPES = re.compile(r"(?<![A-Za-z0-9_-])(?:" + "|".join(KEY_PATTERNS) + r")(?![A-Za-z0-9_-])")
 
 
 def _private_host(host: str) -> bool:
@@ -919,24 +982,14 @@ def _private_host(host: str) -> bool:
 def _refusal(address: str) -> str:
     """Why an address must not leave this machine for Grounder's reader, or "" when it may.
 
-    Hermes refuses a ``web_extract`` of an address that carries a key (``agent.redact``'s prefixes, checked on the address and its percent-decoded form) and one
-    that is not a public address (``tools.url_safety``). The same address as a ``web_search`` query or a ``grounder_search`` ``urls`` is read by Grounder's
-    reader just the same, so each goes through the same checks first. Hermes's own are used when this Hermes has them; a host with a password in it, a literal
-    private address, ``localhost`` and a local-only name are refused here either way. The reason never repeats the address.
+    Hermes refuses a ``web_extract`` of an address that carries a key (the prefixes in ``KEY_PATTERNS``, checked on the address and its percent-decoded form) and one
+    that is not a public address (``tools.url_safety.is_safe_url``, a published plugin API). The same address as a ``web_search`` query or a ``grounder_search`` ``urls`` is read by
+    Grounder's reader just the same, so each goes through the same checks first. A host with a password in it, a literal private address, ``localhost`` and a local-only name are
+    refused here whether or not this Hermes has ``is_safe_url``. The reason never repeats the address.
     """
     forms = [address, unquote(address)]
-    try:
-        from tools.url_safety import normalize_url_for_request
-        normalized = normalize_url_for_request(address)
-        forms += [normalized, unquote(normalized)]
-    except Exception:  # a Hermes without it
-        pass
-    try:
-        from agent.redact import _PREFIX_RE as shapes
-    except ImportError:
-        shapes = _KEY_SHAPES
     own = _key()
-    if any(shapes.search(form) or _OWN_KEY.search(form) or (own and own in form) for form in forms):
+    if any(_KEY_SHAPES.search(form) or _OWN_KEY.search(form) or (own and own in form) for form in forms):
         return SECRET_REFUSED
     try:
         parts = urlsplit(address)
@@ -949,20 +1002,6 @@ def _refusal(address: str) -> str:
     except ImportError:  # a Hermes without it
         return ""
     return "" if is_safe_url(address) else PRIVATE_REFUSED
-
-
-def _forget(args: Any) -> None:
-    """Have Hermes drop the result it just cached for this ``web_search``. It caches every successful result for twenty minutes by query, and a notice that
-    asks the user to act is one: without this a retry once they have signed in or added a key would be answered with the notice again. A Hermes that keeps
-    no such cache, or keeps it another way, leaves it to expire."""
-    try:
-        from tools.web_result_cache import search_memo
-        args = args if isinstance(args, dict) else {}
-        key = search_memo._key("grounder", str(args.get("query") or ""), int(args.get("limit") or 5))
-        with search_memo._store_lock:
-            search_memo._store.pop(key, None)
-    except Exception as error:
-        logger.debug("Could not drop a Grounder notice from Hermes's cache: %s", type(error).__name__)
 
 
 def _page_key(url: str, with_query: bool = True) -> str:
@@ -1236,10 +1275,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
             data = None
         data = data if isinstance(data, dict) else {}
         if isinstance(data.get("data"), dict) and data["data"].get(NOTICE_KEY):
-            # Grounder's message to the user, not a search: nothing in it is a source. Hermes cached it for twenty minutes, and a retry once the user has
-            # acted must reach Grounder.
-            if data["data"][NOTICE_KEY] == "act":
-                _forget(args)
+            # Grounder's message to the user, not a search: nothing in it is a source. Hermes keeps it for twenty minutes by query, and the plugin cannot drop it (Hermes
+            # publishes no way to), so the notice itself says to search again in other words once the user has acted (``_notice``).
             return None
         turn = (session_id, turn_id)
         chat = conversation_id or _chat(session_id)

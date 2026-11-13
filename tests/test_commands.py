@@ -210,8 +210,17 @@ def test_a_profile_with_no_config_at_all_registers_no_command(plugin, tmp_path):
     assert host.commands == {} and not (tmp_path / "config.yaml").exists()
 
 
+def test_the_first_load_with_another_backend_chosen_leaves_it_and_registers_no_command(plugin, tmp_path):
+    _config(tmp_path, search_backend="firecrawl", extract_backend="firecrawl")
+    host = Host()  # the first load in this profile: a backend the user chose is left alone, so Grounder is not the backend and /search is not there
+    plugin.register(host)
+    assert host.commands == {}
+    web = yaml.safe_load((tmp_path / "config.yaml").read_text())["web"]
+    assert web == {"search_backend": "firecrawl", "extract_backend": "firecrawl"}
+
+
 def test_the_load_that_makes_grounder_the_backend_registers_the_command_in_the_same_load(plugin, tmp_path):
-    _config(tmp_path, search_backend="firecrawl")
+    _config(tmp_path, keyless_fallback=False)  # no backend chosen yet
     host = Host()  # the first load in this profile: the plugin selects itself, then registers
     plugin.register(host)
     assert set(host.commands) == {"search"}

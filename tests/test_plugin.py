@@ -104,7 +104,8 @@ def test_a_limit_on_a_search_with_a_key_is_not_a_free_search_limit(plugin, stub,
     stub.search_status = 429
     stub.search_body = {"error": {"code": "daily_limit_reached", "message": "add credit", "details": {"signup_url": "https://grounder.net/account"}}}
     [row] = plugin.GrounderWebSearchProvider().search("q")["data"]["web"]
-    assert row["description"] == "Grounder did not run this search. add credit Tell the user this; the same search fails again until they have."
+    assert row["description"] == ("Grounder did not run this search. add credit Tell the user this; the same search fails again until they have. "
+                                  "Hermes keeps this message for twenty minutes, so once they have, search again with the question in other words.")
     assert "Sign up" not in row["description"]
 
 
@@ -600,14 +601,64 @@ def test_the_first_load_selects_both_backends_and_keeps_the_web_tools_on(plugin,
     assert ctx.providers[0].is_available()
 
 
-def test_the_first_load_replaces_another_backend_and_keeps_the_rest_of_the_config(plugin, tmp_path):
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump(
-        {"model": {"default": "m"}, "web": {"backend": "firecrawl", "search_backend": "tavily", "keyless_fallback": False}}))
+def _config(home, web):
+    (home / "config.yaml").write_text(yaml.safe_dump({"model": {"default": "m"}, "web": web}))
+
+
+def _saved(home):
+    return yaml.safe_load((home / "config.yaml").read_text())
+
+
+def test_the_first_load_leaves_a_backend_the_user_chose_alone_and_keeps_the_rest_of_the_config(plugin, tmp_path):
+    _config(tmp_path, {"backend": "firecrawl", "search_backend": "tavily", "keyless_fallback": False})
+    ctx = Ctx()
+    plugin.register(ctx)
+    assert _saved(tmp_path) == {"model": {"default": "m"}, "web": {"backend": "firecrawl", "search_backend": "tavily", "keyless_fallback": False}}
+    assert ctx.saved == {plugin.SELECTED_MARK: True}  # set up all the same: the next load asks nothing again
+    assert CLIENT_LINE in _env(tmp_path)  # the sign-in client is the plugin's own setup, not a backend
+
+
+def test_the_first_load_with_no_backend_set_selects_both_and_keeps_the_rest_of_the_config(plugin, tmp_path):
+    _config(tmp_path, {"keyless_fallback": False})
     plugin.register(Ctx())
-    saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
-    assert saved["model"] == {"default": "m"}
-    assert saved["web"] == {"backend": "firecrawl", "search_backend": "grounder", "extract_backend": "grounder",
-                            "keyless_fallback": False}
+    assert _saved(tmp_path) == {"model": {"default": "m"}, "web": {"keyless_fallback": False, "search_backend": "grounder", "extract_backend": "grounder"}}
+
+
+@pytest.mark.parametrize("chosen,expected", [
+    ({"search_backend": "tavily"}, {"search_backend": "tavily", "extract_backend": "grounder"}),
+    ({"extract_backend": "firecrawl"}, {"search_backend": "grounder", "extract_backend": "firecrawl"}),
+    ({"search_backend": "tavily", "extract_backend": "firecrawl"}, {"search_backend": "tavily", "extract_backend": "firecrawl"}),
+    ({"backend": "exa"}, {"backend": "exa"}),  # the older shared backend names both
+    ({"search_backend": "", "extract_backend": None}, {"search_backend": "grounder", "extract_backend": "grounder"}),  # empty is unset
+])
+def test_each_backend_is_selected_only_where_the_user_chose_none(plugin, tmp_path, chosen, expected):
+    _config(tmp_path, chosen)
+    plugin.register(Ctx())
+    assert _web(tmp_path) == expected
+
+
+@pytest.mark.parametrize("chosen", [{"search_backend": "grounder", "extract_backend": "grounder"}, {"backend": "grounder"}, {"search_backend": "Grounder", "extract_backend": " grounder "}])
+def test_a_backend_already_set_to_grounder_is_not_written_again(plugin, tmp_path, monkeypatch, chosen):
+    _config(tmp_path, chosen)
+    before = (tmp_path / "config.yaml").read_text()
+    writes = []
+    monkeypatch.setattr(plugin, "save_config", lambda *args, **kwargs: writes.append(args))
+    ctx = Ctx()
+    plugin.register(ctx)
+    assert writes == [] and (tmp_path / "config.yaml").read_text() == before
+    assert ctx.saved == {plugin.SELECTED_MARK: True}
+
+
+def test_a_config_that_cannot_be_read_is_not_filled_in(plugin, tmp_path, monkeypatch):
+    def broken():
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(plugin, "load_config", broken)
+    writes = []
+    monkeypatch.setattr(plugin, "save_config", lambda *args, **kwargs: writes.append(args))
+    ctx = Ctx()
+    plugin.register(ctx)
+    assert writes == [] and [p.name for p in ctx.providers] == ["grounder"]
 
 
 def test_a_later_choice_stands(plugin, tmp_path):

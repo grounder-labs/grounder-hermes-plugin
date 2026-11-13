@@ -74,10 +74,11 @@ that cannot connect to `127.0.0.1`: copy that page's full address from the brows
 Version 0.1.0 signed in with `hermes grounder login` and kept its own tokens in `$HERMES_HOME/grounder`. Hermes holds the
 sign-in now, so that command is gone: connect again as above and delete the old folder.
 
-## It selects itself
+## It selects itself, where you have chosen nothing
 
 Hermes runs no plugin code while installing, so the first time this plugin loads in a profile, which is the next time
-Hermes starts, it sets both backends to Grounder, whose id is `grounder`, in that profile's `config.yaml`:
+Hermes starts, it sets a backend to Grounder, whose id is `grounder`, in that profile's `config.yaml`, for each of the two that has no
+backend yet:
 
 ```yaml
 web:
@@ -85,9 +86,10 @@ web:
   extract_backend: grounder
 ```
 
-This replaces any backend chosen for `web_search` or `web_extract` before. An existing install does the same once, the
-first time it loads this version. It happens once per profile: to use another backend, pick it in `hermes tools` or run
-`hermes config set web.search_backend <backend>`, and that choice stands. Each setting names its own backend, so
+A backend you already chose for `web_search` or `web_extract` is left alone, each on its own: install this just for `grounder_search` and
+your extract traffic stays where it was, and with only a search backend chosen, Grounder reads pages. An older shared `web.backend` counts as a choice for both.
+An existing install does the same once, the first time it loads this version. It happens once per profile: to use Grounder where you chose another backend, pick it in `hermes tools` or run
+`hermes config set web.search_backend grounder`, and that choice stands. Each setting names its own backend, so
 `extract_backend` can stay on another backend while Grounder searches.
 
 With no search key, the plugin also writes `GROUNDER_OAUTH_CLIENT_ID` to your profile's `.env`. It is Grounder's public
@@ -192,7 +194,7 @@ Grounder has three modes. Every one returns the provider's own results, each unc
 
 `/search` is the plugin's only command, and it chooses between them. It offers Grounder's own lists, read when you run it, so a preset, provider, mode or live-data
 API Grounder adds is on offer at once. It is registered only while Grounder is your web search backend (`web.search_backend: grounder`, or the older `web.backend`): the plugin
-makes Grounder the backend the first time it loads, and a switch you make in `hermes tools` takes effect at the next start. With another backend chosen the plugin registers no command, and
+makes Grounder the backend the first time it loads where you chose none, and a switch you make in `hermes tools` takes effect at the next start. With another backend chosen the plugin registers no command, and
 its search tools and its web provider work as they do otherwise.
 
 `/search` opens one menu, "How should Grounder search?", and every screen returns to it:

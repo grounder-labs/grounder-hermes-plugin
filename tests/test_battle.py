@@ -46,29 +46,22 @@ def test_a_transient_failure_is_still_a_failure_for_hermes_to_serve_from_its_rin
     assert result["success"] is False and result["error"]
 
 
-def test_a_notice_is_dropped_from_hermess_cache_so_a_retry_after_the_user_acts_reaches_grounder(plugin, stub, keyed, monkeypatch):
-    class Memo:
-        _store_lock = threading.Lock()
-        _store = {}
-
-        @staticmethod
-        def _key(provider, query, limit):
-            return (provider, query.lower(), 10 if limit <= 10 else 20)
-
-    cache = types.ModuleType("tools.web_result_cache")
-    cache.search_memo = Memo
-    monkeypatch.setitem(sys.modules, "tools.web_result_cache", cache)
+def test_an_act_notice_tells_the_model_to_use_other_words_once_the_user_has_acted_since_hermes_keeps_it_twenty_minutes(plugin, stub, keyed, monkeypatch):
+    # Hermes keeps every successful search result for twenty minutes by query and publishes no way to drop one, so the plugin does not reach into its cache (the catalog's
+    # rule 9 names ``tools.web_result_cache`` a core internal): the notice itself says how a retry gets past it. Nothing of Hermes's cache module is imported.
+    monkeypatch.setitem(sys.modules, "tools.web_result_cache", None)
     stub.search_status, stub.search_body = 429, {"error": {"code": "daily_limit_reached", "message": "x", "details": {"signup_url": "https://grounder.net/account"}}}
     provider = plugin.GrounderWebSearchProvider()
     notice = provider.search("Q", 3)
-    Memo._store[("grounder", "q", 10)] = notice  # what Hermes does with every successful result
-    Memo._store[("grounder", "other", 10)] = {"success": True, "data": {"web": []}}
+    row = notice["data"]["web"][0]
+    assert notice["data"][plugin.provider.NOTICE_KEY] == "act" and notice["success"] is True
+    assert "the same search fails again until they have" in row["description"]
+    assert "Hermes keeps this message for twenty minutes, so once they have, search again with the question in other words." in row["description"]
     assert _hook(provider, "Q", notice) is None  # a notice is no source and gets no notes
-    assert ("grounder", "q", 10) not in Memo._store and ("grounder", "other", 10) in Memo._store
-    # A refusal of this call is deterministic: it stays cached.
+    # A refusal of this call is deterministic and its text asks for nothing: it says nothing of other words.
     refused = provider.search(f"https://example.com/?k={FAKE_KEY}")
-    Memo._store[("grounder", f"https://example.com/?k={FAKE_KEY}".lower(), 10)] = refused
-    assert _hook(provider, f"https://example.com/?k={FAKE_KEY}", refused) is None and len(Memo._store) == 2
+    assert refused["data"][plugin.provider.NOTICE_KEY] == "refused" and "other words" not in refused["data"]["web"][0]["description"]
+    assert _hook(provider, f"https://example.com/?k={FAKE_KEY}", refused) is None
 
 
 # --- 2: an answer cites only its own turn's results (GRO-835, reversing 0.5.15's per-chat numbers) ----------------------------------------------------
@@ -234,8 +227,7 @@ def test_a_web_extract_refuses_such_an_address_per_page_and_reads_the_others(plu
 
 
 def test_without_hermess_own_checks_the_plugins_own_still_refuse(plugin, stub, keyed, monkeypatch):
-    for name in ("tools.url_safety", "agent.redact"):
-        monkeypatch.setitem(sys.modules, name, None)  # an import of it raises ImportError, as in a Hermes without it
+    monkeypatch.setitem(sys.modules, "tools.url_safety", None)  # an import of it raises ImportError, as in a Hermes without it
     provider = plugin.GrounderWebSearchProvider()
     for address in (f"https://example.com/?k={FAKE_KEY}", "http://127.0.0.1/", "http://user:pw@example.com/"):
         assert provider.search(address)["data"][plugin.provider.NOTICE_KEY] == "refused"
@@ -243,10 +235,9 @@ def test_without_hermess_own_checks_the_plugins_own_still_refuse(plugin, stub, k
 
 
 def test_an_ordinary_address_that_merely_looks_like_a_key_prefix_is_read(plugin, stub, keyed, monkeypatch):
-    for name in ("tools.url_safety", "agent.redact"):
-        monkeypatch.setitem(sys.modules, name, None)
-    stub.search_body = {"results": [_page("https://example.com/blog/sk-learn-guide")]}
-    assert plugin.GrounderWebSearchProvider().search("https://example.com/blog/sk-learn-guide what is it")["data"].get(plugin.provider.NOTICE_KEY) is None
+    monkeypatch.setitem(sys.modules, "tools.url_safety", None)
+    stub.search_body = {"results": [_page("https://example.com/blog/sk-learn")]}
+    assert plugin.GrounderWebSearchProvider().search("https://example.com/blog/sk-learn what is it")["data"].get(plugin.provider.NOTICE_KEY) is None
     assert len(_searches(stub)) == 1
 
 

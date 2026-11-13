@@ -4,7 +4,7 @@
 """Grounder web search for Hermes Agent.
 
 ``register`` adds the ``grounder`` web search backend (``provider``) and, the first
-time it runs in a profile, selects it (``_select_once``). Sign-in is Hermes's own:
+time it runs in a profile, selects it where the user has chosen no backend (``_select_once``). Sign-in is Hermes's own:
 ``hermes auth add grounder:grounder`` signs in to the ``oauth:`` client
 ``plugin.yaml`` declares, and Hermes stores, refreshes and attaches the grant, so
 this plugin keeps no credential of its own. Two hooks ask the model to cite a read
@@ -86,11 +86,27 @@ def _add_commands(ctx) -> None:
     register_commands(ctx)
 
 
+def _unset_backends() -> list[str]:
+    """The backends of ``web`` the user has not chosen: ``search_backend`` and ``extract_backend``, each unset when neither it nor the older shared ``backend`` names one
+    (Hermes reads a capability's own key, then ``backend``). A config that cannot be read chooses nothing for the plugin to fill in."""
+    try:
+        web = load_config().get("web")
+    except Exception as error:
+        logger.warning("Could not read the web backends: %s", error)
+        return []
+    web = web if isinstance(web, dict) else {}
+    shared = str(web.get("backend") or "").strip()
+    return [key for key in ("search_backend", "extract_backend") if not shared and not str(web.get(key) or "").strip()]
+
+
 def _select_once(ctx) -> None:
-    """Make Grounder this profile's web_search and web_extract backend, once.
+    """Make Grounder this profile's web_search and web_extract backend, once, where the user has chosen none.
 
     Hermes runs no plugin code at install, so this happens at the plugin's first
-    load. The mark is written last, and only here: a later choice in ``hermes
+    load. A backend the user already set is left alone, each of the two on its own
+    (``_unset_backends``): someone who installs this for ``grounder_search`` keeps
+    the backend they chose, and one who set only a search backend gets Grounder to
+    read pages. The mark is written last, and only here: a later choice in ``hermes
     tools`` stands, and a failed write is tried again at the next load. With no
     search key the public sign-in client is filled in too, so that ``hermes auth
     add`` needs no ``hermes config set`` before it. A search works without either:
@@ -100,9 +116,14 @@ def _select_once(ctx) -> None:
         return
     if not str(get_secret(KEY_ENV) or "").strip() and not str(get_secret(CLIENT_ENV) or "").strip():
         save_env_value(CLIENT_ENV, CLIENT_ID)
-    save_config({"web": {"search_backend": "grounder", "extract_backend": "grounder"}}, merge_existing=True)
+    unset = _unset_backends()
+    if unset:
+        save_config({"web": {key: "grounder" for key in unset}}, merge_existing=True)
     ctx.state.set(SELECTED_MARK, True)
-    logger.info("Grounder selected as the web_search and web_extract backend")
+    if unset:
+        logger.info("Grounder selected as the backend for %s", ", ".join(unset))
+    else:
+        logger.info("A web backend was already chosen: Grounder selected none")
 
 
 def register(ctx) -> None:

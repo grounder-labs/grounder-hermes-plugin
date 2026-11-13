@@ -99,13 +99,11 @@ def _install_hermes_stand_ins():
         path = home() / "config.yaml"
         return (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
 
-    redact = types.ModuleType("agent.redact")
-    redact._PREFIX_RE = re.compile(r"(?<![A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})")
     config.is_managed = lambda: False
     config.load_config = load_config
     config.save_config = save_config
     config.save_env_value = save_env_value
-    for module in (agent, web, scope, hermes_cli, constants, requests, config, redact):
+    for module in (agent, web, scope, hermes_cli, constants, requests, config):
         sys.modules[module.__name__] = module
 
 
@@ -243,7 +241,6 @@ def plugin(stub, tmp_path, monkeypatch):
     except ImportError:
         monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
     safety = types.ModuleType("tools.url_safety")
-    safety.normalize_url_for_request = lambda url: url
     safety.is_safe_url = lambda url: "resolves-private" not in url
     monkeypatch.setitem(sys.modules, "tools.url_safety", safety)
     module = _load_plugin()
