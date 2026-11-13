@@ -10,7 +10,7 @@ time it runs in a profile, selects it where the user has chosen no backend (``_s
 this plugin keeps no credential of its own. Two hooks ask the model to cite a read
 Grounder served and end an answer that searched with the line Grounder's card shows. Two tools
 carry what Hermes's ``web_search`` cannot: every option of Grounder's MCP search, and its feature list.
-Grounder has three modes, and ``/search``, the plugin's one command, chooses which a signed-in search uses (``commands``): Grounder optimized (Grounder picks the provider for the
+Grounder has three modes, and ``/search``, the plugin's one command, chooses which a signed-in search uses (``commands``), saving the choice on the user's Grounder account, where grounder.net's Routing page shows the same one: Grounder optimized (Grounder picks the provider for the
 question; the default), a Grounder preset (Fast, Cheap, Live, Deep, Code or Balanced) or Grounder direct (the user picks the provider, and optionally its mode). Every mode returns
 the provider's own results: this plugin cuts and reranks nothing of them. ``/search`` is registered only while Grounder is the profile's web search backend (``_grounder_is_backend``, read at load: a switch in ``hermes tools`` takes effect at the
 next start), and a Hermes that bundles its own Grounder provider has the command, so there ``register`` adds none (``_commands_taken``).

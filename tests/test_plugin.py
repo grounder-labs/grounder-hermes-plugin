@@ -123,7 +123,7 @@ def test_signed_in_search_goes_through_hermes_which_attaches_the_token(plugin, s
          "description": "short", "position": 2}]}}
     call = hermes.calls[0]
     assert (call["provider"], call["method"], call["url"]) == ("grounder", "POST", "https://api.grounder.net/v1/search")
-    assert call["json"] == {"query": "offshore wind", "top_k": 50, "mode": "optimized"}  # the limit Hermes asked for, within Grounder's 100
+    assert call["json"] == {"query": "offshore wind", "top_k": 50}  # the limit Hermes asked for, within Grounder's 100; no mode, so Grounder applies the saved setting
     assert not {name.lower() for name in call["headers"]} & {"authorization", "cookie"}
     assert _searches(stub)[0]["headers"]["Authorization"] == "Bearer hermes-held-token"
 
@@ -265,7 +265,7 @@ def test_query_is_cut_to_2000_characters_and_the_limit_kept_in_range(plugin, stu
     provider = plugin.GrounderWebSearchProvider()
     rows = provider.search("é" * 2500, limit=0)["data"]["web"]
     assert len(rows) == 1
-    assert json.loads(_searches(stub)[0]["body"]) == {"query": "é" * 2000, "top_k": 1, "mode": "optimized"}
+    assert json.loads(_searches(stub)[0]["body"]) == {"query": "é" * 2000, "top_k": 1}
     provider.search("q")
     assert json.loads(_searches(stub)[1]["body"])["top_k"] == 5
 
@@ -291,7 +291,7 @@ def test_key_in_environment_wins_and_goes_without_hermes(plugin, stub, hermes, k
     assert hermes.calls == []
     request = _searches(stub)[0]
     assert request["headers"]["Authorization"] == f"Bearer {keyed}"
-    assert json.loads(request["body"]) == {"query": "q", "top_k": 5, "mode": "optimized"}
+    assert json.loads(request["body"]) == {"query": "q", "top_k": 5}
 
 
 def _said(result):
@@ -700,7 +700,7 @@ def test_a_failed_write_keeps_the_backend_and_tries_again_next_load(plugin, tmp_
 
 
 ROUTED = {"query": "q", "results": [RESULT], "usage": {"latency_ms": 1432},
-          "routing": {"calls": [{"provider": "exa", "status": "ok", "result_count": 4}, {"provider": "xai", "status": "ok", "result_count": 2},
+          "routing": {"mode": "optimized", "calls": [{"provider": "exa", "status": "ok", "result_count": 4}, {"provider": "xai", "status": "ok", "result_count": 2},
                                 {"provider": "brave", "status": "error", "result_count": 0}, {"provider": "tavily", "status": "ok", "result_count": 0}],
                       "live_calls": [{"provider": "espn", "status": "ok", "result_count": 1}]}}
 
@@ -748,7 +748,7 @@ def _two_searches(plugin, stub, monkeypatch, clock, answer="A"):
     monkeypatch.setattr(plugin.provider, "_clock", lambda: next(ticks))
     provider = plugin.GrounderWebSearchProvider()
     for query in ("one", "two"):
-        stub.search_body = {**ROUTED, "usage": {"latency_ms": 300}, "routing": {"calls": [{"provider": "exa", "status": "ok", "result_count": 1}]},
+        stub.search_body = {**ROUTED, "usage": {"latency_ms": 300}, "routing": {"mode": "optimized", "calls": [{"provider": "exa", "status": "ok", "result_count": 1}]},
                             "results": [{**RESULT, "url": f"https://example.com/{query}"}]}
         provider.after_tool("web_search", {"query": query}, json.dumps(provider.search(query)), session_id="s", turn_id="t")
     return provider.after_answer(answer, session_id="s", turn_id="t")
@@ -1089,8 +1089,8 @@ def test_grounder_search_sends_every_option_as_the_mcp_search_maps_it(plugin, st
         "query": " q ", "top_k": 3, "days": 7, "domains": ["bbc.com"], "features": ["news"], "include_text": False, "requested_provider": "exa",
         "providers": ["exa"], "routing_settings": {"fallback": False}, "workspace": "work", "user_location": " Austin ", "user_time_zone": "America/Chicago"}))
     sent = json.loads(_searches(stub)[0]["body"])
-    # The model named a provider, so the search is Grounder direct.
-    assert sent == {"query": "q", "mode": "direct", "top_k": 3, "include_text": False, "requested_provider": "exa", "providers": ["exa"], "features": ["news"],
+    # What the model passed goes as it passed it, and names no mode: Grounder reads the provider it named as Grounder direct.
+    assert sent == {"query": "q", "top_k": 3, "include_text": False, "requested_provider": "exa", "providers": ["exa"], "features": ["news"],
                     "routing_settings": {"fallback": False}, "workspace": "work",
                     "filters": {"domains": {"values": ["bbc.com"], "mode": "include"}, "recency": {"mode": "rolling", "days": 7}},
                     "context": {"user_location": "Austin", "user_time_zone": "America/Chicago"}}
@@ -1168,10 +1168,6 @@ def test_a_failed_read_says_why_when_the_api_knows(plugin, stub, keyed):
 
 # --- Grounder's three modes: the request's `mode`, and the card line --------------------------------------------------------
 
-def _choose(tmp_path, **grounder):
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"web": {"grounder": grounder}}))
-
-
 def _last(stub):
     return json.loads(_searches(stub)[-1]["body"])
 
@@ -1183,66 +1179,7 @@ def _signed_or_keyed(request, how):
         request.getfixturevalue("keyed")
 
 
-@pytest.mark.parametrize("how", ["key", "sign-in"])
-@pytest.mark.parametrize("saved,passed,mode,profile", [
-    ({}, {}, "optimized", None),  # nothing chosen: Grounder picks the provider
-    ({"live_data_off": ["espn"]}, {}, "optimized", None),  # a live-data API off changes no mode
-    ({"server": "api:espn"}, {}, "optimized", None),  # a pinned live-data API is no provider pin
-    ({"preset": "fast"}, {}, "preset", "fast"),
-    ({"server": "provider:exa"}, {}, "direct", None),
-    ({"server": "provider:exa", "server_mode": "deep"}, {}, "direct", None),
-    ({}, {"profile": "fast"}, "preset", "fast"),  # a model-passed profile is a preset
-    ({}, {"profile": "auto"}, "optimized", "auto"),  # auto is none
-    ({"preset": "deep"}, {"profile": "fast"}, "preset", "fast"),  # the model's preset stands over the user's preset, as it always did
-    ({"server": "provider:exa"}, {"profile": "auto"}, "direct", None),
-    ({}, {"requested_provider": "exa"}, "direct", None),  # a provider the model names is a direct search (Grounder 0.9.0 reads it so)
-    ({"preset": "fast"}, {"requested_provider": "exa"}, "direct", None),  # and it has no preset
-    ({}, {"providers": ["exa"]}, "direct", None),
-    ({"preset": "fast"}, {"providers": ["exa"], "profile": "deep"}, "direct", None),
-    ({"preset": "fast"}, {"requested_provider": "  "}, "preset", "fast"),  # a blank name names none
-])
-def test_a_search_with_the_users_choices_names_its_mode_from_what_the_merged_request_is(plugin, stub, request, tmp_path, how, saved, passed, mode, profile):
-    _signed_or_keyed(request, how)
-    _choose(tmp_path, **saved)
-    provider = plugin.GrounderWebSearchProvider()
-    provider.search_tool({"query": "q", **passed}) if passed else provider.search("q")
-    sent = _last(stub)
-    assert sent["mode"] == mode and sent.get("profile") == profile
-    if sent.get("routing_settings", {}).get("exclusive") is True:
-        assert mode == "direct"
-
-
-@pytest.mark.parametrize("how", ["key", "sign-in"])
-def test_a_direct_search_has_no_profile_whoever_chose_the_preset_and_a_preset_alone_is_a_preset(plugin, stub, request, tmp_path, how):
-    _signed_or_keyed(request, how)
-    provider = plugin.GrounderWebSearchProvider()
-    # A saved direct pin and a model-passed profile: direct, and no profile is sent, which Grounder 0.9.0 would refuse beside it.
-    _choose(tmp_path, server="provider:exa")
-    provider.search_tool({"query": "q", "profile": "fast"})
-    sent = _last(stub)
-    assert sent["mode"] == "direct" and "profile" not in sent and sent["routing_settings"]["exclusive"] is True
-    # Only a saved preset: preset.
-    _choose(tmp_path, preset="fast")
-    provider.search("q")
-    sent = _last(stub)
-    assert sent["mode"] == "preset" and sent["profile"] == "fast" and "exclusive" not in json.dumps(sent)
-    # A model-passed exclusive pin and a saved preset: direct, and no profile.
-    provider.search_tool({"query": "q", "routing_settings": {"providers": {"exa": {"use": "always"}}, "exclusive": True}})
-    sent = _last(stub)
-    assert sent["mode"] == "direct" and "profile" not in sent and sent["routing_settings"]["exclusive"] is True
-    # A model that names the provider on grounder_search: direct, and no profile, over a saved preset.
-    _choose(tmp_path, preset="fast")
-    provider.search_tool({"query": "q", "requested_provider": "exa"})
-    sent = _last(stub)
-    assert sent["mode"] == "direct" and "profile" not in sent and sent["requested_provider"] == "exa"
-    # Both a saved preset and a saved pin, by hand: direct.
-    _choose(tmp_path, preset="fast", server="provider:exa")
-    provider.search("q")
-    assert _last(stub)["mode"] == "direct" and "profile" not in _last(stub)
-
-
-def test_a_free_search_sends_no_mode_and_no_profile(plugin, stub, free, tmp_path):
-    _choose(tmp_path, preset="deep", server="provider:exa")
+def test_a_free_search_sends_no_mode_and_no_profile(plugin, stub, free):
     provider = plugin.GrounderWebSearchProvider()
     provider.search("q")
     provider.search_tool({"query": "q", "profile": "fast"})
@@ -1251,9 +1188,8 @@ def test_a_free_search_sends_no_mode_and_no_profile(plugin, stub, free, tmp_path
 
 
 @pytest.mark.parametrize("how", ["key", "sign-in"])
-def test_a_page_read_sends_no_mode(plugin, stub, request, tmp_path, how):
+def test_a_page_read_sends_no_mode(plugin, stub, request, how):
     _signed_or_keyed(request, how)
-    _choose(tmp_path, preset="deep")
     stub.search_body = {"results": [_page(PAGE_A)]}
     provider = plugin.GrounderWebSearchProvider()
     provider.extract([PAGE_A])
@@ -1262,26 +1198,78 @@ def test_a_page_read_sends_no_mode(plugin, stub, request, tmp_path, how):
     bodies = _bodies(stub)
     assert len(bodies) == 3 and all(body["urls"] == [PAGE_A] for body in bodies)
     assert all("mode" not in body for body in bodies)
+    assert bodies[2]["profile"] == "fast" and all("profile" not in body for body in bodies[:2])  # what the model passed goes through, and nothing else is added
 
 
-def test_a_mode_the_caller_already_set_is_kept(plugin, stub, keyed):
-    plugin.provider._send({"query": "q", "mode": "preset", "profile": "fast"}, {"routing_settings": {"exclusive": True}})
-    assert _last(stub)["mode"] == "preset" and _last(stub)["profile"] == "fast"
-    plugin.provider._send({"query": "q"}, {})
-    assert _last(stub)["mode"] == "optimized"
-    plugin.provider._send({"query": "q"}, None)  # no extra: a page read, which names no mode
-    assert "mode" not in _last(stub)
-
-
-def test_whether_a_direct_search_lets_grounder_pick_when_its_provider_finds_nothing_is_one_switch_and_is_off(plugin, stub, keyed, tmp_path, monkeypatch):
-    assert plugin.provider.DIRECT_FALLBACK is False  # Harlan, 2026-11-12: "user does for direct": a direct search returns what its provider gave, even nothing
-    _choose(tmp_path, server="provider:exa")
+@pytest.mark.parametrize("how", ["key", "sign-in"])
+def test_a_search_names_no_mode_of_its_own_whatever_the_model_passes_grounder_reads_it_from_what_is_sent(plugin, stub, request, how):
+    _signed_or_keyed(request, how)
     provider = plugin.GrounderWebSearchProvider()
-    provider.search("q")
-    assert _last(stub)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": False} and _last(stub)["mode"] == "direct"
-    monkeypatch.setattr(plugin.provider, "DIRECT_FALLBACK", True)
-    provider.search("q")
-    assert _last(stub)["routing_settings"] == {"providers": {"exa": {"use": "always"}}, "exclusive": True, "fallback": True}
+    for passed in ({}, {"profile": "fast"}, {"profile": "auto"}, {"requested_provider": "exa"}, {"providers": ["exa"], "routing_settings": {"exclusive": True}}):
+        provider.search_tool({"query": "q", **passed})
+        assert _last(stub) == {"query": "q", **passed}
+    assert plugin.provider.MODES == ("optimized", "preset", "direct")
+
+
+def _settings_reads(stub):
+    return [r for r in stub.requests if r["path"].partition("?")[0] == "/v1/search/settings"]
+
+
+MODEL_PICKS = {"profile": "fast", "requested_provider": "exa", "providers": ["brave"],
+               "routing_settings": {"exclusive": True, "fallback": False, "caps": {"search": {"sources": 5}},
+                                    "providers": {"exa": {"use": "always", "modes": {"instant": "always", "fast": "off"}}, "brave": {"use": "off"}}}}
+NARROWING = {"routing_settings": {"fallback": False, "caps": {"search": {"sources": 5}}, "providers": {"exa": {"modes": {"fast": "off"}}, "brave": {"use": "off"}}}}
+
+
+@pytest.mark.parametrize("how", ["key", "sign-in"])
+@pytest.mark.parametrize("saved", [{"mode": "preset", "profile": "deep"}, {"mode": "direct", "requested_provider": "tavily", "provider_mode": "advanced"}])
+def test_the_users_saved_preset_or_provider_wins_over_what_the_model_passes_and_only_narrowing_goes_through(plugin, stub, request, how, saved):
+    _signed_or_keyed(request, how)
+    stub.saved_search = {**stub.saved_search, **saved}
+    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", **MODEL_PICKS}))
+    assert _last(stub) == {"query": "q", **NARROWING}  # no profile, provider, exclusive or always; the caps, fallback and turned-off providers stay
+    assert len(_settings_reads(stub)) == 1 and _settings_reads(stub)[0]["method"] == "GET"
+    assert out["success"] and "was not used" not in out.get("note", "") and "were not used" in out["note"]
+    assert all(name in out["note"] for name in ("profile", "requested_provider", "providers", "routing_settings.exclusive", "routing_settings.providers.exa (always)"))
+
+
+@pytest.mark.parametrize("how", ["key", "sign-in"])
+def test_a_user_who_chose_no_preset_or_provider_leaves_the_model_its_own_choice_for_one_search(plugin, stub, request, how):
+    _signed_or_keyed(request, how)  # Let Grounder pick is the saved setting
+    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", **MODEL_PICKS}))
+    assert _last(stub) == {"query": "q", **MODEL_PICKS} and "note" not in out
+
+
+def test_a_live_data_api_the_user_set_to_every_call_or_never_keeps_that_over_the_models_whatever_the_mode(plugin, stub, keyed):
+    stub.saved_live = {"kalshi": "always", "espn": "off"}
+    plugin.GrounderWebSearchProvider().search_tool({"query": "q", "routing_settings": {"specialized": {"kalshi": {"use": "off"}, "espn": {"use": "always"}, "usgs": {"use": "always"}}}})
+    assert _last(stub) == {"query": "q", "routing_settings": {"specialized": {"usgs": {"use": "always"}}}}  # the one the user left on Grounder decides is the model's
+
+
+def test_a_search_that_passes_nothing_the_saved_choice_could_override_reads_no_setting(plugin, stub, keyed):
+    stub.saved_search = {**stub.saved_search, "mode": "preset", "profile": "deep"}
+    plugin.GrounderWebSearchProvider().search_tool({"query": "q", "days": 3, **NARROWING})
+    assert _last(stub)["routing_settings"] == NARROWING["routing_settings"] and _settings_reads(stub) == []
+    plugin.GrounderWebSearchProvider().extract(["https://example.com/a"])
+    assert _settings_reads(stub) == []  # a page read carries none of it
+
+
+def test_a_setting_that_cannot_be_read_counts_as_a_choice_so_the_model_cannot_override_it(plugin, stub, keyed):
+    stub.settings_script = [(500, {"error": {"code": "internal_error", "message": "try again"}})]
+    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", **MODEL_PICKS, "routing_settings": {**MODEL_PICKS["routing_settings"], "specialized": {"kalshi": {"use": "always"}}}}))
+    sent = _last(stub)
+    assert out["success"] and not {"profile", "requested_provider", "providers"} & set(sent)
+    assert sent["routing_settings"]["specialized"] == {"kalshi": {"use": "always"}}  # only what could not decide the mode is kept
+
+
+def test_a_workspace_the_model_names_is_read_for_its_own_saved_choice(plugin, stub, keyed):
+    plugin.GrounderWebSearchProvider().search_tool({"query": "q", "workspace": "team", "profile": "fast"})
+    assert _settings_reads(stub)[0]["path"] == "/v1/search/settings?workspace=team"
+
+
+def test_a_free_search_reads_no_saved_choice_and_still_leaves_out_what_grounder_refuses_a_caller_with_no_account(plugin, stub, free):
+    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "profile": "fast"}))
+    assert _settings_reads(stub) == [] and "profile" not in _last(stub) and "free search" in out["note"]
 
 
 def _unseen(body):
@@ -1303,31 +1291,41 @@ def lines(plugin, stub):
     return run
 
 
-def test_the_card_line_names_the_mode_the_search_ran_in(plugin, stub, keyed, tmp_path, lines):
+def _ran_as(mode, body=ROUTED, **routing):
+    """``body`` as Grounder answers it for a search that ran in ``mode``: ``routing.mode``, and the preset's id or the provider that was called in ``routing``."""
+    return {**body, "routing": {**body["routing"], "mode": mode, **routing}}
+
+
+def _unnamed(body=ROUTED):
+    """``body`` with no mode in it, as a Grounder before 0.9.0 answered."""
+    return {**body, "routing": {key: value for key, value in body["routing"].items() if key != "mode"}}
+
+
+def test_the_card_line_names_the_mode_the_search_ran_in_from_what_grounder_answers_whichever_setting_it_applied(plugin, stub, keyed, lines):
+    # The plugin sends no mode, so the saved setting or the model's own options chose it: Grounder says which in routing.mode.
     assert lines([("one", ROUTED)]) == "Searched with Grounder optimized · via Exa, xAI +1 · 1 source · 1.4 s"
-    _choose(tmp_path, preset="fast")
-    assert lines([("two", ROUTED)], "t2") == "Searched with Grounder preset (Fast) · via Exa, xAI +1 · 1 source · 1.4 s"
-    _choose(tmp_path, server="provider:exa")
-    assert lines([("three", ROUTED)], "t3") == "Searched with Grounder direct · via Exa, xAI +1 · 1 source · 1.4 s"
+    assert lines([("two", _ran_as("preset", profile="fast"))], "t2") == "Searched with Grounder preset (Fast) · via Exa, xAI +1 · 1 source · 1.4 s"
+    assert lines([("three", _ran_as("direct", provider="exa"))], "t3") == "Searched with Grounder direct · via Exa · 1 source · 1.4 s"
 
 
-def test_a_preset_is_named_by_its_id_capitalised_as_the_model_or_the_user_chose_it(plugin, stub, keyed, tmp_path):
+def test_a_preset_is_named_by_its_id_capitalised_as_grounder_or_the_model_named_it(plugin, stub, keyed):
     provider = plugin.GrounderWebSearchProvider()
-    stub.search_body = ROUTED
+    stub.search_body = _ran_as("preset")  # Grounder named the mode and not the preset: the profile the model passed names it
     shown = provider.search_tool({"query": "q", "profile": "balanced"})
     provider.after_tool("grounder_search", {"query": "q"}, shown, session_id="s", turn_id="t")
     assert provider.after_answer("A", session_id="s", turn_id="t").startswith("A\n\nSearched with Grounder preset (Balanced) · via Exa")
+    stub.search_body = ROUTED
     provider.after_tool("grounder_search", {"query": "q"}, provider.search_tool({"query": "q", "profile": "auto"}), session_id="s", turn_id="t2")
     assert provider.after_answer("A", session_id="s", turn_id="t2").startswith("A\n\nSearched with Grounder optimized · via Exa")
 
 
-def test_the_response_names_the_mode_when_it_says_one_of_the_three_and_the_request_when_it_does_not(plugin, stub, keyed, lines):
-    # Grounder's own word wins over what was sent, and only the three names count; a preset's name comes from the request's profile when it sent one.
-    assert lines([("a", {**ROUTED, "mode": "direct"})], "t1").startswith("Searched with Grounder direct · via Exa")
-    assert lines([("b", {**ROUTED, "routing": {**ROUTED["routing"], "mode": "preset"}})], "t2").startswith("Searched with Grounder preset · via Exa")
-    assert lines([("c", {**ROUTED, "mode": "direct", "routing": {**ROUTED["routing"], "mode": "preset"}})], "t3").startswith("Searched with Grounder preset · via Exa")  # routing.mode first
+def test_the_response_names_the_mode_when_it_says_one_of_the_three_and_nothing_else_does(plugin, stub, keyed, lines):
+    # Grounder's own word, routing.mode first and a top-level mode where there is none; only the three names count, and with nothing naming a mode the line says only Grounder.
+    assert lines([("a", {**_unnamed(), "mode": "direct"})], "t1").startswith("Searched with Grounder direct · via Exa")
+    assert lines([("b", _ran_as("preset"))], "t2").startswith("Searched with Grounder preset · via Exa")
+    assert lines([("c", {**_ran_as("preset"), "mode": "direct"})], "t3").startswith("Searched with Grounder preset · via Exa")  # routing.mode first
     for odd in ("turbo", "", None, 7, ["direct"], {"mode": "direct"}):
-        assert lines([("d", {**ROUTED, "mode": odd})], "t4").startswith("Searched with Grounder optimized · via Exa"), odd  # the request said optimized
+        assert lines([("d", {**_unnamed(), "mode": odd})], "t4").startswith("Searched with Grounder · via Exa"), odd
 
 
 def _answered(**routing):
@@ -1335,17 +1333,12 @@ def _answered(**routing):
     return {"query": "q", "results": [RESULT], "usage": {}, "routing": routing}
 
 
-def test_the_card_line_reads_the_routing_of_a_grounder_that_names_its_mode_provider_and_preset(plugin, stub, keyed, tmp_path, lines):
+def test_the_card_line_reads_the_routing_of_a_grounder_that_names_its_mode_provider_and_preset(plugin, stub, keyed, lines):
     # routing.mode (optimized | preset | direct), routing.provider (the provider that answered), routing.provider_mode, routing.profile (a preset search's id) and
     # routing.fallback ({from, from_mode, reason}).
     assert lines([("a", _answered(mode="optimized", provider="exa", provider_mode=None))], "t1") == "Searched with Grounder optimized · via Exa · 1 source"
     assert lines([("b", _answered(mode="preset", profile="fast", provider="brave", provider_mode="news"))], "t2") == "Searched with Grounder preset (Fast) · via Brave · 1 source"
-    # The preset that ran is the response's, not the one that was sent.
-    _choose(tmp_path, preset="deep")
-    assert lines([("c", _answered(mode="preset", profile="fast", provider="exa"))], "t3") == "Searched with Grounder preset (Fast) · via Exa · 1 source"
-    assert lines([("c2", _answered(mode="preset", provider="exa"))], "t3b") == "Searched with Grounder preset (Deep) · via Exa · 1 source"  # none named: the one sent
     # A direct search whose provider found nothing: the provider that answered, not the one chosen.
-    _choose(tmp_path, server="provider:exa")
     fallback = {"from": "exa", "from_mode": "deep", "reason": "no_results"}
     assert lines([("d", _answered(mode="direct", provider="brave", provider_mode=None, fallback=fallback))], "t4") == "Searched with Grounder direct · via Brave · 1 source"
     # routing.provider stands over the providers whose calls returned results.
@@ -1355,20 +1348,20 @@ def test_the_card_line_reads_the_routing_of_a_grounder_that_names_its_mode_provi
 
 
 @pytest.mark.parametrize("routing,line", [
-    (None, "Searched with Grounder optimized · 1 source"),
-    ("direct", "Searched with Grounder optimized · 1 source"),
-    ([], "Searched with Grounder optimized · 1 source"),
-    ({}, "Searched with Grounder optimized · 1 source"),
-    ({"provider": 7}, "Searched with Grounder optimized · 1 source"),
-    ({"provider": "  ", "profile": 3, "mode": ["direct"]}, "Searched with Grounder optimized · 1 source"),
-    ({"mode": "turbo", "profile": "auto", "provider_mode": 5, "fallback": "no"}, "Searched with Grounder optimized · 1 source"),
+    (None, "Searched with Grounder · 1 source"),
+    ("direct", "Searched with Grounder · 1 source"),
+    ([], "Searched with Grounder · 1 source"),
+    ({}, "Searched with Grounder · 1 source"),
+    ({"provider": 7}, "Searched with Grounder · 1 source"),
+    ({"provider": "  ", "profile": 3, "mode": ["direct"]}, "Searched with Grounder · 1 source"),
+    ({"mode": "turbo", "profile": "auto", "provider_mode": 5, "fallback": "no"}, "Searched with Grounder · 1 source"),
 ])
 def test_a_response_whose_routing_fields_are_absent_or_of_another_shape_is_read_as_a_grounder_before_0_9_0(plugin, stub, keyed, lines, routing, line):
     assert lines([("a", {"query": "q", "results": [RESULT], "usage": {}, "routing": routing})]) == line
     # The same fields beside the calls the older response had: the calls say who answered.
     odd = routing if isinstance(routing, dict) else {}
-    body = {**ROUTED, "usage": {}, "routing": {**ROUTED["routing"], **odd}}
-    assert lines([("b", body)], "t2") == "Searched with Grounder optimized · via Exa, xAI +1 · 1 source"
+    body = {**_unnamed(), "usage": {}, "routing": {**_unnamed()["routing"], **odd}}
+    assert lines([("b", body)], "t2") == "Searched with Grounder · via Exa, xAI +1 · 1 source"
 
 
 def test_a_preset_search_with_no_name_anywhere_is_just_a_preset(plugin, stub, keyed, lines):
@@ -1376,32 +1369,31 @@ def test_a_preset_search_with_no_name_anywhere_is_just_a_preset(plugin, stub, ke
 
 
 def test_a_free_search_names_a_mode_only_when_the_response_does(plugin, stub, free, lines):
-    assert lines([("a", ROUTED)], "t1") == "Searched with Grounder · via Exa, xAI +1 · 1 source · 1.4 s"
-    assert lines([("b", {**ROUTED, "mode": "optimized"})], "t2") == "Searched with Grounder optimized · via Exa, xAI +1 · 1 source · 1.4 s"
+    assert lines([("a", _unnamed())], "t1") == "Searched with Grounder · via Exa, xAI +1 · 1 source · 1.4 s"
+    assert lines([("b", {**_unnamed(), "mode": "optimized"})], "t2") == "Searched with Grounder optimized · via Exa, xAI +1 · 1 source · 1.4 s"
     assert lines([("c", _answered(mode="direct", provider="brave"))], "t3") == "Searched with Grounder direct · via Brave · 1 source"
 
 
-def test_a_page_read_by_search_names_a_mode_only_when_the_response_does(plugin, stub, keyed, tmp_path, lines):
-    _choose(tmp_path, preset="fast")  # the read sends none of this
+def test_a_page_read_by_search_names_a_mode_only_when_the_response_does(plugin, stub, keyed, lines):
     page = {"results": [_page(PAGE_A)], "usage": {}}
     assert lines([(f"{PAGE_A} books", page)], "t1") == "Searched with Grounder · 1 source"
     assert lines([(f"{PAGE_A} books", {**page, "mode": "optimized"})], "t2") == "Searched with Grounder optimized · 1 source"
 
 
-def test_searches_of_one_answer_in_different_modes_name_each_mode_once(plugin, stub, keyed, tmp_path, lines):
+def test_searches_of_one_answer_in_different_modes_name_each_mode_once(plugin, stub, keyed, lines):
     provider = plugin.GrounderWebSearchProvider()
-    for query, saved in (("one", {}), ("two", {"preset": "fast"}), ("three", {}), ("four", {"preset": "fast"}), ("five", {"preset": "deep"}), ("six", {"server": "provider:exa"})):
-        _choose(tmp_path, **saved)
-        stub.search_body = _unseen(_routed(f"https://example.com/{query}"))
+    ran = {"one": _ran_as("optimized"), "two": _ran_as("preset", profile="fast"), "three": _ran_as("optimized"), "four": _ran_as("preset", profile="fast"),
+           "five": _ran_as("preset", profile="deep"), "six": _ran_as("direct", provider="exa")}
+    for query, response in ran.items():
+        stub.search_body = _unseen({**_routed(f"https://example.com/{query}"), "routing": response["routing"]})
         provider.after_tool("web_search", {"query": query}, json.dumps(provider.search(query)), session_id="s", turn_id="t")
     assert provider.after_answer("A", session_id="s", turn_id="t") == (
         "A\n\nSearched with Grounder optimized, Grounder preset (Fast), Grounder preset (Deep), Grounder direct · via Exa, xAI +1 · 6 sources")
     # Every search in one mode: that mode once.
-    _choose(tmp_path, server="provider:exa")
-    assert lines([("seven", _unseen(_routed("https://example.com/7"))), ("eight", _unseen(_routed("https://example.com/8")))], "t2").startswith(
+    direct = _ran_as("direct", provider="exa")["routing"]
+    assert lines([("seven", _unseen({**_routed("https://example.com/7"), "routing": direct})), ("eight", _unseen({**_routed("https://example.com/8"), "routing": direct}))], "t2").startswith(
         "Searched with Grounder direct · via Exa")
     # A page read that names no mode, among searches that have one, adds no name.
-    _choose(tmp_path)
     stub.search_body = _unseen(_routed("https://example.com/9"))
     provider.after_tool("web_search", {"query": "nine"}, json.dumps(provider.search("nine")), session_id="s", turn_id="t3")
     stub.search_body = {"results": [_page(PAGE_A)], "usage": {}}

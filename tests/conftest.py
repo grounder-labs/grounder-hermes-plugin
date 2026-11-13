@@ -126,8 +126,14 @@ def manifest():
     return yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
 
 
+SETTINGS = json.loads((Path(__file__).parent / "api_shapes.json").read_text())["settings"]
+SEARCH_KEYS = ("mode", "profile", "requested_provider", "provider_mode", "fallback")
+SETTINGS_SHAPE = ('Body must be {"search"?: {"mode": "optimized" | "preset" | "direct", …}, "specialized"?: {"<live-data API>": {"use": "auto" | "always" | "off"}}}: '
+                  "a search credential sets these two and nothing else on the account.")
+
+
 class Stub:
-    """Records every request; answers /v1/search."""
+    """Records every request; answers /v1/search, and GET and PUT /v1/search/settings as the server does (workers/router/src/routes/search-settings.ts)."""
 
     def __init__(self):
         self.requests = []
@@ -140,9 +146,84 @@ class Stub:
         self.list_status = 200  # what /v1/providers and /v1/search-profiles answer
         self.profiles_body = {"profiles": []}
         self.rejected = {"revoked-token", "revoked-key"}  # bearers /v1/search answers 401 for
+        # The account's saved search setting, the one grounder.net's Routing page shows too: a test that changes these plays a change made on the site.
+        self.saved_search = dict(SETTINGS["answer"]["search"])
+        self.saved_live = {}  # {live-data API id: "always" | "off"}; one not here is Grounder decides
+        self.off_providers = set()  # providers turned off on the account: saving one as the search provider is a 400
+        self.settings_script = []  # (status, body) answers to the next reads and writes of the setting, in order, before the stub answers as the server does
+
+    def settings_answer(self):
+        live = {api["id"]: {"use": self.saved_live.get(api["id"], "auto")} for api in self.providers_body.get("live_data_apis", [])}
+        live.update({ident: {"use": use} for ident, use in self.saved_live.items()})
+        return {**SETTINGS["answer"], "search": dict(self.saved_search), "specialized": live}
+
+    def apply_settings(self, change):
+        """The server's PUT: the 400 message when it refuses ``change`` (nothing is saved then), else None once saved."""
+        if not isinstance(change, dict) or not change:
+            return SETTINGS_SHAPE
+        other = next((key for key in change if key not in ("search", "specialized")), None)
+        if other is not None:
+            return f"{other} is not part of the saved search setting. {SETTINGS_SHAPE}"
+        search, live = dict(self.saved_search), dict(self.saved_live)
+        if "search" in change:
+            given = change["search"]
+            if not isinstance(given, dict):
+                return 'search must be {"mode": "optimized" | "preset" | "direct", …}'
+            unknown = next((key for key in given if key not in SEARCH_KEYS), None)
+            if unknown is not None:
+                return f"Unknown setting: search.{unknown}"
+            mode = given.get("mode")
+            if mode not in ("optimized", "preset", "direct"):
+                return "search.mode must be one of optimized, preset, direct"
+            allowed = {"optimized": (), "preset": ("profile",), "direct": ("requested_provider", "provider_mode", "fallback")}[mode]
+            stray = next((key for key in SEARCH_KEYS[1:] if key not in allowed and given.get(key) is not None), None)
+            if stray is not None:
+                return f"search.{stray} does not go with mode {mode}."
+            search = dict(SETTINGS["answer"]["search"])
+            if mode == "preset":
+                presets = [row["id"] for row in self.profiles_body.get("profiles", [])]
+                if given.get("profile") not in presets:
+                    return f"search.profile must be one of {', '.join(presets)}"
+                search.update(mode="preset", profile=given["profile"])
+            if mode == "direct":
+                owners = {row["provider"]: row for row in self.providers_body.get("providers", [])}
+                provider = given.get("requested_provider")
+                if provider not in owners:
+                    return "search.requested_provider must be one of Grounder's providers (GET /v1/providers lists them)."
+                modes = [o["mode"] for o in owners[provider].get("offerings", []) if o.get("mode")]
+                picked = given.get("provider_mode")
+                if picked not in (None, "default") and picked not in modes:
+                    return f"search.provider_mode: no mode {picked}; {owners[provider].get('display_name', provider)}'s modes are {', '.join(modes) or 'none'}"
+                if given.get("fallback") not in (None, True, False):
+                    return "search.fallback must be true or false"
+                if provider in self.off_providers:
+                    return f"{owners[provider].get('display_name', provider)} is your search provider and is turned off: turn it on, or choose another provider for your searches first."
+                search.update(mode="direct", requested_provider=provider, provider_mode=None if picked in (None, "default") else picked, fallback=given.get("fallback") is True)
+        known = {api["id"] for api in self.providers_body.get("live_data_apis", [])} | set(self.saved_live)
+        for ident, entry in (change.get("specialized") or {}).items():
+            if ident not in known:
+                return f"No such specialized API: {ident}"
+            use = entry.get("use") if isinstance(entry, dict) else None
+            if use not in ("auto", "always", "off"):
+                return f"specialized.{ident}.use must be one of auto, always, off"
+            live.pop(ident, None) if use == "auto" else live.__setitem__(ident, use)
+        self.saved_search, self.saved_live = search, live
+        return None
+
+    def settings(self, method, body):
+        if self.settings_script:
+            return self.settings_script.pop(0)
+        if method == "GET":
+            return 200, self.settings_answer()
+        refusal = self.apply_settings(json.loads(body or "null"))
+        if refusal is not None:
+            return 400, {"error": {"code": "invalid_request", "message": refusal}}
+        return 200, self.settings_answer()
 
     def handle(self, method, path, headers, body):
         self.requests.append({"method": method, "path": path, "headers": headers, "body": body})
+        if path.partition("?")[0] == "/v1/search/settings":
+            return self.settings(method, body)
         if path == "/v1/search":
             if headers.get("Authorization", "").removeprefix("Bearer ") in self.rejected:
                 return 401, {"error": {"code": "unauthorized", "message": "expired"}}
@@ -205,10 +286,13 @@ def stub():
             self.end_headers()
             self.wfile.write(data)
 
-        def do_POST(self):
+        def do_PUT(self):
+            self.do_POST("PUT")
+
+        def do_POST(self, method="POST"):
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length).decode()
-            status, payload = state.handle("POST", self.path, dict(self.headers), body)
+            status, payload = state.handle(method, self.path, dict(self.headers), body)
             raw = isinstance(payload, bytes)
             data = payload if raw else json.dumps(payload).encode()
             self.send_response(status)

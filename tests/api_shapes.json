@@ -19,5 +19,94 @@
   "long": {
     "whole_chars": 100000,
     "text": "The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging … The harbour board met on day 39 to discuss mooring fees and dredging schedules. The capital of Freedonia is Fredville, a port city on the northern coast. The harbour board met on day 0 to discuss mooring fees and dredging schedules."
+  },
+  "settings": {
+    "about": "What GET /v1/search/settings answers for an account that has saved nothing (workers/router/src/routes/search-settings.ts, `view`); PUT answers the same shape. The plugin reads `search` and `specialized` and ignores the rest. Trimmed to two live-data APIs and `choices.search`; the profiles are the public list's. A PUT sends `search` and/or `specialized` only (anything else is a 400); `specialized` is partial.",
+    "answer": {
+      "workspace": "default",
+      "search": {
+        "mode": "optimized",
+        "profile": null,
+        "requested_provider": null,
+        "provider_mode": null,
+        "fallback": false
+      },
+      "specialized": {
+        "polymarket": {
+          "use": "auto"
+        },
+        "espn": {
+          "use": "auto"
+        }
+      },
+      "updated_at": null,
+      "choices": {
+        "search": {
+          "modes": [
+            "optimized",
+            "preset",
+            "direct"
+          ],
+          "profiles": [
+            {
+              "id": "fast",
+              "name": "Fast",
+              "description": "The quickest answer: one provider call, and no deep-research modes."
+            },
+            {
+              "id": "cheap",
+              "name": "Cheap",
+              "description": "One call to a lower-priced provider."
+            },
+            {
+              "id": "live",
+              "name": "Live",
+              "description": "Pages from the last seven days, and no deep-research modes; a score, a quote or another live value is answered by its live-data source."
+            },
+            {
+              "id": "deep",
+              "name": "Deep",
+              "description": "Deep research for a thorough, cited answer: it reads many pages, so it takes longer than one search."
+            },
+            {
+              "id": "code",
+              "name": "Code",
+              "description": "Library and framework documentation, code examples and developer answers."
+            },
+            {
+              "id": "balanced",
+              "name": "Balanced",
+              "description": "The best all-round answer: one provider call."
+            }
+          ]
+        }
+      }
+    },
+    "puts": [
+      {
+        "search": {
+          "mode": "optimized"
+        }
+      },
+      {
+        "search": {
+          "mode": "preset",
+          "profile": "fast"
+        }
+      },
+      {
+        "search": {
+          "mode": "direct",
+          "requested_provider": "exa",
+          "provider_mode": "instant",
+          "fallback": false
+        },
+        "specialized": {
+          "espn": {
+            "use": "always"
+          }
+        }
+      }
+    ]
   }
 }
