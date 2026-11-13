@@ -154,10 +154,10 @@ def test_manifest_declares_the_client_hermes_signs_in_to(plugin):
     assert entry["authorize_params"] == {"resource": f"{origin}/v1/search"}
     # The bearer may go only where the plugin sends searches.
     assert entry["hosts"] == [urlsplit(plugin.provider.SEARCH_URL).hostname]
-    # Neither way in is required of the other: a key user sets no client, a signed-in user no key, so nothing is in requires_env.
+    # No way in is required of another: a key user sets no client, a signed-in user no key, a wallet's user neither, so nothing is in requires_env.
     assert "requires_env" not in data
     optional = {e["name"]: e for e in data["optional_env"]}
-    assert set(optional) == {plugin.provider.KEY_ENV, entry["client_id_env"]}
+    assert set(optional) == {plugin.provider.KEY_ENV, entry["client_id_env"], plugin.payment.KEY_ENV, plugin.payment.CAP_ENV}  # the wallet's two are held by test_x402
     assert optional[plugin.provider.KEY_ENV]["secret"] is True
     assert not optional[entry["client_id_env"]].get("secret")
     assert "https://api.grounder.net/oauth/clients/hermes-agent" in optional[entry["client_id_env"]]["description"]

@@ -41,7 +41,9 @@ for the ``oauth:`` client in ``plugin.yaml`` (``hermes auth add grounder:grounde
 Hermes signs in, stores and refreshes that grant and attaches its token to the
 request, so this plugin never holds a token. With neither, a search is one of Grounder's free searches: it carries no
 credential and has no saved setting, and it sends no profile or routing settings the model asked for, which Grounder refuses a caller
-with no account. A free search that reaches Grounder's limit says where to sign up and add credit, with the links the API gave. No request the plugin makes follows
+with no account. A free search that reaches Grounder's limit says where to sign up and add credit, with the links the API gave (a 402, or a 429 or 503 with those links): never a bare HTTP status.
+With a wallet set (``GROUNDER_X402_PRIVATE_KEY``) a free search that Grounder answers 402 is paid for once with x402 and sent again, with the options a free search leaves out (``_pay``, ``payment.py``);
+what is paid, and what is never paid, is ``payment.choose``. No request the plugin makes follows
 a redirect (``_open``), and no address that carries a key or is not public is sent (``_refusal``).
 
 ``/search`` (``commands.py``) reads the account's setting when it opens and writes every choice to it (``save_account``); this plugin keeps none of it in Hermes's config.
@@ -50,6 +52,7 @@ a redirect (``_open``), and no address that carries a key or is not public is se
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ipaddress
 import json
 import logging
@@ -73,6 +76,8 @@ from agent.web_search_provider import WebSearchProvider
 from hermes_cli.auth_constants import AuthError
 from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
 
+from . import payment
+
 logger = logging.getLogger(__name__)
 
 ORIGIN = "https://api.grounder.net"
@@ -83,7 +88,7 @@ PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /sea
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.7.5"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.7.6"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -354,16 +359,23 @@ def _open(request: urllib.request.Request, timeout: float) -> Any:
     return _OPENER.open(request, timeout=timeout)
 
 
-def _post(payload: dict[str, Any], key: str = "") -> tuple[int, bytes]:
-    """Send one search, with the user's own search key or, with none, as a free search that carries no credential; return the HTTP status and the body."""
+def _post(payload: dict[str, Any], key: str = "", extra: Optional[dict[str, str]] = None, headers_out: Optional[dict[str, str]] = None) -> tuple[int, bytes]:
+    """Send one search, with the user's own search key or, with none, as a free search that carries no credential; return the HTTP status and the body.
+
+    ``extra`` adds request headers (a wallet's ``PAYMENT-SIGNATURE``), and ``headers_out`` gets the response's headers, their names in lower case (the offer of a 402, a paid search's receipt).
+    """
     request = urllib.request.Request(
         SEARCH_URL, json.dumps(payload).encode(),
         {**({"Authorization": f"Bearer {key}"} if key else {}), "Content-Type": "application/json",
-         "Accept": "application/json", "User-Agent": USER_AGENT})
+         "Accept": "application/json", "User-Agent": USER_AGENT, **(extra or {})})
     try:
         with _open(request, TIMEOUT_S) as response:
+            if headers_out is not None:
+                headers_out.update({name.lower(): value for name, value in response.headers.items()})
             return response.status, response.read()
     except urllib.error.HTTPError as error:
+        if headers_out is not None:
+            headers_out.update({name.lower(): value for name, value in error.headers.items()})
         return error.code, error.read()
 
 
@@ -614,6 +626,7 @@ def _under_saved_choice(payload: dict[str, Any], saved: Optional[dict[str, Any]]
 ACT_CODES = ("daily_limit_reached", "capacity_reached", "cap_reached")  # a search refused for the user's own allowance, which only the user can change
 GROUNDER_SITE = "https://grounder.net/account"
 NOTICE_KEY = "grounder_notice"  # on a result that is Grounder's message to the user in place of rows: "act" (what the user must do first) or "refused"
+PAYMENT_KEY = "grounder_payment"  # on the data of a result Grounder served for a wallet's payment: what was paid, and the settlement's transaction hash (``payment.receipt``)
 
 
 class _Act(str):
@@ -637,12 +650,23 @@ def _error_parts(body: Any) -> tuple[dict[str, Any], Optional[str], dict[str, An
 def _must_act(status: int, body: Any, via: str) -> bool:
     """Whether a failed search is an answer the user must act on (a limit, a rejected key or sign-in), not a transient failure."""
     error, _detail, details = _error_parts(body)
-    return status == 401 or (status in (429, 503) and (error.get("code") in ACT_CODES or (via == "free" and bool(details.get("signup_url")))))
+    return status in (401, 402) or (status in (429, 503) and (error.get("code") in ACT_CODES or (via == "free" and bool(details.get("signup_url")))))
 
 
-def _error_message(status: int, body: Any, via: str) -> str:
-    """A one-line message for a failed search, with Grounder's own reason when it gave one. ``via`` is how the search was made: ``key``, ``sign-in`` or ``free``."""
+def _error_message(status: int, body: Any, via: str, declined: str = "") -> str:
+    """A one-line message for a failed search, with Grounder's own reason when it gave one. ``via`` is how the search was made: ``key``, ``sign-in`` or ``free``.
+    ``declined`` is why a wallet set in ``GROUNDER_X402_PRIVATE_KEY`` did not pay a 402 (``payment``): it takes the place of the line that offers a wallet."""
     error, detail, details = _error_parts(body)
+    if status == 402:
+        # Grounder wants payment for the search: with no account, its free searches are used up. A bare "HTTP 402" tells the user nothing, so the way past it is the message: an
+        # account (the links are the API's own, and no limit is in any sentence here), or a wallet that pays for each search.
+        if via != "free":
+            return detail or "Grounder needs payment for this search."
+        credit = f", then add credit at {details['billing_url']}" if details.get("billing_url") else ""
+        account = (f"Sign up at {details['signup_url']}{credit}. Then sign in with `{SIGN_IN}`, or set a search key in `{KEY_ENV}`." if details.get("signup_url")
+                   else f"Sign in with `{SIGN_IN}`, or set a search key from {KEYS_URL} in `{KEY_ENV}`.")
+        wallet = declined or (f"A wallet can pay for each search instead: the user sets `{payment.KEY_ENV}` themselves, never in the chat (the plugin README says how).")
+        return f"Grounder needs payment for this search. {account} {wallet}" if not declined else f"Grounder needs payment for this search. {declined} {account}"
     if via == "free" and status in (429, 503) and details.get("signup_url"):
         # The links are the API's own, and the limits are in no sentence here: Grounder changes them, this plugin does not.
         credit = f", then add credit at {details['billing_url']}" if details.get("billing_url") else ""
@@ -794,9 +818,62 @@ def _context() -> dict[str, Any]:
 FREE_REFUSES = ("profile", "routing_settings")  # what Grounder refuses a caller with no account (400): they change a search on an account's own settings
 
 
+class _Lost(Exception):
+    """A payment was signed and sent, and the answer never came: Grounder may have taken it. The message says so, and nothing is paid again."""
+
+
+def _pay(payload: dict[str, Any], raw: bytes, offered: dict[str, str], sent_out: Optional[list[dict[str, Any]]]) -> tuple[int, bytes, Optional[dict[str, Any]], str]:
+    """The wallet's answer to a free search's 402, at most once: ``(status, body, receipt, declined)``.
+
+    The offer is read, checked against what ``payment.choose`` pays (USDC on Base, no more than the user's cap) and signed; then the same search is sent once more with the whole request
+    (the options a free search drops stay: a paid search may carry them) and the signature in ``PAYMENT-SIGNATURE``. ``receipt`` is what the 200's ``PAYMENT-RESPONSE`` says was paid.
+    Without a payment ``declined`` is why, in words for the user, and ``(402, raw, None, why)`` goes back as the answer. There is no loop and no second signature: a second 402 is
+    reported, never paid. Raises ``_Lost`` when the signed request got no answer, since Grounder may have settled it.
+    """
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        body = None
+    try:
+        required = payment.offer(offered, body)
+        entry = payment.choose(required, payment.cap())
+        header = payment.sign(entry, required, payment.wallet_key())
+    except payment.Declined as why:
+        return 402, raw, None, str(why)
+    except Exception as error:  # a bug here must cost the user a message, never a search or a payment
+        logger.warning("Grounder payment could not be prepared: %s", type(error).__name__)
+        return 402, raw, None, "The payment could not be prepared, so nothing was paid."
+    if sent_out is not None:
+        sent_out.append(payload)
+    seen: dict[str, str] = {}
+    try:
+        status, answer = _post(payload, extra={payment.SIGNATURE_HEADER: header}, headers_out=seen)
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as error:
+        logger.warning("Grounder paid request error: %s", error)
+        raise _Lost("A payment was signed and sent, and Grounder did not answer. It may have been taken: check the wallet before searching again. "
+                    f"Nothing more will be paid for this search. ({error})") from None
+    if status == 200:
+        try:
+            readable = isinstance(json.loads(answer), dict)
+        except ValueError:
+            readable = False
+        if not readable:  # Grounder settled and the results did not arrive whole: the payment may be gone and there is nothing to show for it
+            raise _Lost("A payment was signed and sent, and Grounder's answer could not be read. It may have been taken: check the wallet before searching again. "
+                        "Nothing more will be paid for this search.")
+        return status, answer, payment.receipt(seen, entry), ""
+    if status == 402:
+        why = payment.reason(seen)
+        return status, answer, None, (f"Grounder did not accept the wallet's payment{f' ({why})' if why else ''}. Check that the wallet holds enough USDC on Base. "
+                                       "It was not sent again.")
+    return status, answer, None, ""
+
+
 def _send(payload: dict[str, Any], dropped: Optional[list[str]] = None, sent_out: Optional[list[dict[str, Any]]] = None,
-          overridden: Optional[list[str]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+          overridden: Optional[list[str]] = None, paid_out: Optional[list[dict[str, Any]]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """One POST to Grounder: ``(body, None)``, or ``(None, error)`` when it failed. Never raises, and never retries: a second POST is a second search.
+
+    The one exception is a payment (``_pay``): a free search that Grounder answers 402, from a user who set a wallet (``GROUNDER_X402_PRIVATE_KEY``), is sent once more with a signed
+    payment, and ``paid_out`` gets what was paid. That is the same search, paid for once, and it is never sent a third time.
 
     A search with a key or a sign-in sends the request it is given and nothing of the user's saved setting (``/search``, kept on their account): a request that sends no ``mode``,
     ``profile``, ``requested_provider``, ``providers`` or ``routing_settings.exclusive`` of its own runs as that setting, and is billed as the mode it names; one that sends its own
@@ -821,6 +898,7 @@ def _send(payload: dict[str, Any], dropped: Optional[list[str]] = None, sent_out
             if overridden is not None:
                 overridden.extend(names)
     via = "key" if key else "sign-in"
+    declined = ""
     try:
         if key:
             if sent_out is not None:
@@ -838,7 +916,18 @@ def _send(payload: dict[str, Any], dropped: Optional[list[str]] = None, sent_out
                 free_request = {name: value for name, value in payload.items() if name not in FREE_REFUSES}
                 if sent_out is not None:
                     sent_out.append(free_request)
-                status, raw = _post(free_request)
+                offered: dict[str, str] = {}
+                status, raw = _post(free_request, headers_out=offered)
+                if status == 402 and payment.configured():
+                    status, raw, receipt, declined = _pay(payload, raw, offered, sent_out)
+                    if receipt is not None:
+                        if paid_out is not None:
+                            paid_out.append(receipt)
+                        if dropped is not None:
+                            dropped.clear()  # the paid search carried what the free one leaves out
+                        logger.info("Grounder search paid: %s, transaction %s", receipt["amount"], receipt.get("transaction", "not named"))
+    except _Lost as lost:
+        return None, _act(str(lost))
     except AuthError as error:
         message = f"Grounder sign-in failed: {error}"
         # A refresh that failed on the network or Grounder's token service passes; any other sign-in failure is the user's to fix.
@@ -855,7 +944,7 @@ def _send(payload: dict[str, Any], dropped: Optional[list[str]] = None, sent_out
             return None, "Could not parse the Grounder response as JSON"
         body = None
     if status != 200 or not isinstance(body, dict):
-        message = _error_message(status, body, via)
+        message = _error_message(status, body, via, declined)
         if not _must_act(status, body, via):
             return None, message
         link = str(_error_parts(body)[2].get("signup_url") or "") if via == "free" else ""
@@ -970,8 +1059,8 @@ def _refusal(address: str) -> str:
     refused here whether or not this Hermes has ``is_safe_url``. The reason never repeats the address.
     """
     forms = [address, unquote(address)]
-    own = _key()
-    if any(_KEY_SHAPES.search(form) or _OWN_KEY.search(form) or (own and own in form) for form in forms):
+    own, wallet = _key(), payment.secret_forms()  # the search key, and the wallet's private key as it could be written
+    if any(_KEY_SHAPES.search(form) or _OWN_KEY.search(form) or (own and own in form) or any(secret in form.lower() for secret in wallet) for form in forms):
         return SECRET_REFUSED
     try:
         parts = urlsplit(address)
@@ -1165,14 +1254,15 @@ class GrounderWebSearchProvider(WebSearchProvider):
         payload = {"query": query[:MAX_QUERY_CHARS],
                    "top_k": max(1, min(int(limit), MAX_RESULTS))}
         sent: list[dict[str, Any]] = []
-        body, error = _send(payload, sent_out=sent)
+        paid: list[dict[str, Any]] = []
+        body, error = _send(payload, sent_out=sent, paid_out=paid)
         if body is None:
             return _notice(error) if isinstance(error, _Act) else _fail(error or "Grounder returned no answer")
         rows = [_row(r, i + 1) for i, r in enumerate(_results(body)[:max(1, int(limit))])]
         self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows), sent[-1] if sent else None))
         # The count only: a query is the user's words, and a log line outlives the search.
         logger.info("Grounder search: %d results", len(rows))
-        return {"success": True, "data": {"web": rows}}
+        return {"success": True, "data": {"web": rows, **({PAYMENT_KEY: paid[-1]} if paid else {})}}
 
     def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         """Read ``urls`` in one search, so it counts once: an entry per URL in their order, with an ``error`` on each page not read.
@@ -1216,7 +1306,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
         chat = _chat(_session())
         question = " ".join(ADDRESS.sub(" ", query).split())[:MAX_QUERY_CHARS] or self._question(pages)
         sent: list[dict[str, Any]] = []
-        body, error = _send({"query": question, "urls": pages, "top_k": len(pages), "features": ["page-text"]}, sent_out=sent)
+        paid: list[dict[str, Any]] = []
+        body, error = _send({"query": question, "urls": pages, "top_k": len(pages), "features": ["page-text"]}, sent_out=sent, paid_out=paid)
         if body is None:
             return _notice(error) if isinstance(error, _Act) else _fail(error or "Grounder returned no answer")
         found = _pages_found(pages, _results(body))
@@ -1238,7 +1329,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
                 entry = _page_row(page, found[page]) if page in found else _page_shown(page, shown[page])
                 rows.append({"title": entry["title"], "url": page, "description": entry["content"], "position": len(rows) + 1})
         self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows), sent[-1] if sent else None), found_by=False)
-        return {"success": True, "data": {"web": rows}}
+        return {"success": True, "data": {"web": rows, **({PAYMENT_KEY: paid[-1]} if paid else {})}}
 
     def after_tool(self, tool_name: str = "", args: Any = None, result: Any = None, session_id: str = "", turn_id: str = "", conversation_id: str = "",
                    **_: Any) -> Optional[str]:
@@ -1320,7 +1411,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
         dropped: list[str] = []
         overridden: list[str] = []
         sent: list[dict[str, Any]] = []
-        body, error = _send(_options(args, query), dropped, sent_out=sent, overridden=overridden)
+        paid: list[dict[str, Any]] = []
+        body, error = _send(_options(args, query), dropped, sent_out=sent, overridden=overridden, paid_out=paid)
         if body is None:
             return json.dumps(_fail(error or "Grounder returned no answer"))
         rows = [_row(r, i + 1) for i, r in enumerate(_results(body))]
@@ -1331,7 +1423,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
                         f"Sign in with `{SIGN_IN}`, or set a search key in `{KEY_ENV}`, to use {'it' if len(dropped) == 1 else 'them'}."} if dropped else {}
         if overridden:
             note = {"note": f"The user's own Grounder search choice (/search) ran this search, so {', '.join(overridden)} {'was' if len(overridden) == 1 else 'were'} not used."}
-        return json.dumps({"success": True, "data": {"web": rows}, **features, **note}, indent=2, ensure_ascii=False)
+        return json.dumps({"success": True, "data": {"web": rows, **({PAYMENT_KEY: paid[-1]} if paid else {})}, **features, **note}, indent=2, ensure_ascii=False)
 
     def list_providers_tool(self, args: dict[str, Any], **_: Any) -> str:
         """The ``grounder_list_providers`` tool: what Grounder's MCP ``list_providers`` says, from the public feature list. Sends no credential and is not a search."""
@@ -1381,6 +1473,6 @@ class GrounderWebSearchProvider(WebSearchProvider):
         return {
             "name": "Grounder", "badge": "account",
             "tag": "Licensed, live sources: over 40 providers, one provider call per search and each live-data API asked every call, never or when Grounder decides, "
-                   f"each returning its own results, and page reading. Free searches need no account; for more, a search key in `{KEY_ENV}`, or sign in with `{SIGN_IN}`.",
+                   f"each returning its own results, and page reading. Free searches need no account; for more, a search key in `{KEY_ENV}`, or sign in with `{SIGN_IN}`, or a wallet that pays for each search.",
             "env_vars": [],
         }

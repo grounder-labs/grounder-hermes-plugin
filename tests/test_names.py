@@ -74,7 +74,7 @@ def _strings(path):
     return [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings and " " in node.value]
 
 
-@pytest.mark.parametrize("name", ["provider.py", "commands.py", "__init__.py"])
+@pytest.mark.parametrize("name", ["provider.py", "commands.py", "__init__.py", "payment.py"])
 def test_every_sentence_the_code_holds_says_Grounder(name):
     strings = _strings(PLUGIN_DIR / name)
     assert strings
@@ -102,8 +102,10 @@ def test_what_the_plugin_renders_says_Grounder(plugin):
              plugin.commands.PRESET_NOTE, plugin.commands.PIN_NOTE]
     links = {"signup_url": "https://grounder.net/account", "billing_url": "https://grounder.net/account/billing"}
     for status, via, body in ((401, "key", {}), (401, "sign-in", {}), (429, "free", {"error": {"details": links}}), (503, "free", {"error": {"details": links}}),
-                              (429, "key", {"error": {"message": "slow down"}}), (500, "sign-in", {})):
+                              (402, "free", {"error": {"details": links}}), (402, "free", {}), (402, "key", {}), (429, "key", {"error": {"message": "slow down"}}), (500, "sign-in", {})):
         texts.append(plugin.provider._error_message(status, body, via))
+    texts += [plugin.provider._error_message(402, {"error": {"details": links}}, "free", declined) for declined in
+              (plugin.payment.MISSING, "This search costs $0.12, more than the $0.05 a search `GROUNDER_X402_MAX_PER_SEARCH` allows, so nothing was paid.")]
     host = SimpleNamespace(commands={}, register_command=lambda name, handler, description="", args_hint="": host.commands.update({name: description}))
     plugin.commands.register_commands(host)
     texts += host.commands.values()

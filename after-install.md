@@ -12,6 +12,9 @@ in the browser, paste a search key from https://grounder.net/account/keys, or st
   free searches instead.
 - Search key: the user runs `hermes config set GROUNDER_API_KEY <their-key>` themselves, so the key is not in the chat.
 
+If the user asks about paying for each search from a crypto wallet instead (x402), point them to "Pay per search with a wallet" in the plugin README. They set `GROUNDER_X402_PRIVATE_KEY` themselves: never ask
+for, repeat or handle a private key in the chat.
+
 Once connected, `/search` chooses how Grounder searches, from three modes:
 
 - Grounder optimized: Grounder picks the provider for your question. This is the default.

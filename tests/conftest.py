@@ -140,7 +140,8 @@ class Stub:
         self.search_status = 200
         self.search_headers = {}  # extra headers on the /v1/search answer, e.g. a redirect's Location
         self.search_body = {"query": "q", "results": []}  # bytes are sent as they are, not as JSON
-        self.search_script = []  # (status, body) answers to the next searches, in order, before search_status and search_body apply
+        self.search_script = []  # (status, body) or (status, body, headers) answers to the next searches, in order, before search_status and search_body apply
+        self.reply_headers = {}  # the headers of the answer being given: a script entry's third item (a 402's PAYMENT-REQUIRED, a paid 200's PAYMENT-RESPONSE)
         self.features_body = {"features": []}
         self.providers_body = {"providers": [], "live_data_apis": []}
         self.list_status = 200  # what /v1/providers and /v1/search-profiles answer
@@ -222,13 +223,16 @@ class Stub:
 
     def handle(self, method, path, headers, body):
         self.requests.append({"method": method, "path": path, "headers": headers, "body": body})
+        self.reply_headers = {}
         if path.partition("?")[0] == "/v1/search/settings":
             return self.settings(method, body)
         if path == "/v1/search":
             if headers.get("Authorization", "").removeprefix("Bearer ") in self.rejected:
                 return 401, {"error": {"code": "unauthorized", "message": "expired"}}
             if self.search_script:
-                return self.search_script.pop(0)
+                status, payload, *answer_headers = self.search_script.pop(0)
+                self.reply_headers = answer_headers[0] if answer_headers else {}
+                return status, payload
             return self.search_status, self.search_body
         if path == "/v1/features":
             return 200, self.features_body
@@ -297,7 +301,7 @@ def stub():
             data = payload if raw else json.dumps(payload).encode()
             self.send_response(status)
             self.send_header("Content-Type", "text/html" if raw else "application/json")
-            for name, value in state.search_headers.items():
+            for name, value in {**state.search_headers, **state.reply_headers}.items():
                 self.send_header(name, value)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -317,6 +321,8 @@ def plugin(stub, tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("GROUNDER_API_KEY", raising=False)
     monkeypatch.delenv("GROUNDER_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GROUNDER_X402_PRIVATE_KEY", raising=False)  # a wallet on this machine must never pay for a test
+    monkeypatch.delenv("GROUNDER_X402_MAX_PER_SEARCH", raising=False)
     # urlopen follows redirects, and with them a search key: the plugin sends every request through its own opener (``_open``), which follows none.
     monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_k: pytest.fail("the plugin called urlopen, which follows redirects; use provider._open"))
     # Hermes's address check asks DNS; a test must not. This stand-in answers from the name alone: a host named ``resolves-private`` is one that resolves to a private address.

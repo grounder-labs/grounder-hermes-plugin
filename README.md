@@ -8,7 +8,8 @@ Every result is licensed: no site's robots.txt, license or AI opt-out refuses th
 return fewer results than asked for, and is never filled with unlicensed ones.
 
 A search needs no account: with none, it is one of Grounder's free searches. An account gets free searches too, with no card
-needed, and more past them ([pricing](https://grounder.net/pricing)). A `web_extract` call counts as one search, however many
+needed, and more past them ([pricing](https://grounder.net/pricing)); or, with no account, a wallet can pay for each search past the free ones
+([Pay per search with a wallet](#pay-per-search-with-a-wallet)). A `web_extract` call counts as one search, however many
 pages it reads.
 
 ## Install
@@ -26,9 +27,9 @@ Once Grounder is listed in the Hermes plugin catalog, `hermes plugins install gr
 With no search key and no sign-in, a search is one of Grounder's free searches. It carries no credential and runs within the free
 limits Grounder sets; this plugin repeats none of them, so a limit Grounder changes needs no change here. A free search has
 no account to save a choice on (how Grounder searches, below), so Grounder runs it as Grounder optimized, and a `grounder_search` that asks for a profile or routing settings
-runs without them and says so. When the free searches are used up, the search answers with a message that says where to sign up and
-where to add credit, with the links Grounder returned, as its result: Hermes would serve a failed search from its keyless free tier and
-the message would never reach you. Sign up, then connect your account as below.
+runs without them and says so. When the free searches are used up, Grounder asks for payment (HTTP 402) and the search answers with a message that says where to sign up and
+where to add credit, with the links Grounder returned, and that a wallet can pay for each search instead, as its result: Hermes would serve a failed search from its keyless free tier and
+the message would never reach you. Sign up, then connect your account as below, or [set a wallet](#pay-per-search-with-a-wallet).
 
 ## Connect your account
 
@@ -73,6 +74,39 @@ that cannot connect to `127.0.0.1`: copy that page's full address from the brows
 
 Version 0.1.0 signed in with `hermes grounder login` and kept its own tokens in `$HERMES_HOME/grounder`. Hermes holds the
 sign-in now, so that command is gone: connect again as above and delete the old folder.
+
+## Pay per search with a wallet
+
+When the free searches are used up, Grounder can take payment for each search instead of an account, with [x402](https://www.x402.org): a payment in USDC on Base, signed by a wallet whose key you hold.
+It is off until you set a wallet, and then it pays only what you allow.
+
+1. Make a wallet that holds only what you are willing to spend, with USDC on Base in it. It needs nothing else: the payment is settled by Grounder's facilitator, which pays the gas.
+2. Install the `eth-account` package, 0.13 or later, in the Python that runs Hermes. The plugin does not install it for you, and imports it only when it signs a payment, so everyone else needs nothing more than before.
+3. Set the key yourself, never in a chat:
+
+   ```sh
+   hermes config set GROUNDER_X402_PRIVATE_KEY <the-wallets-private-key>
+   ```
+
+   Hermes keeps it in your profile's `.env`, in plain text, as it keeps a search key: anyone who can read that file can spend the wallet, so keep the balance small.
+4. Set the most one search may cost, in US dollars, if you want a limit other than the default of 0.05:
+
+   ```sh
+   hermes config set GROUNDER_X402_MAX_PER_SEARCH 0.02
+   ```
+
+A free search that Grounder answers with a request for payment (HTTP 402, with its offer in a `PAYMENT-REQUIRED` header) is then paid and sent again, once, with the signed payment in a `PAYMENT-SIGNATURE` header. Grounder runs the search, settles the
+payment and answers with a `PAYMENT-RESPONSE` header, which holds the transaction hash. What the plugin pays, and nothing else:
+
+- an `exact` offer, in USDC on Base (the network and the token's contract are fixed in the plugin, not read from the offer), moved as an EIP-3009 `transferWithAuthorization`, to the address the offer names;
+- for no more than `GROUNDER_X402_MAX_PER_SEARCH`. A limit that is not an amount of dollars pays nothing, rather than becoming a bigger one.
+
+Any other offer is not paid, and the search answers with a message that says why, and where to sign up instead. One search is paid once: a second 402 after the payment is reported, never paid, and a signed payment that got
+no answer may have been taken, so the message says to check the wallet and the plugin pays nothing more for that search. The limit is for one search; there is no total, so the wallet's balance is the only other bound.
+A search with a search key or a sign-in is never paid from the wallet: it uses your account's credit.
+
+A paid search keeps what a free one leaves out: a `profile` or `routing_settings` that `grounder_search` was given go with it. Its result carries `grounder_payment` in its data: what was paid, in USDC on Base, and the transaction hash
+from `PAYMENT-RESPONSE`. A `web_extract` has no place to show it, so its payment is only in Hermes's log, which holds the amount and the hash and never the key. The plugin refuses an address, in a query or in `urls`, that carries the wallet's key.
 
 ## It selects itself, where you have chosen nothing
 
@@ -150,7 +184,7 @@ one line saying which Grounder mode it searched in, who answered, how many sourc
 so they are also in the history later turns send. A host that does not say which answer a search serves gets no list: there
 the model is asked to write its own, as in any client.
 
-Two kinds of failure reach the model differently. One you must act on (the free searches or your account's limit reached,
+Two kinds of failure reach the model differently. One you must act on (the free searches or your account's limit reached, a request for payment,
 a search key or sign-in Grounder no longer accepts) comes back as the search's result, with Grounder's message and what to do
 about it, so Hermes does not replace it with another vendor's results and the message reaches you. A transient one (the network, a
 timeout, a rate limit, a 5xx) comes back as `success: false` and one of these errors; Hermes then retries the search on its own
@@ -162,6 +196,11 @@ tier, and a Hermes that honours a provider's `keyless_rescue` setting never resc
 |---|---|
 | Grounder rejected the search key in `GROUNDER_API_KEY` | Check the key on your Search keys page, or remove it to use the sign-in |
 | You've used Grounder's free searches, or Grounder's free searches have reached their limit for now | Sign up at the link in the message and, to search past the free ones, add credit at the second link; then set a search key or run `hermes auth add grounder:grounder` |
+| Grounder needs payment for this search | The free searches are used up. Sign up at the link in the message, or [set a wallet](#pay-per-search-with-a-wallet) to pay for each search |
+| This search costs more than the limit, none of Grounder's payment options is USDC on Base, or the offer could not be read: nothing was paid | The wallet is set and this offer is not one it pays; raise `GROUNDER_X402_MAX_PER_SEARCH`, or sign up as the message says |
+| `GROUNDER_X402_PRIVATE_KEY` is not a private key, or `eth-account` is not installed: nothing was paid | Set the 64-hexadecimal-character key, or install `eth-account` in the Python that runs Hermes |
+| Grounder did not accept the wallet's payment | Check that the wallet holds enough USDC on Base; the payment was not sent again |
+| A payment was signed and sent, and Grounder did not answer | It may have been taken: check the wallet before searching again |
 | Grounder rejected the sign-in | Run `hermes auth add grounder:grounder` |
 | Grounder refused a search with no account | Sign in with `hermes auth add grounder:grounder`, or set a search key |
 | Grounder sign-in failed | Follow Hermes's reason in the message |
@@ -263,6 +302,9 @@ when the user stated one. `grounder_list_providers` reads Grounder's public feat
 credential. `/search` reads Grounder's public lists of providers, presets and live-data APIs, and reads and writes your saved search setting (`GET` and `PUT https://api.grounder.net/v1/search/settings`); none of it is a search. A key goes with
 the setting's requests as with a search; with a sign-in, Hermes attaches its token to the lists' read, which is how a command knows you are signed in.
 
+**With a wallet set**, a free search that Grounder answers with a request for payment is sent a second time, once, with the same words and a signed payment authorization: your wallet's address, the amount and the address it
+pays, the validity window and the signature. Grounder, and the facilitator that settles the payment, see that address and the transaction, which is public on Base. Your private key is never sent.
+
 Searches are recorded under your Grounder account, and a free search with no account as Grounder's
 [privacy policy](https://grounder.net/privacy) and [data use](https://grounder.net/docs/data-use) pages describe. The plugin logs how many results a search
 returned or pages an extract read, never the query or an address. To add `cite_sources`, the Sources list and the line under an
@@ -284,6 +326,9 @@ with pytest, PyYAML and httpx, where stand-ins for Hermes's interfaces take its 
 ```sh
 python -m pytest tests
 ```
+
+The tests of the wallet's signature need `eth-account`, and skip without it; one more compares the signature with the one the official x402 Python SDK makes, and skips unless `x402[evm]` is installed too.
+Every key in them is made by the test, and nothing is funded or spent.
 
 ## License
 
