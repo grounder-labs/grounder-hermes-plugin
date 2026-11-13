@@ -40,7 +40,7 @@ A call uses the Grounder search key in ``GROUNDER_API_KEY`` when one is set, and
 for the ``oauth:`` client in ``plugin.yaml`` (``hermes auth add grounder:grounder``):
 Hermes signs in, stores and refreshes that grant and attaches its token to the
 request, so this plugin never holds a token. With neither, a search is one of Grounder's free searches: it carries no
-credential and has no saved setting, and it sends no profile, routing settings or workspace the model asked for, which Grounder refuses a caller
+credential and has no saved setting, and it sends no profile or routing settings the model asked for, which Grounder refuses a caller
 with no account. A free search that reaches Grounder's limit says where to sign up and add credit, with the links the API gave. No request the plugin makes follows
 a redirect (``_open``), and no address that carries a key or is not public is sent (``_refusal``).
 
@@ -61,7 +61,6 @@ import threading
 import time
 import unicodedata
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections import Counter
 from typing import Any, Optional
@@ -84,7 +83,7 @@ PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /sea
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.7.4"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.7.5"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -130,7 +129,7 @@ TOOLSET = "grounder"
 SEARCH_SCHEMA = {
     "name": SEARCH_TOOL,
     "description": "Search the web or read pages through Grounder with more control than web_search: recent results only, named sites, "
-                   "the features the answer needs, pages to read, a named provider, a workspace or this search's routing settings. "
+                   "the features the answer needs, pages to read, a named provider or this search's routing settings. "
                    "For a plain search use web_search. A call counts as one search.",
     "parameters": {"type": "object", "required": ["query"], "properties": {
         "query": {"type": "string", "description": "The search query."},
@@ -149,7 +148,6 @@ SEARCH_SCHEMA = {
                                                               "the user's own setting (their /search choice, saved on their Grounder account) is not changed, and it wins where it has a choice: a preset or provider the user chose is kept over "
                                                               "a profile, requested_provider, providers, exclusive or an always here, and a live-data API the user set to Every call or Never is kept. What only narrows a search is used. "
                                                               "Needs the user to be signed in to Grounder."},
-        "workspace": {"type": "string", "description": "Slug of the workspace to search under; the default one when left out. An unknown slug is refused, never replaced by the default. Needs the user to be signed in to Grounder."},
         "profile": {"type": "string", "description": f"A search preset by id (Grounder preset), which changes how this search runs ({LIST_PROVIDERS_TOOL} lists them under search_modes); `auto` is none. "
                                                       "Left out, the search runs as the user's own setting (their /search choice: Grounder optimized, a preset or a provider); the user's preset or provider wins over this. Needs the user to be signed in to Grounder."},
         "user_location": {"type": "string", "description": 'Where the user is, only if the user said so in this chat, e.g. "Austin, Texas". Never guess it.'},
@@ -492,12 +490,11 @@ def _settings_error(status: int, body: Any, via: str) -> str:
     return detail if status == 400 and detail else _error_message(status, body, via)
 
 
-def _settings_call(method: str, body: Optional[dict[str, Any]] = None, workspace: str = "") -> tuple[Optional[dict[str, Any]], Optional[str]]:
+def _settings_call(method: str, body: Optional[dict[str, Any]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """``GET`` or ``PUT`` (with a JSON ``body``) of the account's saved search setting: ``(Grounder's answer, None)``, or ``(None, the reason)``. It goes with the search key when one is set
-    and otherwise through Hermes's sign-in, follows no redirect, and raises ``ProviderNotSignedIn`` when the user has neither. It is no search and spends none. ``workspace`` names another
-    workspace's setting (the default one when empty)."""
+    and otherwise through Hermes's sign-in, follows no redirect, and raises ``ProviderNotSignedIn`` when the user has neither. It is no search and spends none."""
     key = _key()
-    url = f"{SETTINGS_URL}?{urllib.parse.urlencode({'workspace': workspace})}" if workspace else SETTINGS_URL
+    url = SETTINGS_URL
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
     try:
         if key:
@@ -530,9 +527,9 @@ def _settings_call(method: str, body: Optional[dict[str, Any]] = None, workspace
     return answer, None
 
 
-def read_account(workspace: str = "") -> tuple[Optional[dict[str, Any]], Optional[str]]:
+def read_account() -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """The account's saved search setting as ``_local`` has it, as it is now and never kept: ``(setting, None)`` or ``(None, reason)``. Raises ``ProviderNotSignedIn`` with neither a key nor a sign-in."""
-    answer, error = _settings_call("GET", workspace=workspace)
+    answer, error = _settings_call("GET")
     return (_local(answer), None) if answer is not None else (None, error)
 
 
@@ -794,7 +791,7 @@ def _context() -> dict[str, Any]:
     return {"session_ref": _token(conversation), **({"prompt_ref": _token(conversation, turn)} if turn else {}), **({"agent": {"model": model}} if model else {})}
 
 
-FREE_REFUSES = ("profile", "routing_settings", "workspace")  # what Grounder refuses a caller with no account (400): they change a search on an account's own settings
+FREE_REFUSES = ("profile", "routing_settings")  # what Grounder refuses a caller with no account (400): they change a search on an account's own settings
 
 
 def _send(payload: dict[str, Any], dropped: Optional[list[str]] = None, sent_out: Optional[list[dict[str, Any]]] = None,
@@ -813,9 +810,8 @@ def _send(payload: dict[str, Any], dropped: Optional[list[str]] = None, sent_out
     if context:
         payload = {**payload, "context": {**payload.get("context", {}), **context}}
     if _carries_choice(payload):
-        workspace = payload.get("workspace") if isinstance(payload.get("workspace"), str) else ""
         try:
-            saved, why = read_account(workspace)
+            saved, why = read_account()
         except ProviderNotSignedIn:
             saved, why = None, "free"  # a free search has no saved choice; the free path leaves out what it refuses
         if why != "free":
@@ -1072,7 +1068,7 @@ def _page_shown(url: str, shown: tuple[str, str]) -> dict[str, Any]:
 def _options(args: dict[str, Any], query: str) -> dict[str, Any]:
     """``grounder_search``'s arguments as a search request, the way Grounder's MCP search maps the same arguments."""
     payload: dict[str, Any] = {"query": query}
-    for name in ("top_k", "include_text", "requested_provider", "providers", "features", "urls", "routing_settings", "workspace", "profile"):
+    for name in ("top_k", "include_text", "requested_provider", "providers", "features", "urls", "routing_settings", "profile"):
         if args.get(name) not in (None, "", [], {}):
             payload[name] = args[name]
     filters: dict[str, Any] = {}

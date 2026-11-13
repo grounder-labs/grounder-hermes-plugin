@@ -271,9 +271,9 @@ def test_one_sessions_search_words_never_go_out_with_another_sessions_page_read(
 # --- 9, 10, 11: a free search drops what Grounder refuses it; each way of searching has its own words for a 401 --------------------------------
 
 def test_a_free_search_says_what_it_did_not_send_in_the_words_it_was_asked_in(plugin, stub, free):
-    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "workspace": "team"}))
-    assert out["note"].startswith("No Grounder account is connected, so workspace was not sent and this ran as a free search.")
-    assert "workspace" not in json.loads(_searches(stub)[0]["body"])
+    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "routing_settings": {"fallback": False}, "workspace": "team"}))
+    assert out["note"].startswith("No Grounder account is connected, so routing_settings was not sent and this ran as a free search.")
+    assert not {"routing_settings", "workspace"} & set(json.loads(_searches(stub)[0]["body"]))
 
 
 # --- 12: a malformed row never fails the search --------------------------------------------------------------------------------------------------------

@@ -23,7 +23,6 @@
   "settings": {
     "about": "What GET /v1/search/settings answers for an account that has saved nothing (workers/router/src/routes/search-settings.ts, `view`); PUT answers the same shape. The plugin reads `search` and `specialized` and ignores the rest. Trimmed to two live-data APIs and `choices.search`; the profiles are the public list's. A PUT sends `search` and/or `specialized` only (anything else is a 400); `specialized` is partial.",
     "answer": {
-      "workspace": "default",
       "search": {
         "mode": "optimized",
         "profile": null,

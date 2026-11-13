@@ -1175,7 +1175,7 @@ def test_a_free_search_is_as_it_was_it_has_no_saved_setting_to_read_and_sends_no
     _account(lists, preset="deep", live_data_off=["espn"])
     provider = plugin.GrounderWebSearchProvider()
     provider.search("q")
-    provider.search_tool({"query": "q", "profile": "fast", "routing_settings": {"fallback": False}, "workspace": "w", "top_k": 3})
+    provider.search_tool({"query": "q", "profile": "fast", "routing_settings": {"fallback": False}, "top_k": 3})
     assert _searches(lists) == [{"query": "q", "top_k": 5}, {"query": "q", "top_k": 3}]
     assert not [r for r in lists.requests if r["path"] == "/v1/search/settings"] and all("Authorization" not in r["headers"] for r in lists.requests)
 

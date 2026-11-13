@@ -52,24 +52,24 @@ def test_a_free_search_sends_neither_the_chosen_server_nor_the_mode(plugin, stub
 
 
 def test_a_free_search_drops_the_options_grounder_refuses_a_caller_with_no_account_and_says_so(plugin, stub, free):
-    # Grounder answers a caller with no account 400 for a profile, routing settings or a workspace: nothing is sent that it would refuse, so no round trip is wasted.
+    # Grounder answers a caller with no account 400 for a profile or routing settings: nothing is sent that it would refuse, so no round trip is wasted.
     stub.search_body = {"query": "q", "results": [RESULT]}
     provider = plugin.GrounderWebSearchProvider()
     out = json.loads(provider.search_tool({"query": "q", "profile": "fast", "routing_settings": {"providers": {"exa": {"use": "always"}}},
-                                            "workspace": "team", "top_k": 3}))
+                                            "top_k": 3}))
     sent = json.loads(_searches(stub)[0]["body"])
     assert len(_searches(stub)) == 1 and sent["top_k"] == 3
-    assert not {"profile", "routing_settings", "workspace"} & set(sent)
-    assert out["success"] is True and out["data"]["web"] and "profile, routing_settings, workspace were not sent" in out["note"] and SIGN_IN in out["note"]
-    # One that asked for none gets no note, and a search with a key sends all three.
+    assert not {"profile", "routing_settings"} & set(sent)
+    assert out["success"] is True and out["data"]["web"] and "profile, routing_settings were not sent" in out["note"] and SIGN_IN in out["note"]
+    # One that asked for none gets no note, and a search with a key sends both.
     assert "note" not in json.loads(provider.search_tool({"query": "q"}))
 
 
 def test_a_signed_in_search_keeps_the_options_a_free_one_drops(plugin, stub, hermes):
     hermes.token = "t"
-    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "profile": "fast", "workspace": "team"}))
+    out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "profile": "fast", "routing_settings": {"fallback": False}}))
     sent = json.loads(_searches(stub)[0]["body"])
-    assert sent["profile"] == "fast" and sent["workspace"] == "team" and "note" not in out
+    assert sent["profile"] == "fast" and sent["routing_settings"] == {"fallback": False} and "note" not in out
 
 
 def test_a_free_search_that_reaches_a_limit_says_where_to_sign_up_and_add_credit(plugin, stub, free):
@@ -1087,11 +1087,11 @@ def test_grounder_search_sends_every_option_as_the_mcp_search_maps_it(plugin, st
     stub.search_body = ROUTED
     out = json.loads(plugin.GrounderWebSearchProvider().search_tool({
         "query": " q ", "top_k": 3, "days": 7, "domains": ["bbc.com"], "features": ["news"], "include_text": False, "requested_provider": "exa",
-        "providers": ["exa"], "routing_settings": {"fallback": False}, "workspace": "work", "user_location": " Austin ", "user_time_zone": "America/Chicago"}))
+        "providers": ["exa"], "routing_settings": {"fallback": False}, "user_location": " Austin ", "user_time_zone": "America/Chicago"}))
     sent = json.loads(_searches(stub)[0]["body"])
     # What the model passed goes as it passed it, and names no mode: Grounder reads the provider it named as Grounder direct.
     assert sent == {"query": "q", "top_k": 3, "include_text": False, "requested_provider": "exa", "providers": ["exa"], "features": ["news"],
-                    "routing_settings": {"fallback": False}, "workspace": "work",
+                    "routing_settings": {"fallback": False},
                     "filters": {"domains": {"values": ["bbc.com"], "mode": "include"}, "recency": {"mode": "rolling", "days": 7}},
                     "context": {"user_location": "Austin", "user_time_zone": "America/Chicago"}}
     assert out["success"] and out["data"]["web"][0]["title"] == "A" and "cite_sources" not in out
@@ -1262,9 +1262,11 @@ def test_a_setting_that_cannot_be_read_counts_as_a_choice_so_the_model_cannot_ov
     assert sent["routing_settings"]["specialized"] == {"kalshi": {"use": "always"}}  # only what could not decide the mode is kept
 
 
-def test_a_workspace_the_model_names_is_read_for_its_own_saved_choice(plugin, stub, keyed):
+def test_a_workspace_a_model_still_names_is_ignored_and_the_account_setting_is_read(plugin, stub, keyed):
+    # Workspaces were removed (GRO-869): a model that still passes one is not refused, and nothing of it is sent or read.
     plugin.GrounderWebSearchProvider().search_tool({"query": "q", "workspace": "team", "profile": "fast"})
-    assert _settings_reads(stub)[0]["path"] == "/v1/search/settings?workspace=team"
+    assert _settings_reads(stub)[0]["path"] == "/v1/search/settings"
+    assert "workspace" not in json.loads(_searches(stub)[0]["body"])
 
 
 def test_a_free_search_reads_no_saved_choice_and_still_leaves_out_what_grounder_refuses_a_caller_with_no_account(plugin, stub, free):

@@ -25,7 +25,7 @@ Once Grounder is listed in the Hermes plugin catalog, `hermes plugins install gr
 
 With no search key and no sign-in, a search is one of Grounder's free searches. It carries no credential and runs within the free
 limits Grounder sets; this plugin repeats none of them, so a limit Grounder changes needs no change here. A free search has
-no account to save a choice on (how Grounder searches, below), so Grounder runs it as Grounder optimized, and a `grounder_search` that asks for a profile, routing settings or a workspace
+no account to save a choice on (how Grounder searches, below), so Grounder runs it as Grounder optimized, and a `grounder_search` that asks for a profile or routing settings
 runs without them and says so. When the free searches are used up, the search answers with a message that says where to sign up and
 where to add credit, with the links Grounder returned, as its result: Hermes would serve a failed search from its keyless free tier and
 the message would never reach you. Sign up, then connect your account as below.
@@ -175,12 +175,12 @@ Hermes's `web_search` takes a query and a limit, so the plugin adds two tools, o
 `hermes tools`. They add to what each model request carries, so turn the `grounder` toolset off if you do not want them.
 
 `grounder_search` takes every option of Grounder's MCP search: `top_k`, `days`, `domains`, `features`, `urls`,
-`include_text`, `requested_provider`, `providers`, `routing_settings`, `workspace`, `profile`, `user_location` and
+`include_text`, `requested_provider`, `providers`, `routing_settings`, `profile`, `user_location` and
 `user_time_zone`. It answers in `web_search`'s shape and counts as one search. `grounder_list_providers` lists the features a
 search can use, the providers behind each and the presets `profile` takes, and is not a search.
 
-Signing in grants searching only, so `user_info` and the workspace tools of Grounder's MCP server are not offered here. Manage
-workspaces on your [account](https://grounder.net/account).
+Signing in grants searching only, so `user_info` of Grounder's MCP server is not offered here. Manage your account at
+[grounder.net/account](https://grounder.net/account).
 
 ## Choose how Grounder searches: `/search`
 
