@@ -4,8 +4,8 @@
 """Grounder as a Hermes web search and extract backend.
 
 Each ``web_search`` or ``web_extract`` call is one ``POST /v1/search`` to Grounder
-and counts as one search. A search reaches the providers the query needs and
-returns one deduplicated list of licensed results, mapped to Hermes's rows (title,
+and counts as one search. A search makes one call to one provider and returns
+that provider's own licensed results, mapped to Hermes's rows (title,
 URL, description, position). An extract reads the pages it is given and returns each
 page's text as Grounder returns it, read for the question of the ``web_search`` that found it. Every mode returns
 the provider's own results: this plugin cuts, reranks and reorders nothing of them, and asks Grounder for no ``text_max_chars``, passage
@@ -79,7 +79,7 @@ PROVIDERS_URL = f"{ORIGIN}/v1/providers"  # public: the search providers and the
 PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /search_presets offers
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.7.0"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.7.1"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
@@ -1330,7 +1330,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         """The entry ``hermes tools`` shows. It asks for no key, since signing in needs none; the tag names both ways in."""
         return {
             "name": "Grounder", "badge": "account",
-            "tag": "Licensed, live sources: many search providers in one call, "
-                   f"one deduplicated list, and page reading. Free searches need no account; for more, a search key in `{KEY_ENV}`, or sign in with `{SIGN_IN}`.",
+            "tag": "Licensed, live sources: over 40 providers, one call each, "
+                   f"each returning its own results, and page reading. Free searches need no account; for more, a search key in `{KEY_ENV}`, or sign in with `{SIGN_IN}`.",
             "env_vars": [],
         }
