@@ -1,8 +1,8 @@
 # Grounder for Hermes Agent
 
 Licensed, live sources for Hermes Agent's `web_search` and `web_extract`. With Grounder as the web search backend, each search makes one
-call to one provider, such as Exa, Brave, Tavily or Perplexity, or to a live-data API for scores, prices, odds and flights,
-and returns that provider's own results.
+call to one search provider, such as Exa, Brave, Tavily or Perplexity, and asks the live-data APIs (scores, prices, odds, flights and more) beside it
+as you set each one: every call, never, or when Grounder decides the question needs it. It returns each source's own results.
 
 Every result is licensed: no site's robots.txt, license or AI opt-out refuses the provider that found it. A search can
 return fewer results than asked for, and is never filled with unlicensed ones.
@@ -33,7 +33,7 @@ the message would never reach you. Sign up, then connect your account as below.
 ## Connect your account
 
 Connect your account to search past the free limits and to choose how Grounder searches
-([`/search` and `/search_presets`](#choose-how-grounder-searches-search-and-search_presets)). Connect it with a search key or by
+([`/search`](#choose-how-grounder-searches-search)). Connect it with a search key or by
 signing in; when both are set, the key is used.
 
 ### With a search key
@@ -180,62 +180,79 @@ search can use, the providers behind each and the presets `profile` takes, and i
 Signing in grants searching only, so `user_info` and the workspace tools of Grounder's MCP server are not offered here. Manage
 workspaces on your [account](https://grounder.net/account).
 
-## Choose how Grounder searches: `/search` and `/search_presets`
+## Choose how Grounder searches: `/search`
 
 Grounder has three modes. Every one returns the provider's own results, each uncut and not reranked, by Grounder or by this plugin. A result whose site's rules refuse that provider is left out, and nothing replaces it.
 
 | Mode | What it is | How to choose it |
 |---|---|---|
 | **Grounder optimized** | Grounder picks the provider for your question. The default | `/search optimized` (or `/search auto`), or pick it in `/search` |
-| **Grounder preset** | Fast, Cheap, Live, Deep, Code or Balanced: Grounder picks the best provider for that preset | `/search <preset>`, for example `/search fast`; `/search_presets`; or pick one in `/search` |
-| **Grounder direct** | You pick the provider, and optionally one of its modes: only that provider is called, and what it finds is what you get, even when that is nothing | `/search <provider>` or `/search <provider>:<mode>`, for example `/search exa:instant`; or pick one in `/search` |
+| **Grounder preset** | Fast, Cheap, Live, Deep, Code or Balanced: Grounder picks the best provider for that preset | `/search <preset>`, for example `/search fast`; or pick one in `/search` |
+| **Grounder direct** | You pick the provider, and optionally one of its modes: the only search provider called, and what it finds is what you get, even when that is nothing | `/search <provider>` or `/search <provider>:<mode>`, for example `/search exa:instant`; or pick one in `/search` |
 
-Two commands choose between them. Both offer Grounder's own lists, read when you run them, so a preset, provider, mode or live-data
-API Grounder adds is on offer at once.
+`/search` is the plugin's only command, and it chooses between them. It offers Grounder's own lists, read when you run it, so a preset, provider, mode or live-data
+API Grounder adds is on offer at once. It is registered only while Grounder is your web search backend (`web.search_backend: grounder`, or the older `web.backend`): the plugin
+makes Grounder the backend the first time it loads, and a switch you make in `hermes tools` takes effect at the next start. With another backend chosen the plugin registers no command, and
+its search tools and its web provider work as they do otherwise.
 
-| Command | What it does |
+`/search` opens one menu, "How should Grounder search?", and every screen returns to it:
+
+| Row | What it opens |
 |---|---|
-| `/search` | Asks which mode: **Grounder optimized**, **a Grounder preset**, or **Grounder direct**, then which provider and which of its modes, or any. It also asks which live-data APIs Grounder may use: all are on unless you turn one off. `/search optimized` goes back to Grounder optimized |
-| `/search_presets` | The shortcut to the presets. `/search_presets <preset>` chooses without asking, and `/search_presets optimized` clears the preset: Grounder optimized again, or Grounder direct when you have a provider chosen |
+| **Let Grounder pick** | Grounder optimized: Grounder picks the provider for each question. Picking it sets it |
+| **A preset** | The six presets, each with its purpose and how many providers it uses (for example "Fast: the quickest answer · 16 providers"), then **← Back**. Picking one sets it |
+| **A provider** | Each provider with how many modes it has, a page at a time, then **← Back**. A provider with modes opens them: **Default** (its standard search), then each mode with the one line Grounder gives for what it is and how it differs from the provider's other modes, a page at a time, then **← Back** |
+| **Live-data APIs** | **Set all to Grounder decides**, then each live-data API with its setting, then **← Back**. An API opens **Every call**, **Grounder decides** and **Never**, each with its note, then **← Back**. The row shows a count, for example "18 on Grounder decides, 1 on Every call, 1 on Never" |
+| **Done** | Ends it. If anything changed, one line says what is set now, for example "Grounder: preset Fast · Live-data APIs: Kalshi every call" (a live-data API on Grounder decides is left out). If nothing changed, it says so |
 
-Typed arguments skip the questions: `/search exa`, `/search exa:instant` (a provider's mode), `/search fast` (a preset), `/search optimized` (or `/search auto`), `/search apis`
-(the live-data APIs). `/search api:<id>` still always includes one live-data API, as it did before 0.6.0; a choice made in `/search` replaces it.
+The row for what is set now says "(current)". Each choice is saved when you make it, so leaving the menu any other way keeps what you chose. A long list (the providers, a provider's modes, the live-data APIs) shows 8 items a page, then **More: 9–16 of 22**, then **← Back**; on a later page Back goes to the page before. A page is 8 items or fewer where a messaging app limits a card (Discord 24 choices; WhatsApp's list takes 10 rows and Hermes adds its own "Other" row, so 9 here). A name typed in Hermes's "Other (type your answer)" row picks an item on the page shown. Typed arguments skip the menu: `/search exa`, `/search exa:instant` (a provider's mode), `/search fast` (a preset), `/search optimized` (or `/search auto`), `/search apis`
+(the live-data APIs), and `/search apis espn=every mlb=never polymarket=auto` to set some without the page (`every`, `never` or `auto`). `/search api:<id>` sets one live-data API to Every call.
 
-A preset and a provider you pick clear each other. A provider you pick is the only one a search calls (Grounder 0.8.16's `exclusive`, sent with `fallback` off): if it
+### Live-data APIs: Every call, Never or Grounder decides
+
+Each live-data API (scores, prices, odds, flights, weather and more: Grounder lists them) has its own setting, and it applies in every mode, Grounder optimized, a Grounder preset and Grounder direct,
+in any combination. **Every call**: Grounder asks it on every search. **Never**: Grounder never asks it. **Grounder decides**, the default: Grounder asks it only when your question's features
+call for it. The live-data APIs are asked beside the mode's one search-provider call, never in place of it, and their results come back beside the provider's, each labeled with its source.
+Grounder direct changes only the search provider: it is the one you picked, and the live-data APIs follow their settings.
+
+A preset and a provider you pick clear each other. A provider you pick is the only search provider a search calls (Grounder 0.8.16's `exclusive`, sent with `fallback` off): if it
 finds nothing, the search returns nothing and Grounder picks no other provider. Against a Grounder from before 0.8.16, which has no such setting, the provider is sent once as
-always included and the result says so: Grounder may then add other providers when your prompt needs them. The questions are asked in steps on every Hermes released today: first
-Grounder optimized, a Grounder preset or Grounder direct, then which preset, or which provider and which of its modes; the live-data APIs are a card that switches one
-at a time, with Done on every page where a messaging app limits a card. **On Slack, `/search` is Slack's own search**, so type `/hermes search`;
-`/search_presets` works as it is. (A Hermes that offers `ctx.ask_form` would show the same choices as one form with the presets side by side and
-a drop-down of each provider's modes; no released Hermes offers it yet.)
+always included and the result says so: Grounder may then add other providers when your prompt needs them. Every Hermes released today asks the menu with `ctx.ask_choice`. **On Slack, `/search` is Slack's own search**, so type `/hermes search`, which opens the same menu. (A Hermes that offers `ctx.ask_form` would show the same choices as one form with the presets side by side and
+a drop-down of each provider's modes, and each live-data API as a header over its three settings side by side; no released Hermes offers it yet.)
 
-They save `web.grounder.preset`, `web.grounder.server` and `web.grounder.server_mode`, and the live-data APIs you turned off as `web.grounder.live_data_off`
-(only the ones off, so an API Grounder adds later is on), in your profile's `config.yaml`. A search made with your search key or sign-in sends them: the
-preset as the search's `profile`, the provider and its mode as an always-on, exclusive setting (`exclusive` on and `fallback` off), and each API you turned off as an off setting. The search also
+They save `web.grounder.preset`, `web.grounder.server` and `web.grounder.server_mode`, and the live-data APIs you set to Never as `web.grounder.live_data_off` and those you set to Every call as `web.grounder.live_data_always`
+(only those two, so an API Grounder adds later is Grounder decides), in your profile's `config.yaml`. A search made with your search key or sign-in sends them: the
+preset as the search's `profile`, the provider and its mode as an always-on, exclusive setting (`exclusive` on and `fallback` off), and each API you set to Every call or Never as an `always` or `off` setting, in every mode (Grounder decides sends nothing). The search also
 names its mode in `mode`: `direct` when a provider is chosen, or the model names one with `requested_provider` or `providers` (no `profile` is sent with it: a direct choice wins over a preset, whether yours or the model's),
 otherwise `preset` when a preset is chosen or the model passes a `profile`, and otherwise `optimized`. A Grounder from before
 0.9.0 ignores `mode` and maps the same fields itself. A search with neither a key nor a sign-in, and a page read, send no `mode`. `grounder_search` sends
 them too: its `profile` stands over your preset for that search (not over a provider you chose: that search is Grounder direct, and sends no `profile`), and what you chose for a provider or API wins over what the model passes for the same one,
-so the model cannot switch back on an API you turned off. If Grounder stops offering something you chose (a preset, provider, mode or API it has
+so the model cannot change an API you set to Every call or Never. If Grounder stops offering something you chose (a preset, provider, mode or API it has
 removed), the search that finds out drops that choice, says so in its result, and is sent again without it. A page read (`web_extract`, or a
 `web_search` of an address) sends none of this. Hermes's own Grounder provider reads the same keys, so a choice made here stands in a Hermes release
 that bundles it.
 
 With no search key and no sign-in, a command answers with how to sign in instead of a list, because Grounder refuses a free
-search all of them. A Hermes that bundles Grounder's provider has both commands already, and this plugin adds none there. A Hermes that
+search all of them. A Hermes that bundles Grounder's provider has the command already, and this plugin adds none there. A Hermes that
 cannot register a command or ask a choice gets none, and search works the same.
 
 ## What is sent
 
 Each `web_search` query, up to its first 2,000 characters, goes to `https://api.grounder.net/v1/search` with the number
 of results wanted, your search key or, when you signed in, the
-access token Hermes attaches (a free search sends neither), the preset, provider, mode and live-data APIs you chose with `/search` and `/search_presets`, and the Grounder mode they make (`optimized`, `preset` or `direct`), when
-you are signed in or use a key, a user agent naming this plugin and its version, two random tokens, one for the session and one for the prompt, so one prompt's searches can be told from the next, and the name of the model whose answer asked for the search, as Hermes reports it. The tokens carry no Hermes id or message. Nothing else from Hermes goes with a search: not the conversation, the
+access token Hermes attaches (a free search sends neither), the preset, provider, mode and live-data APIs you chose with `/search`, and the Grounder mode they make (`optimized`, `preset` or `direct`), when
+you are signed in or use a key, a user agent naming this plugin and its version. Nothing else from Hermes goes with a search, unless you turn on usage context (below): not the conversation, the
 model's other output or what other tools returned. An address in a query or in `urls` that carries what looks like a key or token
 (Hermes's own check for `web_extract`, on the address and its decoded form, and your own search key), or that is not a public web
 address, is never sent: the call is refused and says why. The plugin follows no redirect from Grounder, so a search key goes to
 Grounder and nowhere else. When a search fails for a transient reason, Hermes may send the same query to its keyless
 free tier, as "What Hermes gets" says; that is Hermes's own behaviour, not Grounder's.
+
+**Usage context, off by default.** A search can also carry two random tokens, one for the session and one for the prompt, so one prompt's searches can be told from the next, and
+the name of the model whose answer asked for it, as Hermes reports it (`context.session_ref`, `context.prompt_ref` and `context.agent.model`). They are for Grounder's usage reporting:
+which models run searches, and how many searches a prompt takes. A search does not need any of it, so none is sent and the hook that learns the model (`post_api_request`) is not
+registered unless you turn it on: `hermes config set web.grounder.share_usage_context true`, then restart Hermes (the hook is registered when the plugin loads). Set it back to `false`
+and all three fields stop at the next search. The tokens carry no Hermes id or message, are random to everyone and last only as long as the Hermes process.
 
 Each `web_extract` sends the addresses of its pages, the same credential and
 user agent, and a question to read them for: the query of the `web_search` that found them, when one did, and otherwise your
@@ -245,7 +262,7 @@ search's query is. Your other messages, and the rest of the conversation, are ne
 
 A `grounder_search` sends what a `web_search` sends plus the options the model chose, including a location or time zone only
 when the user stated one. `grounder_list_providers` reads Grounder's public feature list and list of presets and sends no
-credential. `/search` and `/search_presets` read Grounder's public lists of providers, presets and live-data APIs, which is not a search; with a
+credential. `/search` reads Grounder's public lists of providers, presets and live-data APIs, which is not a search; with a
 sign-in, Hermes attaches its token to that read, which is how a command knows you are signed in.
 
 Searches are recorded under your Grounder account, and a free search with no account as Grounder's

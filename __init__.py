@@ -10,10 +10,10 @@ time it runs in a profile, selects it (``_select_once``). Sign-in is Hermes's ow
 this plugin keeps no credential of its own. Two hooks ask the model to cite a read
 Grounder served and end an answer that searched with the line Grounder's card shows. Two tools
 carry what Hermes's ``web_search`` cannot: every option of Grounder's MCP search, and its feature list.
-Grounder has three modes, and ``/search`` and ``/search_presets`` choose which a signed-in search uses (``commands``): Grounder optimized (Grounder picks the provider for the
+Grounder has three modes, and ``/search``, the plugin's one command, chooses which a signed-in search uses (``commands``): Grounder optimized (Grounder picks the provider for the
 question; the default), a Grounder preset (Fast, Cheap, Live, Deep, Code or Balanced) or Grounder direct (the user picks the provider, and optionally its mode). Every mode returns
-the provider's own results: this plugin cuts and reranks nothing of them. A Hermes that
-bundles its own Grounder provider has both commands, so there ``register`` adds neither (``_commands_taken``).
+the provider's own results: this plugin cuts and reranks nothing of them. ``/search`` is registered only while Grounder is the profile's web search backend (``_grounder_is_backend``, read at load: a switch in ``hermes tools`` takes effect at the
+next start), and a Hermes that bundles its own Grounder provider has the command, so there ``register`` adds none (``_commands_taken``).
 """
 
 from __future__ import annotations
@@ -22,16 +22,16 @@ import logging
 from importlib.util import find_spec
 
 from agent.secret_scope import get_secret
-from hermes_cli.config import is_managed, save_config, save_env_value
+from hermes_cli.config import is_managed, load_config, save_config, save_env_value
 
 from .commands import register_commands
-from .provider import LIST_PROVIDERS_SCHEMA, SEARCH_SCHEMA, TOOLSET, CLIENT_ENV, CLIENT_ID, KEY_ENV, GrounderWebSearchProvider, note_message, note_model, note_turn
+from .provider import LIST_PROVIDERS_SCHEMA, SEARCH_SCHEMA, TOOLSET, CLIENT_ENV, CLIENT_ID, KEY_ENV, GrounderWebSearchProvider, note_message, note_model, note_turn, sharing_usage
 
 logger = logging.getLogger(__name__)
 
 SELECTED_MARK = "backends_selected"  # in the plugin's own per-profile state: this profile has been set up
-BUNDLED = "plugins.web.grounder"  # Hermes's own Grounder web provider, in the Hermes releases that ship one; it registers the same two commands
-COMMANDS = ("search", "search_presets")
+BUNDLED = "plugins.web.grounder"  # Hermes's own Grounder web provider, in the Hermes releases that ship one; it registers the same command
+COMMANDS = ("search",)
 
 
 def _bundled() -> bool:
@@ -50,7 +50,7 @@ def _bundled() -> bool:
 
 
 def _commands_taken(ctx) -> bool:
-    """Whether another plugin already holds ``/search`` or ``/search_presets``. This plugin's own entries, from an earlier load, do not count."""
+    """Whether another plugin already holds ``/search``. This plugin's own entry, from an earlier load, does not count."""
     try:
         held = ctx._manager._plugin_commands
         return any(name in held and held[name].get("plugin_key") != getattr(ctx, "plugin_id", None) for name in COMMANDS)
@@ -58,13 +58,30 @@ def _commands_taken(ctx) -> bool:
         return False
 
 
+def _grounder_is_backend() -> bool:
+    """Whether this profile's web search backend is Grounder, as ``config.yaml`` says now (``web.search_backend``, else the older ``web.backend``). Read at load, so a switch made in
+    ``hermes tools`` takes effect at the next start. A config that cannot be read, or names no backend, is not Grounder."""
+    try:
+        web = load_config().get("web")
+    except Exception as error:
+        logger.warning("Could not read the web backend: %s", error)
+        return False
+    if not isinstance(web, dict):
+        return False
+    return str(web.get("search_backend") or web.get("backend") or "").strip().lower() == "grounder"
+
+
 def _add_commands(ctx) -> None:
-    """Register ``/search`` and ``/search_presets``, unless this Hermes cannot ask a choice or register a command, or already has them from Grounder's
-    bundled provider or another plugin. Search keeps working without them."""
+    """Register ``/search``, the plugin's one command, only while Grounder is this profile's web search backend (``_grounder_is_backend``): with another backend selected the plugin
+    registers no command at all. Not when this Hermes cannot ask a choice or register a command, or already has the command from Grounder's bundled provider or another plugin.
+    Search, the tools and the web provider work without it."""
     if not (callable(getattr(ctx, "register_command", None)) and callable(getattr(ctx, "ask_choice", None))):
         return
     if _bundled() or _commands_taken(ctx):
-        logger.info("Hermes already has /search and /search_presets for Grounder: this plugin adds neither")
+        logger.info("Hermes already has /search for Grounder: this plugin adds none")
+        return
+    if not _grounder_is_backend():
+        logger.info("Grounder is not this profile's web search backend: /search is not registered")
         return
     register_commands(ctx)
 
@@ -99,14 +116,15 @@ def register(ctx) -> None:
             ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, handler=handler)
     except Exception as error:  # a Hermes that refuses a tool must not take web search down with it
         logger.warning("Could not add Grounder's search tools: %s", error)
+    try:  # first, so the load that makes Grounder the backend is the one that registers /search
+        _select_once(ctx)
+    except Exception as error:  # a config that cannot be written must not take the plugin down with it
+        logger.warning("Could not select Grounder as the web backend: %s", error)
     try:
         _add_commands(ctx)
     except Exception as error:  # a Hermes that refuses a command must not take web search down with it
         logger.warning("Could not add Grounder's commands: %s", error)
     ctx.register_hook("pre_tool_call", note_turn)
-    ctx.register_hook("post_api_request", note_model)
+    if sharing_usage():  # the model behind each answer is learned only while share_usage_context is on
+        ctx.register_hook("post_api_request", note_model)
     ctx.register_hook("pre_llm_call", note_message)
-    try:
-        _select_once(ctx)
-    except Exception as error:  # a config that cannot be written must not take the plugin down with it
-        logger.warning("Could not select Grounder as the web backend: %s", error)

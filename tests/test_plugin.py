@@ -382,7 +382,8 @@ def test_register_adds_the_backend_and_no_command(plugin):
     plugin.register(Context())
     assert calls["provider"].name == "grounder"
     assert "command" not in calls
-    assert calls["hooks"] == {"transform_tool_result": calls["provider"].after_tool, "transform_llm_output": calls["provider"].after_answer, "pre_tool_call": plugin.provider.note_turn, "post_api_request": plugin.provider.note_model,
+    # The hook that learns the model behind each answer is registered only while share_usage_context is on, which it is not unless the user turned it on (below).
+    assert calls["hooks"] == {"transform_tool_result": calls["provider"].after_tool, "transform_llm_output": calls["provider"].after_answer, "pre_tool_call": plugin.provider.note_turn,
                               "pre_llm_call": plugin.provider.note_message}
 
 
@@ -922,7 +923,77 @@ def test_a_read_grounder_did_not_serve_is_left_alone(plugin, stub, keyed):
     assert provider.after_tool("web_extract", {}, json.dumps({"success": False, "error": "x"})) is None
 
 
-def test_searches_of_one_turn_share_a_prompt_id_and_the_next_turn_gets_its_own(plugin, stub, keyed, monkeypatch):
+def _share_usage(tmp_path, value=True):
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"web": {"grounder": {"share_usage_context": value}}}))
+
+
+def test_a_search_carries_usage_context_only_when_share_usage_context_is_on_and_the_default_is_one_line(plugin, stub, keyed, monkeypatch, tmp_path):
+    provider_module = sys.modules[plugin.GrounderWebSearchProvider.__module__]
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-1")
+    provider_module.note_turn(session_id="session-1", conversation_id="chat-1", turn_id="turn-1", tool_name="web_search")
+    provider_module.note_model(session_id="session-1", model="anthropic/claude-sonnet-4.6")  # a hook that was registered, or a caller that fed it
+    provider = plugin.GrounderWebSearchProvider()
+
+    def context():
+        out = []
+        for search in (lambda: provider.search("query"), lambda: provider.search_tool({"query": "query"})):
+            search()
+            out.append(json.loads(_searches(stub)[-1]["body"]).get("context"))
+        return out
+
+    # Off by default (Harlan, 2026-11-13, GRO-858): unset, false, and anything that is not a clear yes send no session_ref, no prompt_ref and no agent.model.
+    assert plugin.provider.SHARE_USAGE_DEFAULT is False and plugin.provider.sharing_usage() is False and context() == [None, None]
+    for config in (False, "false", "No", "off", "0", "maybe", [], 7):
+        _share_usage(tmp_path, config)
+        assert plugin.provider.sharing_usage() is False and context() == [None, None], config
+    for config in (True, "true", "Yes", "on", "1"):
+        _share_usage(tmp_path, config)
+        for sent in context():
+            assert set(sent) == {"session_ref", "prompt_ref", "agent"} and sent["agent"] == {"model": "anthropic/claude-sonnet-4.6"}, config
+    _share_usage(tmp_path, False)
+    assert context() == [None, None]  # turning it back off stops the fields at the very next search
+    # Making it opt-out instead is the one constant: unset is then on, and only an explicit no stops the fields.
+    monkeypatch.setattr(plugin.provider, "SHARE_USAGE_DEFAULT", True)
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"web": {"grounder": {}}}))
+    assert plugin.provider.sharing_usage() is True and all(context())
+    _share_usage(tmp_path, False)
+    assert plugin.provider.sharing_usage() is False and context() == [None, None]
+
+
+def test_the_model_hook_is_registered_only_while_share_usage_context_is_on(plugin, tmp_path, monkeypatch):
+    def hooks():
+        seen = {}
+
+        class Context:
+            def register_web_search_provider(self, provider):
+                pass
+
+            def register_hook(self, name, callback):
+                seen[name] = callback
+
+        plugin.register(Context())
+        return seen
+
+    seen = hooks()  # unset: off
+    assert "post_api_request" not in seen and {"transform_tool_result", "transform_llm_output", "pre_tool_call", "pre_llm_call"} <= set(seen)  # the others do not depend on it
+    _share_usage(tmp_path, False)
+    assert "post_api_request" not in hooks()
+    _share_usage(tmp_path, True)
+    assert hooks()["post_api_request"] is plugin.provider.note_model
+    monkeypatch.setattr(plugin.provider, "SHARE_USAGE_DEFAULT", True)  # opt-out: unset is on
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"web": {"grounder": {}}}))
+    assert hooks()["post_api_request"] is plugin.provider.note_model
+
+
+def test_an_unreadable_config_reads_as_the_default_for_share_usage_context(plugin, tmp_path, monkeypatch):
+    (tmp_path / "config.yaml").write_text("web: [unterminated")
+    assert plugin.provider.sharing_usage() is False
+    monkeypatch.setattr(plugin.provider, "SHARE_USAGE_DEFAULT", True)
+    assert plugin.provider.sharing_usage() is True
+
+
+def test_searches_of_one_turn_share_a_prompt_id_and_the_next_turn_gets_its_own(plugin, stub, keyed, monkeypatch, tmp_path):
+    _share_usage(tmp_path)
     provider_module = sys.modules[plugin.GrounderWebSearchProvider.__module__]
     monkeypatch.setenv("HERMES_SESSION_ID", "session-1")
     provider = plugin.GrounderWebSearchProvider()
@@ -937,7 +1008,8 @@ def test_searches_of_one_turn_share_a_prompt_id_and_the_next_turn_gets_its_own(p
     assert not {"session-1", "chat-1", "turn-1"} & {value for row in sent for value in row.values()}
 
 
-def test_a_search_names_the_model_whose_answer_asked_for_it(plugin, stub, keyed, monkeypatch):
+def test_a_search_names_the_model_whose_answer_asked_for_it(plugin, stub, keyed, monkeypatch, tmp_path):
+    _share_usage(tmp_path)
     provider_module = sys.modules[plugin.GrounderWebSearchProvider.__module__]
     monkeypatch.setenv("HERMES_SESSION_ID", "session-2")
     provider = plugin.GrounderWebSearchProvider()
@@ -953,7 +1025,8 @@ def test_a_search_names_the_model_whose_answer_asked_for_it(plugin, stub, keyed,
     assert json.loads(_searches(stub)[-1]["body"])["context"]["agent"] == {"model": "openrouter/auto"}
 
 
-def test_a_search_outside_a_hermes_session_sends_no_context(plugin, stub, keyed, monkeypatch):
+def test_a_search_outside_a_hermes_session_sends_no_context(plugin, stub, keyed, monkeypatch, tmp_path):
+    _share_usage(tmp_path)
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     plugin.GrounderWebSearchProvider().search("query")
     assert "context" not in json.loads(_searches(stub)[-1]["body"])
@@ -1283,3 +1356,15 @@ def test_searches_of_one_answer_in_different_modes_name_each_mode_once(plugin, s
     stub.search_body = {"results": [_page(PAGE_A)], "usage": {}}
     provider.after_tool("web_search", {"query": f"{PAGE_A} ten"}, json.dumps(provider.search(f"{PAGE_A} ten")), session_id="s", turn_id="t3")
     assert provider.after_answer("A", session_id="s", turn_id="t3") == "A\n\nSearched with Grounder optimized · via Exa, xAI +1 · 2 sources"
+
+
+def test_the_documents_say_what_usage_context_is_for_and_how_to_turn_it_on(plugin):
+    texts = {name: (PLUGIN_DIR / name).read_text() for name in ("README.md", "after-install.md")}
+    texts["plugin.yaml"] = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())["description"]
+    for name, text in texts.items():
+        assert "web.grounder.share_usage_context" in text and "hermes config set web.grounder.share_usage_context true" in text, name
+    assert "off by default" in texts["README.md"] and "usage reporting" in texts["README.md"] and "post_api_request" in texts["README.md"]
+    assert "off by default" in texts["plugin.yaml"] and "usage reporting" in texts["plugin.yaml"]
+    assert "Usage context, on by default" not in texts["README.md"] and "unless you turn it off" not in " ".join(texts.values())
+    provider = (PLUGIN_DIR / "provider.py").read_text()
+    assert provider.count("SHARE_USAGE_DEFAULT = False") == 1  # the one line that decides it

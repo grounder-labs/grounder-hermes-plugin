@@ -1,25 +1,27 @@
 # Copyright 2026 Grounder Labs, Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""``/search`` and ``/search_presets``: choose how Grounder searches.
+"""``/search``, the plugin's one command: choose how Grounder searches.
 
 Grounder has three modes, and ``/search`` chooses one: **Grounder optimized** (Grounder picks the provider for the user's question; the default), a **Grounder preset**
 (Fast, Cheap, Live, Deep, Code or Balanced: Grounder picks the best provider for that preset) or **Grounder direct** (the user picks the provider, and optionally one of
-its modes: only that provider, and what it finds is what the user gets, even when that is nothing). Every mode returns the provider's own results, each uncut and in its own order. It also
-chooses which live-data APIs may answer, every one on unless the user turns it off. Every Hermes today asks in steps with ``ctx.ask_choice``: Grounder optimized, a Grounder preset or Grounder
-direct, then which preset, or which provider and which of its modes, and the live-data APIs as a card that switches one at a time. A Hermes that offers ``ctx.ask_form`` (none
-ships it yet: it is a proposed addition to Hermes's plugin surface) shows the same choices as one form of two pages: the three modes under their headers, the presets side by side,
-a provider's modes in a drop-down, a preset lighting the providers and modes it includes where Grounder says which they are, type to filter, and Tab to the live-data APIs.
-``/search_presets`` is the shortcut to the presets. Typed arguments (``/search exa``, ``/search exa:instant``, ``/search fast``, ``/search auto`` or ``/search optimized``,
-``/search apis``) skip the questions. On Slack ``/search`` is Slack's own command, so ``/hermes search`` runs this one.
+its modes: that provider is the only search provider called, and what it finds is what the user gets, even when that is nothing). Every mode returns the provider's own results, each uncut and in its own
+order. ``/search`` also sets each live-data API, in every mode, to **Every call**, **Never** or **Grounder decides** (the default: asked only when the question's features call for it).
+Every Hermes today asks with ``ctx.ask_choice``, and ``/search`` opens a hub, "How should Grounder search?": Let Grounder pick (Grounder optimized), A preset, A provider, Live-data APIs
+and Done, the current choice marked "(current)". Each choice opens its own screen (the presets, each with its purpose and the providers it uses; the providers, then one provider's modes;
+the live-data APIs, then one API's Every call, Grounder decides or Never) and every screen has a "← Back" row that returns, so the hub is where the user always is. Done answers with one line
+saying what is set now (the command's reply, which every surface shows: ``ctx.post_message`` answers ok in the classic CLI's gateway and shows nothing), only when something changed. A Hermes that offers ``ctx.ask_form`` (none ships it yet: it is a proposed addition to Hermes's plugin surface)
+shows the same choices as one form of two pages instead. Typed arguments (``/search exa``, ``/search exa:instant``, ``/search fast``, ``/search auto`` or ``/search optimized``,
+``/search apis`` or ``/search apis espn=every mlb=never``) skip the hub. On Slack ``/search`` is Slack's own command, so ``/hermes search`` runs this one.
 
 A preset and a pinned provider clear each other. They go to ``web.grounder.preset`` and ``web.grounder.server`` (with the provider's mode in
-``web.grounder.server_mode``), the keys Hermes's own Grounder provider reads. A pinned provider is the only one a search calls (``exclusive``, Grounder 0.8.16, with
-``fallback`` off: when it finds nothing the search returns nothing); against a Grounder from before that it is sent once as always included (``provider._send_chosen``). The APIs turned OFF go to ``web.grounder.live_data_off``,
-so one Grounder adds later is on by default. A signed-in search sends them (``provider.chosen``) and names its mode (``provider._send``), and what the user chose wins over what the model passes
+``web.grounder.server_mode``), the keys Hermes's own Grounder provider reads. A pinned provider is the only search provider a search calls (``exclusive``, Grounder 0.8.16, with
+``fallback`` off: when it finds nothing the search returns nothing); against a Grounder from before that it is sent once as always included (``provider._send_chosen``). The live-data APIs
+set to Never go to ``web.grounder.live_data_off`` and those set to Every call to ``web.grounder.live_data_always``, so one Grounder adds later is Grounder decides. A signed-in search sends
+them in every mode (``provider.chosen``) and names its mode (``provider._send``), and what the user chose wins over what the model passes
 for the same provider or API; a free search sends none, since Grounder refuses a caller with no account all of them. A choice Grounder stops offering is
-dropped when its 400 names it (``provider._send_chosen``). An ``api:<id>`` server saved by an earlier version keeps working until the next choice made
-here, which replaces it, and ``/search api:<id>`` still chooses one. The lists are Grounder's public ones, fetched when a command runs and never kept, so
+dropped when its 400 names it (``provider._send_chosen``). An ``api:<id>`` server saved by an earlier version keeps working, as Every call, until the next choice made
+here, which replaces it, and ``/search api:<id>`` sets one API to Every call. The lists are Grounder's public ones, fetched when a command runs and never kept, so
 a new provider, mode, preset or API is on offer as soon as Grounder lists it. With no search key and no sign-in a command answers with how to sign in
 instead of a list.
 """
@@ -41,18 +43,30 @@ APIS_TAB = "Live-data APIs"
 FILTER_PROMPT = "Type to filter"
 NO_MATCH = "Nothing matches"
 PICK_HINT = "↑/↓ move · ←/→ presets and modes · type to filter · Tab live-data APIs · Enter confirms"
-APIS_HINT = "↑/↓ move · Space checks or unchecks · type to filter · Tab search · Enter confirms"
+APIS_HINT = "↑/↓ move · ←/→ + Space sets · type to filter · Tab search · Enter confirms"
 PICK_ALONE_HINT = "↑/↓ move · ←/→ presets and modes · type to filter · Enter confirms"  # a form of one page has no Tab
-APIS_ALONE_HINT = "↑/↓ move · Space checks or unchecks · type to filter · Enter confirms"
+APIS_ALONE_HINT = "↑/↓ move · ←/→ + Space sets · type to filter · Enter confirms"
+# A live-data API's three settings, in the order the page shows them, the words the user types for each, and the note under each while the cursor is on it. ``auto`` is the default
+# and is sent as nothing (provider.chosen); Every call is ``always`` and Never is ``off`` in Grounder's routing settings.
+LIVE_STATES = (("always", "Every call"), ("off", "Never"), ("auto", "Grounder decides"))
+LIVE_LABEL = dict(LIVE_STATES)
+LIVE_NOTES = {"always": "Grounder asks {name} on every search, in every mode, beside the search provider.",
+              "off": "Grounder never asks {name}, in any mode.",
+              "auto": "Grounder asks {name} only when your question's features call for it, in every mode. The default."}
+LIVE_ANSWERS = {"every": "always", "always": "always", "never": "off", "off": "off", "auto": "auto", "decides": "auto"}
 PRESETS_HEADER, PROVIDERS_HEADER = "Grounder preset", "Grounder direct"
 PICK_QUESTION = "How should Grounder search?"
 PRESET_NOTE = "Grounder picks the best provider for this preset."
-PIN_NOTE = "Only this provider."
-# The most choices one ask_choice card shows where a messaging platform caps them and drops the rest without a word: Discord's
-# buttons stop at 24 (one slot is "Other"); WhatsApp Cloud's list takes 10. Where it does, a longer list is asked in pages.
-# Telegram, Slack and the local surfaces show every choice.
-SURFACE_CHOICE_CAPS = {"discord": 24, "whatsapp_cloud": 10}
-_MORE, _BACK = "__more__", "__back__"
+PIN_NOTE = "The only search provider called."
+# The most choices one ask_choice card can hold where a messaging platform caps them and drops the rest without a word, counting what Hermes adds to the card itself: Discord's
+# buttons stop at 25 and Hermes keeps one for "Other"; WhatsApp Cloud's list takes 10 rows and Hermes appends an "Other" row after slicing the choices to 10, so the card holds 9 (an
+# eleventh row is one WhatsApp refuses). A list is asked PAGE_SIZE items a page everywhere, fewer where a surface caps the card.
+SURFACE_CHOICE_CAPS = {"discord": 24, "whatsapp_cloud": 9}
+PAGE_SIZE = 8  # items a page of a list shows: with More and Back, a page fits a 24-row terminal's menu (Hermes's panel keeps the question and "Other" on screen up to 13 rows there)
+_MORE = "__more__"  # the paging row: "More: 9–16 of 22"
+_RETURN, _ALL, DONE = "back", "__all__", "done"  # "← Back" (a screen's way up; its value is a word, so typing "back" picks it), "Set all to Grounder decides" and the hub's Done
+BACK_LABEL, CURRENT = "← Back", " (current)"
+HUB_NOTE = "Grounder optimized: Grounder picks the provider for each question"
 MAX_TOGGLES = 80  # a switch-one-at-a-time card is asked again after each switch, so it ends here if nobody ends it
 # A provider's default search under another name (workers/router/src/lib/routing-settings.ts DEFAULT_ALIASES): Grounder lists it as an offering but refuses
 # it as a mode of its own (a request that names it is a 400), so it is the provider itself and has no row of its own.
@@ -97,15 +111,44 @@ def _presets(rows: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _purpose(text: str) -> str:
+    """The first clause of a description, for a row that is one line: up to the first full stop, colon or semicolon, with no full stop at the end."""
+    text = text.strip()
+    for stop in (". ", ": ", "; "):
+        text = text.partition(stop)[0]
+    return text.rstrip(".").strip()
+
+
+def _mode_words(offering: dict[str, Any]) -> str:
+    """What a mode is, in a few words, from what Grounder lists for it: the first clause of its own note when that is short (and not a legacy mark), else its features
+    (``web-search``, ``page-text``) as words. Empty when Grounder says nothing."""
+    note = _purpose(str(offering.get("limits") or ""))
+    if note and len(note) <= 64 and not note.lower().startswith("legacy"):
+        return note
+    features = [f.replace("-", " ") for f in offering.get("features") or [] if isinstance(f, str)] if isinstance(offering.get("features"), list) else []
+    return ", ".join(features).capitalize()
+
+
 def _providers(rows: Any) -> list[dict[str, Any]]:
-    """The providers, each with ``modes``: ``[{"id": "exa:instant", "mode": "instant"}]``, the offerings that are not its default search."""
+    """The providers, each with ``modes``: ``[{"id": "exa:instant", "mode": "instant", "description": "Cache only, the lowest latency"}]``, the offerings that are not its default
+    search, and ``default_description``, the default search's own line ("" from an API that has none). A mode's description is the one Grounder lists for it; from an API that lists none
+    it is made from the vendor's note on the mode, else its features."""
     out = []
     for row in _rows(rows, "provider"):
         entry = _entry(row, "provider")
         offerings = row.get("offerings") if isinstance(row.get("offerings"), list) else []
-        modes = [o["mode"] for o in offerings if isinstance(o, dict) and isinstance(o.get("mode"), str) and api._ID.match(o["mode"])
-                 and o["mode"] != DEFAULT_ALIASES.get(entry["id"])]
-        out.append({**entry, "modes": [{"id": f"{entry['id']}:{mode}", "mode": mode} for mode in dict.fromkeys(modes)]})
+        modes: dict[str, dict[str, str]] = {}
+        default = ""
+        for o in offerings:
+            if not isinstance(o, dict):
+                continue
+            mode, said = o.get("mode"), o.get("description")
+            said = said.strip() if isinstance(said, str) else ""
+            if mode is None:
+                default = default or said
+            elif isinstance(mode, str) and api._ID.match(mode) and mode != DEFAULT_ALIASES.get(entry["id"]):
+                modes.setdefault(mode, {"id": f"{entry['id']}:{mode}", "mode": mode, "description": said or _mode_words(o)})
+        out.append({**entry, "modes": list(modes.values()), "default_description": default})
     return out
 
 
@@ -144,21 +187,16 @@ class Catalog:
         return out
 
 
-def _catalog(need: str = "both") -> tuple[Optional[Catalog], str]:
-    """The lists a command needs, or the words to answer with. ``need`` is ``both`` (providers and APIs, then presets) or ``presets``."""
-    presets: list[dict[str, Any]] = []
-    providers: list[dict[str, Any]] = []
-    apis: list[dict[str, str]] = []
-    if need == "both":
-        body, problem = _list(api.PROVIDERS_URL, "providers")
-        if body is None:
-            return None, problem
-        providers, apis = _providers(body.get("providers")), _entries(body.get("live_data_apis"), "id")
+def _catalog() -> tuple[Optional[Catalog], str]:
+    """The lists ``/search`` needs (the providers and live-data APIs, then the presets), or the words to answer with."""
+    body, problem = _list(api.PROVIDERS_URL, "providers")
+    if body is None:
+        return None, problem
+    providers, apis = _providers(body.get("providers")), _entries(body.get("live_data_apis"), "id")
     body, problem = _list(api.PROFILES_URL, "presets")
     if body is None:
         return None, problem.replace("choose presets", "choose a preset")
-    presets = _presets(body.get("profiles"))
-    return Catalog(presets, providers, apis), ""
+    return Catalog(_presets(body.get("profiles")), providers, apis), ""
 
 
 _save = api.save_settings
@@ -173,30 +211,37 @@ def _cap(ctx) -> Optional[int]:
         return None
 
 
-def _ask_paged(ctx, question: str, choices: list[dict[str, str]], keep: tuple = (), page: int = 0) -> tuple[Optional[str], int]:
-    """``ctx.ask_choice`` as ``(picked, page it was picked on)``, in pages of the surface's cap when it has one and the list is longer: every page
-    has "More…" and "← Previous" where there is a page on that side, and the ``keep`` choices (such as Done), so no page is a dead end.
-    None for ``picked`` when nothing can ask here or the user did not pick."""
+def _page_size(ctx, kept: int) -> int:
+    """How many items one page of a list shows: PAGE_SIZE, fewer where the surface caps a card (the page also holds its ``kept`` rows, More and Back)."""
     cap = _cap(ctx)
+    return PAGE_SIZE if cap is None else max(1, min(PAGE_SIZE, cap - kept - 2))
+
+
+def _ask_paged(ctx, question: str, items: list[dict[str, str]], keep: tuple = (), page: Optional[int] = None, current: Optional[str] = None,
+               up: str = BACK_LABEL) -> tuple[Optional[str], int]:
+    """``ctx.ask_choice`` as ``(picked, page it was picked on)``, a page of PAGE_SIZE items at a time so the question and "← Back" stay on screen: the ``keep`` rows (such as "Set all to
+    Grounder decides") on every page, then the page's items, then ``More: 9–16 of 22`` where more follow, then Back. Back on the first page is ``up`` and returns ``_RETURN``; on a later
+    page it goes to the page before (``← Back: 1–8 of 22``). The list opens on the page that holds ``current`` (a value), else on ``page``, else the first. None for ``picked`` when
+    nothing can ask here or the user did not pick."""
     keep = list(keep)
-    if cap is None or len(keep) + len(choices) <= cap:
-        return ctx.ask_choice(question, keep + choices), 0
-    size = max(1, cap - len(keep) - 2)
-    pages = -(-len(choices) // size)
+    size = _page_size(ctx, len(keep))
+    pages = max(1, -(-len(items) // size))
+    if page is None:
+        page = next((i // size for i, item in enumerate(items) if current and item["value"] == current), 0)
     page = max(0, min(page, pages - 1))
     while True:
-        around = ([{"value": _BACK, "label": "← Previous"}] if page else []) + ([{"value": _MORE, "label": "More…"}] if page < pages - 1 else [])
-        picked = ctx.ask_choice(question, keep + choices[page * size:(page + 1) * size] + around)
+        first, last = page * size, min(len(items), (page + 1) * size)
+        rows = keep + items[first:last]
+        if page < pages - 1:
+            rows.append({"value": _MORE, "label": f"More: {last + 1}\u2013{min(len(items), last + size)} of {len(items)}"})
+        rows.append({"value": _RETURN, "label": f"{BACK_LABEL}: {first - size + 1}\u2013{first} of {len(items)}" if page else up})
+        picked = ctx.ask_choice(question, rows)
         if picked == _MORE:
             page += 1
-        elif picked == _BACK:
+        elif picked == _RETURN and page:
             page -= 1
         else:
             return picked, page
-
-
-def _ask(ctx, question: str, choices: list[dict[str, str]]) -> Optional[str]:
-    return _ask_paged(ctx, question, choices)[0]
 
 
 def _has_form(ctx) -> bool:
@@ -241,11 +286,28 @@ def _pick_page(catalog: Catalog, saved: dict[str, Any]) -> dict[str, Any]:
             "selected": _current_pick(saved, catalog), "filter": FILTER_PROMPT, "no_match": NO_MATCH, "hint": PICK_HINT}
 
 
+def _live_state(saved: dict[str, Any], ident: str) -> str:
+    """A live-data API's setting now: ``off`` (Never), ``always`` (Every call, or the older ``api:<id>`` server) or ``auto`` (Grounder decides, the default)."""
+    if ident in saved["off"]:
+        return "off"
+    return "always" if ident in saved["always"] or saved["server"] == f"api:{ident}" else "auto"
+
+
+def _live_states(saved: dict[str, Any], catalog: Catalog) -> dict[str, str]:
+    return {a["id"]: _live_state(saved, a["id"]) for a in catalog.apis}
+
+
 def _apis_page(catalog: Catalog, saved: dict[str, Any]) -> dict[str, Any]:
-    """Page two: every live-data API checked, but the ones the user turned off. ``optional``, so Enter on page one confirms the form without visiting it."""
-    return {"id": APIS, "tab": APIS_TAB, "question": "Which live-data APIs may Grounder use? Every one is on unless you turn it off.", "multi_select": True, "optional": True,
-            "choices": [{"value": a["id"], "label": a["name"]} for a in catalog.apis], "checked": [a["id"] for a in catalog.apis if a["id"] not in saved["off"]],
-            "filter": FILTER_PROMPT, "no_match": NO_MATCH, "hint": APIS_HINT}
+    """Page two: each live-data API a header over its three settings side by side (Every call, Never, Grounder decides), one chosen in each, the one it has now. ``optional``, so
+    Enter on page one confirms the form without visiting it. A setting's value is ``<api id>:<setting>``, and its filter text names the API, so typing an API's name finds its row."""
+    choices: list[dict[str, Any]] = []
+    for a in catalog.apis:
+        choices.append({"header": a["name"], "row": True})
+        choices += [{"value": f"{a['id']}:{state}", "label": label, "match": f"{a['name']} {label}", "description": LIVE_NOTES[state].format(name=a["name"])}
+                    for state, label in LIVE_STATES]
+    return {"id": APIS, "tab": APIS_TAB, "question": "How should Grounder use each live-data API?", "multi_select": True, "one_per_row": True,
+            "optional": True, "choices": choices, "checked": (now := [f"{ident}:{state}" for ident, state in _live_states(saved, catalog).items()]),
+            "selected": now[0] if now else "", "filter": FILTER_PROMPT, "no_match": NO_MATCH, "hint": APIS_HINT}
 
 
 def _pages(catalog: Catalog, saved: dict[str, Any]) -> list[dict[str, Any]]:
@@ -272,6 +334,11 @@ def _direct_tail() -> str:
     return "; if it finds nothing, Grounder picks for you." if api.DIRECT_FALLBACK else " and return what it finds, even when that is nothing."
 
 
+def _direct_words(name: str) -> str:
+    """Grounder direct's confirmation: the search provider is only the one picked, and the live-data APIs follow their own settings."""
+    return f"Grounder direct: Grounder will use only {name} as the search provider{_direct_tail()} Live-data APIs follow your live-data choices (`/search apis`)."
+
+
 def _pick_words(value: str, catalog: Catalog, saved: dict[str, Any]) -> str:
     kind = value.partition(":")[0]
     old = saved["server"] if saved["server"].startswith("api:") and saved["server"] != value else ""
@@ -282,23 +349,37 @@ def _pick_words(value: str, catalog: Catalog, saved: dict[str, Any]) -> str:
         return f"Grounder preset {catalog.name(value)}: Grounder will pick the best provider for it on each search." + note
     if kind == "mode":
         found = catalog.mode_of(value.partition(":")[2])
-        return (f"Grounder direct: Grounder will search with only {found[0]['name']}'s {found[1]['mode']} mode{_direct_tail()}" if found
-                else f"Grounder direct: Grounder will search with only {catalog.name(value)}{_direct_tail()}") + note
-    if kind == "provider":
-        return f"Grounder direct: Grounder will search with only {catalog.name(value)}{_direct_tail()}" + note
-    return f"Grounder will always include {catalog.name(value)} in searches." + note
+        return _direct_words(f"{found[0]['name']}'s {found[1]['mode']} mode" if found else catalog.name(value)) + note
+    return _direct_words(catalog.name(value)) + note
 
 
-def _apis_words(off: list[str], catalog: Catalog) -> str:
-    if not off:
-        return "Every live-data API is on."
-    names = ", ".join(catalog.name(f"api:{i}") for i in off)
-    return f"Live-data APIs turned off: {names}."
+def _apis_words(states: dict[str, str], catalog: Catalog) -> str:
+    """The live-data APIs' settings in words: the ones set to Every call or Never, and that every other is Grounder decides."""
+    named = {state: [a["name"] for a in catalog.apis if states.get(a["id"]) == state] for state, _ in LIVE_STATES}
+    sets = [f"{LIVE_LABEL[state]}: {', '.join(named[state])}." for state in ("always", "off") if named[state]]
+    return " ".join(["Live-data APIs, in every mode.", *sets, "All the others: Grounder decides." if sets else "Each one: Grounder decides."])
 
 
-def _off_from(checked: list[str], catalog: Catalog) -> list[str]:
-    """The live-data APIs to save as off: every listed one left unchecked, in Grounder's order."""
-    return [a["id"] for a in catalog.apis if a["id"] not in set(checked)]
+def _save_live(catalog: Catalog, saved: dict[str, Any], wanted: dict[str, str]) -> dict[str, str]:
+    """Save the live-data APIs' settings with ``wanted`` (``{api id: setting}``) laid over what is saved, and return them. Every call goes to ``live_data_always`` and Never to
+    ``live_data_off``, each in Grounder's order, a list left empty is removed, and an ``api:<id>`` server saved by an earlier version, which these settings now carry, is cleared."""
+    states = {**_live_states(saved, catalog), **wanted}
+    changes: dict[str, Any] = {api.LIVE_ALWAYS_KEY: [a["id"] for a in catalog.apis if states[a["id"]] == "always"],
+                               api.LIVE_OFF_KEY: [a["id"] for a in catalog.apis if states[a["id"]] == "off"]}
+    if saved["server"].startswith("api:"):
+        changes["server"] = None
+    _save(**changes)
+    return states
+
+
+def _states_from(answered: list[str], catalog: Catalog, saved: dict[str, Any]) -> dict[str, str]:
+    """The settings a page two answer names: each API's one checked setting. An API with none checked, or more than one, is left as it is."""
+    states = _live_states(saved, catalog)
+    for a in catalog.apis:
+        checked = [state for state, _ in LIVE_STATES if f"{a['id']}:{state}" in answered]
+        if len(checked) == 1:
+            states[a["id"]] = checked[0]
+    return states
 
 
 def _form(ctx, catalog: Catalog, saved: dict[str, Any], pages: list[dict[str, Any]]) -> str:
@@ -315,10 +396,12 @@ def _form(ctx, catalog: Catalog, saved: dict[str, Any], pages: list[dict[str, An
         changes.update(_pick_changes(pick))
         words.append(_pick_words(pick, catalog, saved))
     if isinstance(answers.get(APIS), list):
-        off = _off_from(answers[APIS], catalog)
-        if set(off) != set(saved["off"]):
-            changes[api.LIVE_OFF_KEY] = off
-            words.append(_apis_words(off, catalog))
+        states = _states_from(answers[APIS], catalog, saved)
+        if states != _live_states(saved, catalog):
+            changes.update({api.LIVE_ALWAYS_KEY: [i for i, state in states.items() if state == "always"], api.LIVE_OFF_KEY: [i for i, state in states.items() if state == "off"]})
+            if saved["server"].startswith("api:"):
+                changes.setdefault("server", None)  # an older version's API server is Every call now, in the list above
+            words.append(_apis_words(states, catalog))
     if not changes:
         return "Nothing changed."
     _save(**changes)
@@ -335,52 +418,149 @@ def _preset_text(preset: dict[str, Any], catalog: Catalog) -> str:
     return " ".join(part for part in (preset["description"], PRESET_NOTE) if part) + (uses if values else "")
 
 
-def _step_pick(ctx, catalog: Catalog) -> Optional[str]:
-    """Page one where there is no form, in steps: Grounder optimized, a Grounder preset or Grounder direct; then which preset, or which provider and which of its modes."""
-    top = [{"value": AUTO, "label": OPTIMIZED_HEADER, "description": "Grounder picks the provider for your question (the default)"},
-           {"value": "presets", "label": f"{PRESETS_HEADER}…", "description": ", ".join(p["name"] for p in catalog.presets)},
-           {"value": "providers", "label": f"{PROVIDERS_HEADER}…", "description": "you pick the provider, and optionally its mode: only this provider"},
-           {"value": APIS, "label": "Live-data APIs…", "description": "choose which ones Grounder may use"}]
-    group = ctx.ask_choice(PICK_QUESTION, top)
-    if group in (None, AUTO, APIS):
-        return group
-    if group == "presets":
-        return _ask(ctx, "Which Grounder preset?",
-                    [{"value": f"preset:{p['id']}", "label": p["name"], "description": _preset_text(p, catalog)} for p in catalog.presets])
-    picked = _ask(ctx, "Which provider should Grounder direct search with?",
-                  [{"value": f"provider:{p['id']}", "label": p["name"], "description": f"{len(p['modes'])} mode{'s' if len(p['modes']) != 1 else ''}" if p["modes"] else ""} for p in catalog.providers])
-    owner = catalog.provider(picked.partition(":")[2]) if picked else None
-    if not owner or not owner["modes"]:
-        return picked
-    return _ask(ctx, f"Which {owner['name']} mode?",
-                [{"value": picked, "label": "Any mode", "description": f"{owner['name']}'s default search"},
-                 *({"value": f"mode:{m['id']}", "label": m["mode"]} for m in owner["modes"])])
+def _names(names: list[str]) -> str:
+    """Names in a row: all of them to three, else the first three and how many more."""
+    if len(names) > 3:
+        return f"{', '.join(names[:3])} and {len(names) - 3} more"
+    return f"{', '.join(names[:-1])} and {names[-1]}" if len(names) > 1 else ", ".join(names)
 
 
-def _step_apis(ctx, catalog: Catalog) -> str:
-    """The live-data APIs where there is no second page: a card that switches one API each time it is asked, until Done. Each switch is saved at once.
-    Done is on every page of a card a surface caps, and the card comes back to the page the switch was on."""
-    saved = api.settings()
-    off = list(saved["off"])
-    page = 0
+def _preset_row(preset: dict[str, Any], catalog: Catalog) -> str:
+    """A preset's row: its purpose in one line, then how many providers it uses where Grounder says which (an older API does not, so the purpose stands alone). The count is of the
+    providers the preset's ``includes`` names that Grounder lists, from the same data the form's lights read."""
+    count = len(dict.fromkeys(value.partition(":")[2].partition(":")[0] for value in catalog.includes(preset)))
+    return " · ".join(part for part in (_purpose(preset["description"]), f"{count} provider{'s' if count != 1 else ''}" if count else "") if part)
+
+
+def _snapshot(saved: dict[str, Any]) -> tuple:
+    """What ``/search`` can change, to tell at Done whether it did."""
+    return saved["preset"], saved["server"], saved["server_mode"], tuple(sorted(saved["off"])), tuple(sorted(saved["always"]))
+
+
+def _apis_counts(states: dict[str, str]) -> str:
+    """The live-data APIs by setting, for the hub's row: ``23 on Grounder decides, 1 on Every call, 1 on Never`` (a setting no API has is left out)."""
+    return ", ".join(f"{n} on {LIVE_LABEL[state]}" for state in ("auto", "always", "off") if (n := sum(1 for s in states.values() if s == state)))
+
+
+def _hub_rows(catalog: Catalog, saved: dict[str, Any]) -> list[dict[str, str]]:
+    """The hub: Let Grounder pick, A preset, A provider, Live-data APIs (where Grounder lists any) and Done, the row for what is set now marked "(current)" and saying which."""
+    current = _current_pick(saved, catalog)
+    kind = current.partition(":")[0]
+    here = lambda label, on: f"{label}: {catalog.name(current)}{CURRENT}" if on else label
+    rows = [{"value": AUTO, "label": f"Let Grounder pick{CURRENT if current == AUTO else ''}", "description": HUB_NOTE},
+            {"value": "presets", "label": here("A preset", kind == "preset"), "description": ", ".join(p["name"] for p in catalog.presets)},
+            {"value": "providers", "label": here("A provider", kind in ("provider", "mode")),
+             "description": f"{_names([p['name'] for p in catalog.providers])}, each with its modes"}]
+    if catalog.apis:
+        rows.append({"value": APIS, "label": "Live-data APIs", "description": _apis_counts(_live_states(saved, catalog))})
+    return [*rows, {"value": DONE, "label": "Done"}]
+
+
+def _step_presets(ctx, catalog: Catalog, saved: dict[str, Any]) -> None:
+    """The presets, each with its purpose and the providers it uses, then "← Back". A pick is saved and the hub comes back."""
+    rows = [{"value": f"preset:{p['id']}", "label": f"{p['name']}{CURRENT if p['id'] == saved['preset'] else ''}", "description": _preset_row(p, catalog)} for p in catalog.presets]
+    picked, _ = _ask_paged(ctx, "Which Grounder preset?", rows, current=f"preset:{saved['preset']}")
+    if picked and picked != _RETURN:
+        _save(**_pick_changes(picked))
+
+
+def _step_modes(ctx, owner: dict[str, Any], current: str) -> Optional[str]:
+    """A provider's modes: Default (its standard search), each mode with a short description, "← Back". The pick, or None for Back."""
+    rows = []
+    for m in owner["modes"]:
+        value = f"mode:{m['id']}"
+        rows.append({"value": value, "label": m["mode"] + (CURRENT if current == value else ""), "description": m["description"]})
+    value = f"provider:{owner['id']}"
+    default = {"value": value, "label": "Default" + (CURRENT if current == value else ""), "description": (owner.get("default_description") or owner["description"]).rstrip(".")}
+    picked, _ = _ask_paged(ctx, f"Which {owner['name']} mode?", rows, keep=(default,), current=current)
+    return None if picked in (None, _RETURN) else picked
+
+
+def _step_providers(ctx, catalog: Catalog, saved: dict[str, Any]) -> None:
+    """The providers, each with its mode count, then "← Back"; a provider with modes opens its modes, whose Back returns here. A pick is saved and the hub comes back."""
+    current = _current_pick(saved, catalog)
+    held = current.partition(":")[2].partition(":")[0] if current.partition(":")[0] in ("provider", "mode") else ""
+    page = None  # the first time, the page that holds the provider set now; after a provider's modes, the page it was picked on
+    while True:
+        rows = [{"value": f"provider:{p['id']}", "label": f"{p['name']}{CURRENT if p['id'] == held else ''}",
+                 "description": f"{len(p['modes'])} mode{'s' if len(p['modes']) != 1 else ''}" if p["modes"] else ""} for p in catalog.providers]
+        picked, page = _ask_paged(ctx, "Which provider should Grounder direct search with?", rows, page=page, current=f"provider:{held}")
+        owner = catalog.provider(picked.partition(":")[2]) if picked and picked != _RETURN else None
+        if owner is None:
+            return
+        picked = _step_modes(ctx, owner, current) if owner["modes"] else picked
+        if picked:
+            _save(**_pick_changes(picked))
+            return
+
+
+def _step_api(ctx, catalog: Catalog, ident: str) -> None:
+    """One API's three settings, the current one marked, then "← Back". A pick is saved and the list comes back."""
+    name, now = catalog.name(f"api:{ident}"), _live_state(api.settings(), ident)
+    rows = [{"value": state, "label": f"{LIVE_LABEL[state]}{CURRENT if state == now else ''}", "description": LIVE_NOTES[state].format(name=name)} for state in ("always", "auto", "off")]
+    picked, _ = _ask_paged(ctx, f"How should Grounder use {name}?", rows)
+    if picked in LIVE_LABEL:
+        _save_live(catalog, api.settings(), {ident: picked})
+
+
+def _step_apis(ctx, catalog: Catalog, leave: str = BACK_LABEL) -> None:
+    """The live-data APIs: "Set all to Grounder decides", one row per API saying its setting now, then ``leave`` ("← Back" from the hub, "Done" from ``/search apis``). An API opens its
+    three settings and the list comes back, to the page it was on. Each change is saved at once."""
+    page = None
     for _ in range(MAX_TOGGLES):
-        choices = [{"value": a["id"], "label": f"{'✗ off' if a['id'] in off else '✓ on'}: {a['name']}"} for a in catalog.apis]
-        picked, page = _ask_paged(ctx, "Live-data APIs Grounder may use. Pick one to switch it on or off, or Done.", choices,
-                                  keep=({"value": "done", "label": "Done"},), page=page)
-        if picked in (None, "done"):
+        states = _live_states(api.settings(), catalog)
+        rows = [{"value": a["id"], "label": a["name"], "description": LIVE_LABEL[states[a["id"]]]} for a in catalog.apis]
+        picked, page = _ask_paged(ctx, "Live-data APIs: pick one to change how Grounder uses it.", rows, keep=({"value": _ALL, "label": f"Set all to {LIVE_LABEL['auto']}"},),
+                                  page=page, up=leave)
+        if picked in (None, _RETURN):
+            return
+        if picked == _ALL:
+            _save_live(catalog, api.settings(), {a["id"]: "auto" for a in catalog.apis})
+        else:
+            _step_api(ctx, catalog, picked)
+
+
+def _summary_line(saved: dict[str, Any], catalog: Catalog) -> str:
+    """What is set now, in one line: ``Grounder: preset Fast · Live-data APIs: Kalshi every call``. A live-data API on Grounder decides is left out."""
+    current = _current_pick(saved, catalog)
+    kind = current.partition(":")[0]
+    lead = "optimized" if current == AUTO else f"preset {catalog.name(current)}" if kind == "preset" else f"direct {catalog.name(current)}"
+    states = _live_states(saved, catalog)
+    named = [f"{a['name']} {'every call' if states[a['id']] == 'always' else 'never'}" for a in catalog.apis if states[a["id"]] != "auto"]
+    return " · ".join([f"Grounder: {lead}", *([f"Live-data APIs: {', '.join(named)}"] if named else [])])
+
+
+def _hub(ctx, catalog: Catalog) -> tuple[bool, Optional[str]]:
+    """``/search`` with no argument where there is no form: the hub, asked again after every screen, until Done. ``(False, None)`` when nothing could ask here (the caller lists what there
+    is); else ``(True, reply)``. Done, or a hub the user leaves, answers with the summary line if something changed ("Nothing changed." if not). Each change is saved when it is made."""
+    start = _snapshot(api.settings())
+    for turn in range(MAX_TOGGLES):
+        saved = api.settings()
+        picked = ctx.ask_choice(PICK_QUESTION, _hub_rows(catalog, saved))
+        if picked is None and not turn:
+            return False, None
+        if picked in (None, DONE):
             break
-        off = [i for i in off if i != picked] if picked in off else [*off, picked]
-        _save(**{api.LIVE_OFF_KEY: _off_from([a["id"] for a in catalog.apis if a["id"] not in off], catalog)})
-    return _apis_words(api.settings()["off"], catalog)
+        if picked == AUTO:
+            _save(**_pick_changes(AUTO))
+        elif picked == "presets":
+            _step_presets(ctx, catalog, saved)
+        elif picked == "providers":
+            _step_providers(ctx, catalog, saved)
+        elif picked == APIS:
+            _step_apis(ctx, catalog)
+    now = api.settings()
+    return True, (_summary_line(now, catalog) if _snapshot(now) != start else "Nothing changed.")
 
 
-def _listing(catalog: Catalog, usage: str) -> str:
+def _listing(catalog: Catalog, usage: str, saved: dict[str, Any]) -> str:
     lines = [f"{OPTIMIZED_HEADER} (`/search optimized`, the default): {AUTO_LABEL}.",
              f"{PRESETS_HEADER} (`/search <preset>`):", *(f"  {p['id']} ({p['name']}): {p['description']}" for p in catalog.presets),
-             f"{PROVIDERS_HEADER} (`/search <provider>` or `/search <provider>:<mode>`), each provider with its modes:",
+             f"{PROVIDERS_HEADER} (`/search <provider>` or `/search <provider>:<mode>`, the only search provider called), each provider with its modes:",
              *(f"  {p['id']} ({p['name']})" + (f": {', '.join(m['mode'] for m in p['modes'])}" if p["modes"] else "") for p in catalog.providers)]
     if catalog.apis:
-        lines += ["Live-data APIs, all on unless turned off:", *(f"  {a['id']} ({a['name']})" for a in catalog.apis)]
+        lines += ["Live-data APIs, each Every call, Never or Grounder decides (`/search apis <id>=every|never|auto`), in every mode:",
+                  *(f"  {a['id']} ({a['name']}): {LIVE_LABEL[_live_state(saved, a['id'])]}" for a in catalog.apis)]
     return "\n".join([*lines, usage])
 
 
@@ -399,64 +579,54 @@ def _match(arg: str, catalog: Catalog) -> tuple[Optional[str], str]:
     return None, f"Grounder has no preset, provider or mode called {arg}."
 
 
-def search_command(ctx, raw_args: str) -> str:
-    """``/search [<id>|optimized|apis]``: one form for the mode and the live-data APIs, or an argument that skips it. ``auto`` is ``optimized``."""
+def search_command(ctx, raw_args: str) -> Optional[str]:
+    """``/search [<id>|optimized|apis]``: the hub (or one form, on a Hermes that has one) for the mode and the live-data APIs, or an argument that skips it. ``auto`` is ``optimized``."""
     catalog, problem = _catalog()
     if catalog is None:
         return problem
     saved = api.settings()
-    usage = ("Use `/search <id>` to choose a Grounder preset or search with only one provider (Grounder direct; `/search <provider>:<mode>` for one of its modes), "
-             "`/search optimized` to let Grounder pick the provider, or `/search apis` to choose the live-data APIs.")
+    usage = ("Use `/search <id>` to choose a Grounder preset or the one search provider to call (Grounder direct; `/search <provider>:<mode>` for one of its modes), "
+             "`/search optimized` to let Grounder pick the provider, or `/search apis` to set each live-data API to Every call, Never or Grounder decides.")
     arg = (raw_args or "").strip().lower()
     if not arg:
         if _has_form(ctx):
             return _form(ctx, catalog, saved, _pages(catalog, saved))
-        arg = (_step_pick(ctx, catalog) or "").lower()
-        if not arg:
-            return _listing(catalog, usage)
+        asked, reply = _hub(ctx, catalog)
+        return reply if asked else _listing(catalog, usage, saved)
     if arg == APIS:
         if _has_form(ctx):
             return _form(ctx, catalog, saved, [{**_apis_page(catalog, saved), "optional": False, "hint": APIS_ALONE_HINT}])
-        return _step_apis(ctx, catalog)
+        _step_apis(ctx, catalog, leave="Done")
+        return _apis_words(_live_states(api.settings(), catalog), catalog)
+    if arg.startswith(f"{APIS} "):
+        return _apis_argument(arg[len(APIS):].split(), catalog, saved, usage)
     pick = AUTO if arg in (AUTO, OPTIMIZED) else _match(arg, catalog)[0]
     if pick is None:
-        return f"{_match(arg, catalog)[1]}\n{_listing(catalog, usage)}"
+        return f"{_match(arg, catalog)[1]}\n{_listing(catalog, usage, saved)}"
+    if pick.startswith("api:"):  # a live-data API typed as a pick is Every call for it, and leaves the mode alone
+        ident = pick.partition(":")[2]
+        return _apis_words(_save_live(catalog, saved, {ident: "always"}), catalog)
     _save(**_pick_changes(pick))
     return _pick_words(pick, catalog, saved)
 
 
-def presets_command(ctx, raw_args: str) -> str:
-    """``/search_presets [<id>|optimized]``: the shortcut to the presets. A preset clears a pinned provider; ``auto`` or ``optimized`` clears the preset and leaves a provider."""
-    catalog, problem = _catalog("presets")
-    if catalog is None:
-        return problem
-    saved = api.settings()
-    usage = "Use `/search_presets <id>` to choose a Grounder preset, or `/search_presets optimized` to go back to Grounder optimized."
-    listing = "Grounder's presets:\n" + "\n".join(f"  {p['id']} ({p['name']}): {p['description']}" for p in catalog.presets)
-    arg = (raw_args or "").strip().lower()
-    if not arg:
-        choices = [{"value": AUTO, "label": OPTIMIZED_HEADER, "description": AUTO_LABEL},
-                   *({"value": p["id"], "label": p["name"], "description": p["description"]} for p in catalog.presets)]
-        arg = (ctx.ask_choice("Which Grounder preset?", choices) or "").lower()
-        if not arg:
-            return f"{listing}\n{usage}"
-    if arg in (AUTO, OPTIMIZED):
-        _save(preset=None)
-        pinned = saved["server"].partition(":")[2] if saved["server"].startswith("provider:") else ""
-        return "Grounder preset cleared." + (f" Grounder direct still searches with only {api._provider_name(pinned)}." if pinned
-                                             else " Grounder optimized will pick the provider for each search from your question.")
-    chosen = next((p for p in catalog.presets if arg in (p["id"].lower(), p["name"].lower())), None)
-    if chosen is None:
-        return f"Grounder has no preset called {arg}.\n{listing}\n{usage}"
-    _save(**_pick_changes(f"preset:{chosen['id']}"))
-    return _pick_words(f"preset:{chosen['id']}", catalog, saved)
+def _apis_argument(tokens: list[str], catalog: Catalog, saved: dict[str, Any], usage: str) -> str:
+    """``/search apis <id>=<setting> ...``: set live-data APIs without the page. A setting is ``every`` (Every call), ``never`` or ``auto`` (Grounder decides); the id or the
+    name of an API, ``=`` or ``:``, and a setting. Every pair is checked before any is saved."""
+    wanted: dict[str, str] = {}
+    for token in tokens:
+        name, _, setting = token.replace(":", "=", 1).partition("=")
+        found = next((a for a in catalog.apis if name in (a["id"].lower(), a["name"].lower())), None)
+        if found is None:
+            return f"Grounder has no live-data API called {name}.\n{_listing(catalog, usage, saved)}"
+        if setting not in LIVE_ANSWERS:
+            return f"`{token}` is not a setting: use `{name}=every`, `{name}=never` or `{name}=auto` (Grounder decides)."
+        wanted[found["id"]] = LIVE_ANSWERS[setting]
+    return _apis_words(_save_live(catalog, saved, wanted), catalog)
 
 
 def register_commands(ctx) -> None:
     ctx.register_command(
         "search", lambda raw_args: search_command(ctx, raw_args), args_hint="[optimized|preset|provider|provider:mode|apis]",
-        description="Choose how Grounder searches: Grounder optimized, a Grounder preset, or Grounder direct (one provider and its mode), and which live-data APIs it may use "
-                    "(on Slack: /hermes search)")
-    ctx.register_command(
-        "search_presets", lambda raw_args: presets_command(ctx, raw_args), args_hint="[preset|optimized]",
-        description="Choose the Grounder preset, or go back to Grounder optimized")
+        description="Choose how Grounder searches: Grounder optimized, a Grounder preset, or Grounder direct (one provider and its mode), and set each live-data API to "
+                    "Every call, Never or Grounder decides (on Slack: /hermes search)")
