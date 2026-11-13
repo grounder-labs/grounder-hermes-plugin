@@ -446,7 +446,7 @@ def test_a_hermes_with_ask_form_gets_two_pages_the_presets_in_a_row_the_modes_un
     # The three modes in order, each under its header: Grounder optimized (one row), Grounder preset (a row of presets), Grounder direct (the providers).
     assert pick["choices"][:3] == [{"header": "Grounder optimized"},
                                    {"value": "auto", "label": "Grounder picks the provider for your question",
-                                    "description": "The default. Results are what the provider returns, uncut and in its own order."},
+                                    "description": "The default. The provider's own results, each uncut and in its own order."},
                                    {"header": "Grounder preset", "row": True}]
     headers = [c["header"] for c in pick["choices"] if "header" in c]
     assert headers == ["Grounder optimized", "Grounder preset", "Grounder direct"] and {"header": "Grounder direct"} in pick["choices"]
@@ -886,7 +886,7 @@ def test_the_three_modes_are_named_by_the_constants_the_hermes_copy_uses(plugin)
     commands = plugin.commands
     assert (commands.OPTIMIZED_HEADER, commands.PRESETS_HEADER, commands.PROVIDERS_HEADER) == ("Grounder optimized", "Grounder preset", "Grounder direct")
     assert commands.AUTO_LABEL == "Grounder picks the provider for your question"
-    assert commands.AUTO_NOTE == "The default. Results are what the provider returns, uncut and in its own order."
+    assert commands.AUTO_NOTE == "The default. The provider's own results, each uncut and in its own order."
     assert commands.PRESET_NOTE == "Grounder picks the best provider for this preset."
     assert commands.PIN_NOTE == "Only this provider."
 

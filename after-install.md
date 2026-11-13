@@ -18,5 +18,5 @@ Once connected, `/search` chooses how Grounder searches, from three modes:
 - Grounder preset: Fast, Cheap, Live, Deep, Code or Balanced. Grounder picks the best provider for the preset.
 - Grounder direct: you pick the provider to search with, and only it (what it finds is what you get, even when that is nothing), with one of its modes if you like.
 
-`/search` also chooses which live-data APIs Grounder may use. Every mode returns what the provider returns, uncut and not reranked. `/search_presets` is the shortcut
+`/search` also chooses which live-data APIs Grounder may use. Every mode returns the provider's own results, each uncut and not reranked, less any a site's rules refuse it. `/search_presets` is the shortcut
 to the presets, and `/search optimized` goes back to Grounder optimized. On Slack, `/search` is Slack's own command: type `/hermes search`.

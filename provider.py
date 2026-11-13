@@ -7,8 +7,8 @@ Each ``web_search`` or ``web_extract`` call is one ``POST /v1/search`` to Ground
 and counts as one search. A search reaches the providers the query needs and
 returns one deduplicated list of licensed results, mapped to Hermes's rows (title,
 URL, description, position). An extract reads the pages it is given and returns each
-page's text as Grounder returns it, read for the question of the ``web_search`` that found it. Every mode returns exactly what
-the provider returns: this plugin cuts, reranks and reorders nothing of it, and asks Grounder for no ``text_max_chars``, passage
+page's text as Grounder returns it, read for the question of the ``web_search`` that found it. Every mode returns
+the provider's own results: this plugin cuts, reranks and reorders nothing of them, and asks Grounder for no ``text_max_chars``, passage
 or rerank option, so a row's description and a page's text are Grounder's words, with only white space on a row's line
 normalised. Hermes itself applies a model's ``char_limit`` to a whole page. Every failure is
 reported, never raised: ``{"success": False, "error": ...}`` for a search, the

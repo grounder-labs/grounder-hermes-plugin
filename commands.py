@@ -5,7 +5,7 @@
 
 Grounder has three modes, and ``/search`` chooses one: **Grounder optimized** (Grounder picks the provider for the user's question; the default), a **Grounder preset**
 (Fast, Cheap, Live, Deep, Code or Balanced: Grounder picks the best provider for that preset) or **Grounder direct** (the user picks the provider, and optionally one of
-its modes: only that provider, and what it finds is what the user gets, even when that is nothing). Every mode returns exactly what the provider returns, uncut and in its own order. It also
+its modes: only that provider, and what it finds is what the user gets, even when that is nothing). Every mode returns the provider's own results, each uncut and in its own order. It also
 chooses which live-data APIs may answer, every one on unless the user turns it off. Every Hermes today asks in steps with ``ctx.ask_choice``: Grounder optimized, a Grounder preset or Grounder
 direct, then which preset, or which provider and which of its modes, and the live-data APIs as a card that switches one at a time. A Hermes that offers ``ctx.ask_form`` (none
 ships it yet: it is a proposed addition to Hermes's plugin surface) shows the same choices as one form of two pages: the three modes under their headers, the presets side by side,
@@ -34,7 +34,7 @@ AUTO = "auto"
 OPTIMIZED = "optimized"  # typed as an argument, the same as ``auto``
 OPTIMIZED_HEADER = "Grounder optimized"
 AUTO_LABEL = "Grounder picks the provider for your question"
-AUTO_NOTE = "The default. Results are what the provider returns, uncut and in its own order."
+AUTO_NOTE = "The default. The provider's own results, each uncut and in its own order."
 APIS = "apis"  # the typed argument, and the step that leads to the live-data APIs where there is no second page
 PICK_TAB = "Search"
 APIS_TAB = "Live-data APIs"

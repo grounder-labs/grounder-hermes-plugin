@@ -182,7 +182,7 @@ workspaces on your [account](https://grounder.net/account).
 
 ## Choose how Grounder searches: `/search` and `/search_presets`
 
-Grounder has three modes. Every one returns exactly what the provider returns, uncut and not reranked, by Grounder or by this plugin.
+Grounder has three modes. Every one returns the provider's own results, each uncut and not reranked, by Grounder or by this plugin. A result whose site's rules refuse that provider is left out, and nothing replaces it.
 
 | Mode | What it is | How to choose it |
 |---|---|---|
