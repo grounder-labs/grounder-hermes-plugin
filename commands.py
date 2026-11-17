@@ -29,6 +29,7 @@ runs and never kept, so a new provider, mode, preset or API is on offer as soon 
 
 from __future__ import annotations
 
+import textwrap
 from typing import Any, Optional
 
 from . import provider as api
@@ -74,7 +75,8 @@ _RETURN, _ALL, DONE = "back", "__all__", "done"  # "← Back" (a screen's way up
 BACK_LABEL, CURRENT = "← Back", " (current)"
 HUB_NOTE = "a provider per question"
 UNCHANGED = "Nothing changed."
-SAVED_NOTE = "(saved to your Grounder account; it applies wherever that account searches)"
+SAVED_NOTE = "(saved to your Grounder account; applies wherever it searches)"
+REPLY_WIDTH = 64  # the most characters a line of a pick's reply takes: Hermes prints a reply as it is, and a terminal breaks a longer line mid-word
 # An offering's inputs that narrow a search, as the reply to a pick names them on its "Filters" line; any other input (the query itself, pages to read) is not a filter.
 INPUT_WORDS = {"days": "date window", "domains": "sites", "language": "language"}
 MAX_TOGGLES = 80  # a switch-one-at-a-time card is asked again after each switch, so it ends here if nobody ends it
@@ -418,11 +420,18 @@ def _preset_uses(preset: dict[str, Any], catalog: Catalog) -> str:
     return _count(owners, "provider") + (f" and {_count(modes, 'mode')}" if modes else "") if values else ""
 
 
+def _block(headline: str, lines: list[str]) -> str:
+    """A reply in the shape of Hermes's own "Model switched": the headline, then each line indented under it. A line longer than REPLY_WIDTH is wrapped at a word, its rest
+    indented further, so no terminal breaks it mid-word."""
+    wrapped = [part for line in lines for part in textwrap.wrap(line, REPLY_WIDTH, initial_indent="  ", subsequent_indent="    ", break_long_words=False, break_on_hyphens=False)]
+    return "\n".join([f"✓ {headline}", *wrapped])
+
+
 def _switched(saved: dict[str, Any], catalog: Catalog, value: str, changed: bool = True) -> str:
     """What a pick answers, in the shape of Hermes's own "Model switched" reply: a headline naming the mode, a line for each thing now set, and where it is saved. Grounder direct says the
     provider (the only search provider called), its mode with the one line Grounder gives it, what that search returns and what narrows it, and what happens when it finds nothing
-    (``saved``'s fallback after the write); a preset says what it is for and how many providers it draws from; every mode says the live-data APIs' settings. ``changed`` False says the
-    pick was what the account already had."""
+    (``saved``'s fallback after the write); a preset says what it is for and how many providers it draws from; every mode says the live-data APIs' settings, counted in fewer words
+    where the full ones would not fit the line. ``changed`` False says the pick was what the account already had."""
     kind, _, ident = value.partition(":")
     if value == AUTO:
         mode, lines = OPTIMIZED_HEADER, [f"Provider: {AUTO_LABEL}", "Results: the provider's own, each uncut and in its own order"]
@@ -430,7 +439,7 @@ def _switched(saved: dict[str, Any], catalog: Catalog, value: str, changed: bool
         preset = next((p for p in catalog.presets if p["id"] == ident), None)
         uses = _preset_uses(preset, catalog) if preset else ""
         mode, lines = PRESETS_HEADER, [f"Preset: {catalog.name(value)}", *([f"For: {preset['description'].rstrip('.')}"] if preset and preset["description"] else []),
-                                       "Provider: " + PRESET_NOTE.rstrip(".") + (f", from {uses}" if uses else "")]
+                                       "Provider: " + PRESET_NOTE.rstrip("."), *([f"Draws from: {uses}"] if uses else [])]
     else:
         found = catalog.mode_of(ident) if kind == "mode" else None
         owner = found[0] if found else catalog.provider(ident) if kind == "provider" else None
@@ -442,10 +451,12 @@ def _switched(saved: dict[str, Any], catalog: Catalog, value: str, changed: bool
         elif owner and owner["modes"]:
             lines.append(" · ".join(part for part in ("Mode: Default", (owner.get("default_description") or owner["description"]).rstrip(".")) if part))
         lines += [f"{title}: {', '.join(words)}" for title, words in (("Capabilities", offering.get("features")), ("Filters", offering.get("filters"))) if words]
-        lines.append(f"Results: what {name} finds" + ("; if it finds nothing, Grounder picks one other" if saved["fallback"] else " is what you get, even when that is nothing"))
+        lines.append("Results: what it finds; if nothing, Grounder picks one other" if saved["fallback"] else "Results: only what it finds, even when that is nothing")
     if catalog.apis:
-        lines.append(f"Live-data APIs: {_apis_counts(_live_states(saved, catalog))} (`/search apis`)")
-    return "\n".join([f"✓ Search {'switched' if changed else 'unchanged'}: {mode}", *(f"  {line}" for line in [*lines, SAVED_NOTE])])
+        states = _live_states(saved, catalog)  # with the command that sets them where the line has room, in fewer words where the full ones do not fit
+        said = [f"Live-data APIs: {_apis_counts(states, brief=brief)}{hint}" for brief in (False, True) for hint in (" (`/search apis`)", "")]
+        lines.append(next((line for line in said if len(line) + 2 <= REPLY_WIDTH), said[-1]))
+    return _block(f"Search {'switched' if changed else 'unchanged'}: {mode}", [*lines, SAVED_NOTE])
 
 
 def _pick(account: Account, catalog: Catalog, value: str) -> str:
@@ -460,8 +471,7 @@ def _apis_words(states: dict[str, str], catalog: Catalog) -> str:
     """The live-data APIs' settings, in the shape of ``_switched``: the ones set to Every call or Never, that every other is Grounder decides, and where it is saved."""
     named = {state: [a["name"] for a in catalog.apis if states.get(a["id"]) == state] for state, _ in LIVE_STATES}
     sets = [f"{LIVE_LABEL[state]}: {', '.join(named[state])}" for state in ("always", "off") if named[state]]
-    lines = [*sets, f"{LIVE_LABEL['auto']}: {'all the others' if sets else 'each one'}", SAVED_NOTE]
-    return "\n".join(["✓ Live-data APIs set, in every mode", *(f"  {line}" for line in lines)])
+    return _block("Live-data APIs set, in every mode", [*sets, f"{LIVE_LABEL['auto']}: {'all the others' if sets else 'each one'}", SAVED_NOTE])
 
 
 def _live_changes(saved: dict[str, Any], catalog: Catalog, states: dict[str, str]) -> dict[str, list[str]]:

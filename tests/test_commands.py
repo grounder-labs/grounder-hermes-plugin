@@ -320,13 +320,14 @@ def _row_text(n, choice):
     return f"{n}. {choice['label']}" + (f" — {choice['description']}" if choice.get("description") else "")
 
 
-SAVED = "(saved to your Grounder account; it applies wherever that account searches)"
+SAVED = "(saved to your Grounder account; applies wherever it searches)"
 TWO_APIS = "2 on Grounder decides"
 
 
 def _block(headline, *lines, apis=TWO_APIS):
     """A reply in the shape of Hermes's own "Model switched": a headline, a line for each thing set, the live-data APIs where Grounder lists any, and where it is saved."""
-    return "\n".join([f"✓ {headline}", *(f"  {line}" for line in [*lines, *([f"Live-data APIs: {apis} (`/search apis`)"] if apis else []), SAVED])])
+    live = [f"Live-data APIs: {apis}" + (" (`/search apis`)" if len(apis) + 35 <= 64 else "")] if apis else []  # the command that sets them, where the line has room
+    return "\n".join([f"✓ {headline}", *(f"  {line}" for line in [*lines, *live, SAVED])])
 
 
 def _search(mode, changed=True):
@@ -339,12 +340,12 @@ def _optimized_reply(apis=TWO_APIS, changed=True):
 
 def _preset_reply(name, purpose="", uses="", apis=TWO_APIS, changed=True):
     return _block(_search("Grounder preset", changed), f"Preset: {name}", *([f"For: {purpose}"] if purpose else []),
-                  "Provider: Grounder picks the best provider for this preset" + (f", from {uses}" if uses else ""), apis=apis)
+                  "Provider: Grounder picks the best provider for this preset", *([f"Draws from: {uses}"] if uses else []), apis=apis)
 
 
 def _direct_reply(name, *lines, fallback=False, apis=TWO_APIS, changed=True):
     return _block(_search("Grounder direct", changed), f"Provider: {name}, the only search provider called", *lines,
-                  f"Results: what {name} finds" + ("; if it finds nothing, Grounder picks one other" if fallback else " is what you get, even when that is nothing"), apis=apis)
+                  "Results: what it finds; if nothing, Grounder picks one other" if fallback else "Results: only what it finds, even when that is nothing", apis=apis)
 
 
 def _apis_reply(every=(), never=()):
@@ -683,11 +684,25 @@ def test_the_reply_to_a_pick_names_the_provider_its_mode_what_it_returns_what_na
         "live_data_apis": PROVIDERS["live_data_apis"]}
     assert plugin.commands.search_command(Host(), "one:quick") == "\n".join([
         "✓ Search switched: Grounder direct", "  Provider: One, the only search provider called", "  Mode: quick · Cache only", "  Capabilities: web search, page text",
-        "  Filters: language", "  Results: what One finds is what you get, even when that is nothing", "  Live-data APIs: 2 on Grounder decides (`/search apis`)",
-        "  (saved to your Grounder account; it applies wherever that account searches)"])
+        "  Filters: language", "  Results: only what it finds, even when that is nothing", "  Live-data APIs: 2 on Grounder decides (`/search apis`)",
+        "  (saved to your Grounder account; applies wherever it searches)"])
     reply = plugin.commands.search_command(Host(["providers", "provider:one", "provider:one"]), "")  # the menu answers the same block: Default is its standard search
     assert reply.splitlines()[:5] == ["✓ Search switched: Grounder direct", "  Provider: One, the only search provider called", "  Mode: Default · Its standard search",
                                       "  Capabilities: web search", "  Filters: date window, sites"]  # the query and the pages to read are not filters
+
+
+def test_no_line_of_a_reply_is_longer_than_a_terminal_shows_whole_and_a_long_one_wraps_at_a_word(plugin, signed_in, lists):
+    lists.profiles_body = {"profiles": [{"id": "long", "name": "Long", "includes": ["exa:deep", "tavily"],
+                                         "description": "Deep research for a thorough, cited answer: it reads many pages, so it takes longer than one search."}]}
+    lists.providers_body = {**PROVIDERS, "live_data_apis": [{"id": f"a{n}", "display_name": f"A{n}"} for n in range(120)]}
+    _account(lists, live_data_off=[f"a{n}" for n in range(1, 31)], live_data_always=["a0"])
+    reply = plugin.commands.search_command(Host(), "long")
+    assert plugin.commands.REPLY_WIDTH == 64 and all(len(line) <= 64 for line in reply.splitlines())
+    assert reply.splitlines()[:7] == ["✓ Search switched: Grounder preset", "  Preset: Long", "  For: Deep research for a thorough, cited answer: it reads many",
+                                      "    pages, so it takes longer than one search", "  Provider: Grounder picks the best provider for this preset",
+                                      "  Draws from: 2 providers and 1 mode", "  Live-data APIs: 89 auto, 1 every call, 30 never"]  # counted in fewer words: the full ones do not fit
+    listed = plugin.commands.search_command(Host(), "apis a31=never")
+    assert all(len(line) <= 64 for line in listed.splitlines()) and listed.splitlines()[2].startswith("  Never: A1, A2, ") and listed.splitlines()[3].startswith("    A")
 
 
 # --- a surface that caps a card ----------------------------------------------------------------------------------------
@@ -980,7 +995,7 @@ _OK = (200, {"query": "q", "results": [{"title": "T", "url": "https://example.co
 def test_the_words_everywhere_say_only_that_provider_and_that_what_it_finds_is_what_you_get_even_when_that_is_nothing(plugin, signed_in, lists):
     assert plugin.commands.PIN_NOTE == "The only search provider called."
     reply = plugin.commands.search_command(Host(), "exa:instant")
-    assert "Provider: Exa, the only search provider called" in reply and "Results: what Exa finds is what you get, even when that is nothing" in reply
+    assert "Provider: Exa, the only search provider called" in reply and "Results: only what it finds, even when that is nothing" in reply
     docs = {name: (PLUGIN_DIR / name).read_text() for name in ("README.md", "after-install.md")}
     docs["plugin.yaml"] = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())["description"]
     for name, text in docs.items():
@@ -1030,7 +1045,7 @@ def test_a_picks_words_still_say_grounder_direct_for_a_mode_or_provider_grounder
     saved = plugin.provider.read_account()[0]
     lines = lambda value: plugin.commands._switched(saved, catalog, value).splitlines()
     assert lines("mode:exa:gone")[:3] == ["✓ Search switched: Grounder direct", "  Provider: exa:gone, the only search provider called",
-                                          "  Results: what exa:gone finds is what you get, even when that is nothing"]
+                                          "  Results: only what it finds, even when that is nothing"]
     assert lines("provider:gone")[:2] == ["✓ Search switched: Grounder direct", "  Provider: gone, the only search provider called"]
     assert lines("preset:gone")[:3] == ["✓ Search switched: Grounder preset", "  Preset: gone", "  Provider: Grounder picks the best provider for this preset"]
 
