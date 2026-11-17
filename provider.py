@@ -88,8 +88,10 @@ PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /sea
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.7.6"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.7.7"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
+BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
+           f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
 CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when there is no search key
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
 MAX_RESULTS = 100  # most results one search asks Grounder for: its top_k range, and the 100 Hermes clamps a model's limit to
@@ -343,6 +345,12 @@ def _key() -> str:
     return str(get_secret(KEY_ENV) or "").strip()
 
 
+def _key_fits(key: str) -> bool:
+    """Whether the search key can be sent in an ``Authorization`` header: plain ASCII, printable, no space. urllib's error for a header it cannot send quotes the
+    header whole, key and all, and would reach the model, so a key that fails this is never sent; ``BAD_KEY`` says why without it."""
+    return key.isascii() and key.isprintable() and " " not in key
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Follow no redirect. urllib re-sends a redirected request to its new address with the headers it had, the search key's ``Authorization`` among them, so a
     redirect to another host would hand that host the key. Hermes's own signed-in requests follow none either; a redirect from Grounder is an error here."""
@@ -364,6 +372,8 @@ def _post(payload: dict[str, Any], key: str = "", extra: Optional[dict[str, str]
 
     ``extra`` adds request headers (a wallet's ``PAYMENT-SIGNATURE``), and ``headers_out`` gets the response's headers, their names in lower case (the offer of a 402, a paid search's receipt).
     """
+    if key and not _key_fits(key):
+        raise ValueError(BAD_KEY)  # never urllib's own error for the header, which quotes the key
     request = urllib.request.Request(
         SEARCH_URL, json.dumps(payload).encode(),
         {**({"Authorization": f"Bearer {key}"} if key else {}), "Content-Type": "application/json",
@@ -506,6 +516,8 @@ def _settings_call(method: str, body: Optional[dict[str, Any]] = None) -> tuple[
     """``GET`` or ``PUT`` (with a JSON ``body``) of the account's saved search setting: ``(Grounder's answer, None)``, or ``(None, the reason)``. It goes with the search key when one is set
     and otherwise through Hermes's sign-in, follows no redirect, and raises ``ProviderNotSignedIn`` when the user has neither. It is no search and spends none."""
     key = _key()
+    if key and not _key_fits(key):
+        return None, BAD_KEY
     url = SETTINGS_URL
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
     try:
@@ -883,6 +895,8 @@ def _send(payload: dict[str, Any], dropped: Optional[list[str]] = None, sent_out
     An error the user must act on comes back as an ``_Act``. ``sent_out`` gets the request itself, the last entry being the one Grounder answered.
     """
     key = _key()
+    if key and not _key_fits(key):
+        return None, _act(BAD_KEY)
     context = _context()
     if context:
         payload = {**payload, "context": {**payload.get("context", {}), **context}}

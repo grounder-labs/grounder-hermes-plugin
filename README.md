@@ -195,6 +195,7 @@ tier, and a Hermes that honours a provider's `keyless_rescue` setting never resc
 | Error | What to do |
 |---|---|
 | Grounder rejected the search key in `GROUNDER_API_KEY` | Check the key on your Search keys page, or remove it to use the sign-in |
+| `GROUNDER_API_KEY` holds a character no search key has: nothing was sent | The key was pasted with a space, a line break or a curly quote in it. Set it again with `hermes config set GROUNDER_API_KEY <key>`, or remove it to use the sign-in |
 | You've used Grounder's free searches, or Grounder's free searches have reached their limit for now | Sign up at the link in the message and, to search past the free ones, add credit at the second link; then set a search key or run `hermes auth add grounder:grounder` |
 | Grounder needs payment for this search | The free searches are used up. Sign up at the link in the message, or [set a wallet](#pay-per-search-with-a-wallet) to pay for each search |
 | This search costs more than the limit, none of Grounder's payment options is USDC on Base, or the offer could not be read: nothing was paid | The wallet is set and this offer is not one it pays; raise `GROUNDER_X402_MAX_PER_SEARCH`, or sign up as the message says |

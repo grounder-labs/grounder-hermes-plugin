@@ -217,6 +217,22 @@ def test_the_users_own_search_key_in_an_address_is_refused_too(plugin, stub, key
     assert stub.requests == []
 
 
+@pytest.mark.parametrize("bad", ["gk-AB\nCD-0004", "gk-AB\rCD-0005", "gk-AB’CD-0006", "gk-tëst-0007", "gk-AB CD-0008"])
+def test_a_key_that_cannot_be_a_header_is_refused_unsent_and_never_repeated(plugin, stub, monkeypatch, bad):
+    # urllib's error for such a header quotes it whole ("Invalid header value b'Bearer gk-AB\\nCD-0004'"), and a curly quote's repr holds it: either would reach the model.
+    monkeypatch.setenv("GROUNDER_API_KEY", bad)
+    monkeypatch.setattr(plugin.provider, "SEARCH_URL", f"{stub.origin}/v1/search")
+    provider = plugin.GrounderWebSearchProvider()
+    answers = [json.dumps(answer, ensure_ascii=False) for answer in
+               (provider.search("boiling point of water"), provider.extract([PAGE_A]), plugin.provider._settings_call("GET"))]
+    assert stub.requests == []
+    assert all("GROUNDER_API_KEY holds a character no search key has" in shown for shown in answers)
+    assert not any(part in shown for shown in answers for part in ("gk-AB", "CD-000", "gk-tëst"))
+    with pytest.raises(ValueError) as raised:
+        plugin.provider._post({"query": "q"}, bad)
+    assert "gk-" not in repr(raised.value) and stub.requests == []
+
+
 def test_a_web_extract_refuses_such_an_address_per_page_and_reads_the_others(plugin, stub, keyed):
     stub.search_body = {"results": [_page(PAGE_A)]}
     rows = plugin.GrounderWebSearchProvider().extract([f"https://example.com/c?k={FAKE_KEY}", PAGE_A, "http://localhost/"])
