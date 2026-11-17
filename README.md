@@ -246,17 +246,31 @@ API Grounder adds is on offer at once. It is registered only while Grounder is y
 makes Grounder the backend the first time it loads where you chose none, and a switch you make in `hermes tools` takes effect at the next start. With another backend chosen the plugin registers no command, and
 its search tools and its web provider work as they do otherwise.
 
-`/search` opens one menu, "How should Grounder search?", and every screen returns to it:
+`/search` opens one menu, "How should Grounder search?". Every list is one view and every row is one line:
 
 | Row | What it opens |
 |---|---|
-| **Let Grounder pick** | Grounder optimized: Grounder picks the provider for each question. Picking it sets it |
-| **A preset** | The six presets, each with its purpose and how many providers it uses (for example "Fast: the quickest answer · 16 providers"), then **← Back**. Picking one sets it |
-| **A provider** | Each provider with how many modes it has, a page at a time, then **← Back**. A provider with modes opens them: **Default** (its standard search), then each mode with the one line Grounder gives for what it is and how it differs from the provider's other modes, a page at a time, then **← Back** |
-| **Live-data APIs** | **Set all to Grounder decides**, then each live-data API with its setting, then **← Back**. An API opens **Every call**, **Grounder decides** and **Never**, each with its note, then **← Back**. The row shows a count, for example "18 on Grounder decides, 1 on Every call, 1 on Never" |
-| **Done** | Ends it. If anything changed, one line says what is set now, for example "Grounder: preset Fast · Live-data APIs: Kalshi every call" (a live-data API on Grounder decides is left out). If nothing changed, it says so |
+| **Let Grounder pick** | Grounder optimized: Grounder picks a provider for each question. Picking it sets it |
+| **A preset** | The six presets, each with its purpose and, where the line has room, how many providers it uses (for example "Fast: the quickest answer · 16 providers"), then **← Back**. Picking one sets it |
+| **A provider** | Every provider in one list, each with what its standard search returns and how many modes it has (for example "Exa: web search, page text · 16 modes"), then **← Back**. A provider with modes opens them: **Default** (its standard search), then each mode with the line Grounder gives for what it is, cut to fit the row, then **← Back**. Picking a mode, or a provider that has none, sets it |
+| **Live-data APIs** | **Set all to Grounder decides**, then every live-data API with its setting, then **← Back**. An API opens **Every call**, **Grounder decides** and **Never**, then **← Back**, and the list comes back so you can set another. Once a setting has changed, the list's last row is **Done**. The menu's row shows a count, for example "18 on Grounder decides, 1 on Every call, 1 on Never" |
+| **Done** | Ends it, and says nothing changed |
 
-The row for what is set now says "(current)". Each choice is saved to your account when you make it, so leaving the menu any other way keeps what you chose. A long list (the providers, a provider's modes, the live-data APIs) shows 8 items a page, then **More: 9–16 of 22**, then **← Back**; on a later page Back goes to the page before. A page is 8 items or fewer where a messaging app limits a card (Discord 24 choices; WhatsApp's list takes 10 rows and Hermes adds its own "Other" row, so 9 here). A name typed in Hermes's "Other (type your answer)" row picks an item on the page shown. Typed arguments skip the menu: `/search exa`, `/search exa:instant` (a provider's mode), `/search fast` (a preset), `/search optimized` (or `/search auto`), `/search apis`
+A pick closes the menu and answers with what is set now, in the shape of Hermes's own reply to a model switch:
+
+```text
+✓ Search switched: Grounder direct
+  Provider: Wikipedia, the only search provider called
+  Capabilities: encyclopedia, page text
+  Filters: language
+  Results: what Wikipedia finds is what you get, even when that is nothing
+  Live-data APIs: 20 on Grounder decides (`/search apis`)
+  (saved to your Grounder account; it applies wherever that account searches)
+```
+
+A provider with modes adds a **Mode** line: the mode, or Default, and the line Grounder gives it. A preset's reply says what the preset is for and how many providers it draws from. Grounder optimized's says Grounder picks the provider. Leaving the live-data APIs by **Done** lists the ones set to Every call or Never. A typed argument is answered the same way, and when the pick is what your account already had, the first line says "Search unchanged".
+
+The row for what is set now says "(current)". Each choice is saved to your account when you make it. A row takes at most 56 characters with its number, so it stays one line in Hermes's panel in a terminal 66 columns wide or more: a note that does not fit gives way to a shorter one, or is cut at a word with "…". A list is one card, except where a messaging app limits a card and the list does not fit it (Discord 24 choices; WhatsApp's list takes 10 rows and Hermes adds its own "Other" row, so 9 here). There it is a page at a time, with **More: 8–14 of 22** and, on a later page, a Back row that goes to the page before. A name typed in Hermes's "Other (type your answer)" row picks an item on the card shown. Typed arguments skip the menu: `/search exa`, `/search exa:instant` (a provider's mode), `/search fast` (a preset), `/search optimized` (or `/search auto`), `/search apis`
 (the live-data APIs), and `/search apis espn=every mlb=never polymarket=auto` to set some without the page (`every`, `never` or `auto`). `/search api:<id>` sets one live-data API to Every call.
 
 ### Live-data APIs: Every call, Never or Grounder decides

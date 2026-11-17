@@ -207,8 +207,8 @@ def test_another_plugins_commands_are_left_alone_and_this_plugins_own_are_replac
 def test_the_registered_handlers_run_the_commands(plugin, lists, signed_in, tmp_path):
     host = Host()
     plugin.register(host)
-    assert host.commands["search"].handler("exa") == "Grounder direct: Grounder will use only Exa as the search provider and return what it finds, even when that is nothing. Live-data APIs follow your live-data choices (`/search apis`)."
-    assert host.commands["search"].handler("deep") == "Grounder preset Deep: Grounder will pick the best provider for it on each search."
+    assert host.commands["search"].handler("exa") == _direct_reply("Exa", *EXA_DEFAULT)
+    assert host.commands["search"].handler("deep") == _preset_reply("Deep", "Thorough research", "1 provider and 1 mode")
     assert _saved(lists, "server") is None and _saved(lists, "preset") == "deep"  # a preset clears a pinned provider
 
 
@@ -315,6 +315,48 @@ def _values(choices):
     return [c["value"] for c in choices]
 
 
+def _row_text(n, choice):
+    """A card's row as Hermes draws it: its number, the label and, after " — ", the description."""
+    return f"{n}. {choice['label']}" + (f" — {choice['description']}" if choice.get("description") else "")
+
+
+SAVED = "(saved to your Grounder account; it applies wherever that account searches)"
+TWO_APIS = "2 on Grounder decides"
+
+
+def _block(headline, *lines, apis=TWO_APIS):
+    """A reply in the shape of Hermes's own "Model switched": a headline, a line for each thing set, the live-data APIs where Grounder lists any, and where it is saved."""
+    return "\n".join([f"✓ {headline}", *(f"  {line}" for line in [*lines, *([f"Live-data APIs: {apis} (`/search apis`)"] if apis else []), SAVED])])
+
+
+def _search(mode, changed=True):
+    return f"Search {'switched' if changed else 'unchanged'}: {mode}"
+
+
+def _optimized_reply(apis=TWO_APIS, changed=True):
+    return _block(_search("Grounder optimized", changed), "Provider: Grounder picks the provider for your question", "Results: the provider's own, each uncut and in its own order", apis=apis)
+
+
+def _preset_reply(name, purpose="", uses="", apis=TWO_APIS, changed=True):
+    return _block(_search("Grounder preset", changed), f"Preset: {name}", *([f"For: {purpose}"] if purpose else []),
+                  "Provider: Grounder picks the best provider for this preset" + (f", from {uses}" if uses else ""), apis=apis)
+
+
+def _direct_reply(name, *lines, fallback=False, apis=TWO_APIS, changed=True):
+    return _block(_search("Grounder direct", changed), f"Provider: {name}, the only search provider called", *lines,
+                  f"Results: what {name} finds" + ("; if it finds nothing, Grounder picks one other" if fallback else " is what you get, even when that is nothing"), apis=apis)
+
+
+def _apis_reply(every=(), never=()):
+    sets = [f"{label}: {', '.join(names)}" for label, names in (("Every call", every), ("Never", never)) if names]
+    return "\n".join(["✓ Live-data APIs set, in every mode", *(f"  {line}" for line in [*sets, f"Grounder decides: {'all the others' if sets else 'each one'}", SAVED])])
+
+
+EXA_DEFAULT, EXA_INSTANT, EXA_DEEP = ("Mode: Default · Embeddings search",), ("Mode: instant · Web search, page text", "Capabilities: web search, page text"), (
+    "Mode: deep · A research pass over many pages", "Capabilities: deep research")
+FAST = ("Fast", "Quick answers", "2 providers and 1 mode")
+
+
 def test_search_opens_the_hub_with_the_current_choice_marked_and_says_nothing_changed_when_nothing_did(plugin, lists, signed_in, tmp_path):
     host = Host(["done"])
     assert plugin.commands.search_command(host, "") == "Nothing changed."  # no summary line, for no change
@@ -322,8 +364,7 @@ def test_search_opens_the_hub_with_the_current_choice_marked_and_says_nothing_ch
     assert question == "How should Grounder search?"
     assert _values(choices) == ["auto", "presets", "providers", "apis", "done"]
     assert _labels(choices) == ["Let Grounder pick (current)", "A preset", "A provider", "Live-data APIs", "Done"]
-    assert [c.get("description") for c in choices] == ["Grounder optimized: Grounder picks the provider for each question", "Fast, Cheap, Live, Deep, Code, Balanced",
-                                                       "Exa, Tavily and Parallel, each with its modes", "2 on Grounder decides", None]
+    assert [c.get("description") for c in choices] == ["a provider per question", "Fast, Cheap, Live, Deep, Code, Balanced", "Exa, Tavily and Parallel", "2 on Grounder decides", None]
     # Signed in, the lists are read through Hermes, which attaches the token: the plugin adds no credential, and spends no search.
     # The account's setting is read last, with the same sign-in.
     assert [(c["method"], c["url"]) for c in signed_in.calls] == [("GET", "https://api.grounder.net/v1/providers"), ("GET", "https://api.grounder.net/v1/search-profiles"),
@@ -341,17 +382,19 @@ def test_a_hub_with_no_live_data_apis_has_no_row_for_them(plugin, signed_in, lis
     assert _values(host.asked[0][1]) == ["auto", "presets", "providers", "done"]
 
 
-def test_a_preset_is_picked_on_its_own_screen_and_the_hub_comes_back_with_it_marked_current(plugin, lists, signed_in, tmp_path):
-    host = Host(["presets", "preset:fast", "done"])
-    assert plugin.commands.search_command(host, "") == "Grounder: preset Fast"  # Done answers with one line of what is set now
-    (_, hub), (question, presets), (_, hub_after), = host.asked[:3]
+def test_a_preset_is_picked_on_its_own_screen_and_the_menu_closes_with_what_is_set_now(plugin, lists, signed_in, tmp_path):
+    host = Host(["presets", "preset:fast"])
+    assert plugin.commands.search_command(host, "") == _preset_reply(*FAST)
+    (_, hub), (question, presets) = host.asked  # two cards and no third: the pick closed the menu
     assert question == "Which Grounder preset?"
     assert _values(presets) == ["preset:fast", "preset:cheap", "preset:live", "preset:deep", "preset:code", "preset:balanced", "back"]
     assert _labels(presets)[-1] == "← Back" and _labels(presets)[:2] == ["Fast", "Cheap"]
     assert [c["description"] for c in presets[:4]] == ["Quick answers · 2 providers", "Lowest cost", "Fresh data", "Thorough research · 1 provider"]  # no includes: the purpose stands alone
     assert _labels(hub) == ["Let Grounder pick (current)", "A preset", "A provider", "Live-data APIs", "Done"]
-    assert _labels(hub_after) == ["Let Grounder pick", "A preset: Fast (current)", "A provider", "Live-data APIs", "Done"]
     assert _saved(lists, "preset") == "fast" and _saved(lists, "server") is None
+    again = Host(["done"])  # the next time it opens, the hub marks it and counts the presets where it named them
+    plugin.commands.search_command(again, "")
+    assert _labels(again.asked[0][1]) == ["Let Grounder pick", "A preset: Fast (current)", "A provider", "Live-data APIs", "Done"] and again.asked[0][1][1]["description"] == "6 presets"
 
 
 def test_the_preset_screen_marks_the_current_preset_and_back_returns_to_the_hub_with_nothing_saved(plugin, lists, signed_in, tmp_path):
@@ -375,35 +418,38 @@ def test_a_preset_row_says_how_many_providers_it_uses_from_the_same_data_and_nev
         assert plugin.commands._purpose(text) == purpose
 
 
-def test_a_provider_is_picked_then_its_mode_and_the_hub_comes_back_with_both_marked(plugin, lists, signed_in, tmp_path):
-    host = Host(["providers", "provider:exa", "mode:exa:instant", "done"])
+def test_a_provider_is_picked_then_its_mode_and_the_menu_closes_naming_both(plugin, lists, signed_in, tmp_path):
+    host = Host(["providers", "provider:exa", "mode:exa:instant"])
     reply = plugin.commands.search_command(host, "")
-    (_, _), (question, providers), (mode_question, modes), (_, hub_after) = host.asked
+    (_, _), (question, providers), (mode_question, modes) = host.asked  # no card after the mode: the pick closed the menu
     assert question == "Which provider should Grounder direct search with?"
     assert _values(providers) == ["provider:exa", "provider:tavily", "provider:parallel", "back"]
     assert _labels(providers) == ["Exa", "Tavily", "Parallel", "← Back"]  # a provider's name typed picks it
-    assert [c["description"] for c in providers[:3]] == ["2 modes", "", "1 mode"]
+    assert [c.get("description") for c in providers[:3]] == ["2 modes", None, "1 mode"]
     assert mode_question == "Which Exa mode?"
     assert _values(modes) == ["provider:exa", "mode:exa:instant", "mode:exa:deep", "back"]
     assert _labels(modes) == ["Default", "instant", "deep", "← Back"]
     assert [c["description"] for c in modes[:3]] == ["Embeddings search", "Web search, page text", "A research pass over many pages"]
-    assert _labels(hub_after)[2] == "A provider: Exa instant (current)" and _labels(hub_after)[:2] == ["Let Grounder pick", "A preset"]
-    assert reply == "Grounder: direct Exa instant"
+    assert reply == _direct_reply("Exa", *EXA_INSTANT)
     assert _saved(lists, "server") == "provider:exa" and _saved(lists, "server_mode") == "instant" and _saved(lists, "preset") is None
+    again = Host(["done"])
+    plugin.commands.search_command(again, "")
+    hub = again.asked[0][1]
+    assert _labels(hub)[:3] == ["Let Grounder pick", "A preset", "A provider: Exa instant (current)"] and hub[2]["description"] == "3 providers"
 
 
 def test_a_mode_screens_back_returns_to_the_providers_and_that_screens_back_to_the_hub(plugin, lists, signed_in, tmp_path):
-    host = Host(["providers", "provider:exa", "back", "provider:tavily", "providers", "back", "done"])
+    host = Host(["providers", "provider:exa", "back", "back", "providers", "provider:tavily"])
     plugin.commands.search_command(host, "")
     assert [question for question, _ in host.asked] == ["How should Grounder search?", "Which provider should Grounder direct search with?", "Which Exa mode?",
                                                         "Which provider should Grounder direct search with?", "How should Grounder search?",
-                                                        "Which provider should Grounder direct search with?", "How should Grounder search?"]
+                                                        "Which provider should Grounder direct search with?"]
     assert _saved(lists, "server") == "provider:tavily" and _saved(lists, "server_mode") is None  # a provider with no modes is picked in one step
 
 
 def test_the_mode_screen_marks_default_or_the_mode_that_is_current_and_a_default_search_named_as_a_mode_is_not_offered(plugin, lists, signed_in, tmp_path):
     _account(lists, **{"server": "provider:exa", "server_mode": "deep"})
-    host = Host(["providers", "provider:exa", "provider:exa", "done"])
+    host = Host(["providers", "provider:exa", "provider:exa"])
     plugin.commands.search_command(host, "")
     assert _labels(host.asked[2][1]) == ["Default", "instant", "deep (current)", "← Back"]
     assert _saved(lists, "server") == "provider:exa" and _saved(lists, "server_mode") is None  # Default keeps the provider and drops a mode pinned before
@@ -411,67 +457,73 @@ def test_the_mode_screen_marks_default_or_the_mode_that_is_current_and_a_default
     host = Host(["providers", "provider:exa", "back", "back", "done"])
     plugin.commands.search_command(host, "")
     assert _labels(host.asked[2][1])[0] == "Default (current)"
-    host = Host(["providers", "provider:parallel", "provider:parallel", "done"])
+    host = Host(["providers", "provider:parallel", "provider:parallel"])
     plugin.commands.search_command(host, "")
     assert _values(host.asked[2][1]) == ["provider:parallel", "mode:parallel:turbo", "back"]  # parallel:fast is Parallel itself
     assert _saved(lists, "server") == "provider:parallel" and _saved(lists, "server_mode") is None
 
 
 def test_the_live_apis_screen_sets_all_or_one_api_and_each_change_is_saved_at_once(plugin, lists, signed_in, tmp_path):
-    host = Host(["apis", "polymarket", "off", "espn", "always", "back", "done"])
+    host = Host(["apis", "polymarket", "off", "espn", "always", "back"])
     reply = plugin.commands.search_command(host, "")
     questions = [question for question, _ in host.asked]
     assert questions == ["How should Grounder search?", "Live-data APIs: pick one to change how Grounder uses it.", "How should Grounder use Polymarket?",
-                         "Live-data APIs: pick one to change how Grounder uses it.", "How should Grounder use ESPN?", "Live-data APIs: pick one to change how Grounder uses it.",
-                         "How should Grounder search?"]
+                         "Live-data APIs: pick one to change how Grounder uses it.", "How should Grounder use ESPN?", "Live-data APIs: pick one to change how Grounder uses it."]
     first = host.asked[1][1]
     assert _values(first) == ["__all__", "polymarket", "espn", "back"] and _labels(first) == ["Set all to Grounder decides", "Polymarket", "ESPN", "← Back"]
     assert [c.get("description") for c in first[1:3]] == ["Grounder decides", "Grounder decides"]
     one = host.asked[2][1]
     assert _values(one) == ["always", "auto", "off", "back"] and _labels(one) == ["Every call", "Grounder decides (current)", "Never", "← Back"]
-    assert one[0]["description"] == "Grounder asks Polymarket on every search, in every mode, beside the search provider."
+    assert [c["description"] for c in one[:3]] == ["on every search, in every mode", "when a question needs it", "never asked, in any mode"]
     assert [c.get("description") for c in host.asked[3][1][1:3]] == ["Never", "Grounder decides"]  # the list comes back with the new setting on its row
+    assert _labels(host.asked[3][1])[-1] == "Done"  # a setting differs from when the screen opened, so the way out now closes the menu
     assert _labels(host.asked[4][1])[0] == "Every call" and _saved(lists, "live_data_off") == ["polymarket"] and _saved(lists, "live_data_always") == ["espn"]
-    hub_after = host.asked[-1][1]
-    assert hub_after[3] == {"value": "apis", "label": "Live-data APIs", "description": "1 on Every call, 1 on Never"}  # a setting nothing is on is left out
-    assert reply == "Grounder: optimized · Live-data APIs: Polymarket never, ESPN every call"
+    assert reply == _apis_reply(every=["ESPN"], never=["Polymarket"])
+    again = Host(["done"])
+    plugin.commands.search_command(again, "")
+    assert again.asked[0][1][3] == {"value": "apis", "label": "Live-data APIs", "description": "1 on Every call, 1 on Never"}  # a setting nothing is on is left out
 
 
 def test_set_all_returns_every_api_to_grounder_decides_and_the_hub_counts_them(plugin, lists, signed_in, tmp_path):
     _account(lists, **{"live_data_off": ["polymarket"], "live_data_always": ["espn"]})
-    host = Host(["apis", "__all__", "back", "done"])
+    host = Host(["apis", "__all__", "back"])
     reply = plugin.commands.search_command(host, "")
     assert [c.get("description") for c in host.asked[1][1][1:3]] == ["Never", "Every call"] and [c.get("description") for c in host.asked[2][1][1:3]] == ["Grounder decides"] * 2
-    assert host.asked[0][1][3]["description"] == "1 on Every call, 1 on Never" and host.asked[3][1][3]["description"] == "2 on Grounder decides"
+    assert host.asked[0][1][3]["description"] == "1 on Every call, 1 on Never"
     assert _saved(lists, "live_data_off") is None and _saved(lists, "live_data_always") is None
-    assert reply == "Grounder: optimized"  # the APIs are back on Grounder decides, which the line leaves out
+    assert reply == _apis_reply()  # each one is back on Grounder decides
+    again = Host(["done"])
+    plugin.commands.search_command(again, "")
+    assert again.asked[0][1][3]["description"] == "2 on Grounder decides"
 
 
-def test_done_answers_with_one_line_of_what_is_set_now_and_only_when_something_changed(plugin, lists, signed_in, tmp_path):
-    host = Host(["presets", "preset:deep", "apis", "espn", "always", "back", "done"])
-    assert plugin.commands.search_command(host, "") == "Grounder: preset Deep · Live-data APIs: ESPN every call"
-    host = Host(["providers", "provider:tavily", "apis", "espn", "auto", "back", "done"])
-    assert plugin.commands.search_command(host, "") == "Grounder: direct Tavily"  # ESPN is Grounder decides again: left out
-    host = Host(["apis", "espn", "always", "espn", "auto", "back", "done"])  # changed, and changed back: nothing is different from when it opened
+def test_done_or_a_screen_left_as_it_was_says_nothing_changed_and_a_pick_already_set_says_unchanged(plugin, lists, signed_in, tmp_path):
+    host = Host(["apis", "espn", "always", "espn", "auto", "back", "done"])  # changed, and changed back: nothing differs from when the screen opened
     assert plugin.commands.search_command(host, "") == "Nothing changed."
+    assert _labels(host.asked[3][1])[-1] == "Done" and _labels(host.asked[5][1])[-1] == "← Back"  # so its way out is Back again, to the hub, whose Done ends it
+    assert host.asked[6][0] == "How should Grounder search?"
     _account(lists, **{})
-    host = Host(["auto", "done"])  # the pick is already what is set
-    assert plugin.commands.search_command(host, "") == "Nothing changed."
+    host = Host(["auto"])  # the pick is already what is set: it is still written, and the reply says it was
+    assert plugin.commands.search_command(host, "") == _optimized_reply(changed=False)
+    assert _puts(lists)[-1] == {"search": {"mode": "optimized"}}
 
 
-def test_the_summary_is_the_commands_reply_and_never_posted_through_post_message(plugin, signed_in, tmp_path):
+def test_what_is_set_now_is_the_commands_reply_and_never_posted_through_post_message(plugin, signed_in, tmp_path):
     # Released Hermes's classic CLI runs the command in its gateway, where ctx.post_message answers ok and shows nothing: only a reply is seen on every surface.
-    host = Host(["presets", "preset:code", "done"])
-    host.post_message = lambda text: (_ for _ in ()).throw(AssertionError("the summary is a reply, not a post"))
-    assert plugin.commands.search_command(host, "") == "Grounder: preset Code"
+    host = Host(["presets", "preset:code"])
+    host.post_message = lambda text: (_ for _ in ()).throw(AssertionError("what is set now is a reply, not a post"))
+    assert plugin.commands.search_command(host, "") == _preset_reply("Code", "Software questions")
 
 
-def test_leaving_the_hub_counts_as_done_and_cancelling_a_screen_returns_to_the_hub(plugin, signed_in, tmp_path):
-    host = Host(["presets", "preset:fast", None])  # the hub is left, not answered
-    assert plugin.commands.search_command(host, "") == "Grounder: preset Fast"
-    host = Host(["providers", None, "apis", None, "presets", None, "done"])
-    assert plugin.commands.search_command(host, "") == "Nothing changed."
-    assert [question for question, _ in host.asked].count("How should Grounder search?") == 4  # every screen, cancelled, is back at the hub
+def test_leaving_the_hub_says_nothing_changed_and_a_screen_the_user_leaves_closes_the_menu(plugin, signed_in, tmp_path):
+    host = Host(["presets", "back", None])  # back at the hub, which is left, not answered
+    assert plugin.commands.search_command(host, "") == "Nothing changed." and len(host.asked) == 3
+    for screen in ("providers", "apis", "presets"):
+        host = Host([screen, None])
+        assert plugin.commands.search_command(host, "") == "Nothing changed." and len(host.asked) == 2  # the screen, left, is the end: the hub is not asked again
+    host = Host(["providers", "provider:exa", None])  # and so is a provider's modes
+    assert plugin.commands.search_command(host, "") == "Nothing changed." and len(host.asked) == 3
+    assert not _puts(signed_in.stub)
 
 
 def test_when_nothing_can_ask_the_hub_gives_way_to_the_listing_and_saves_nothing(plugin, signed_in, tmp_path):
@@ -483,14 +535,14 @@ def test_when_nothing_can_ask_the_hub_gives_way_to_the_listing_and_saves_nothing
 
 def test_search_apis_opens_the_live_apis_screen_alone_and_ends_on_done_with_the_settings_in_words(plugin, lists, signed_in, tmp_path):
     host = Host(["polymarket", "off", "espn", "always", "back"])
-    assert plugin.commands.search_command(host, "apis") == "Live-data APIs, in every mode. Every call: ESPN. Never: Polymarket. All the others: Grounder decides."
+    assert plugin.commands.search_command(host, "apis") == _apis_reply(every=["ESPN"], never=["Polymarket"])
     assert [question for question, _ in host.asked].count("How should Grounder search?") == 0  # typed, it skips the hub
     assert _labels(host.asked[0][1])[-1] == "Done" and _saved(lists, "live_data_off") == ["polymarket"] and _saved(lists, "live_data_always") == ["espn"]
 
 
 def test_with_a_search_key_the_lists_are_read_with_no_credential_and_never_through_hermes(plugin, keyed, hermes, lists, tmp_path):
-    assert plugin.commands.search_command(Host(), "api:polymarket") == "Live-data APIs, in every mode. Every call: Polymarket. All the others: Grounder decides."
-    assert plugin.commands.search_command(Host(), "fast") == "Grounder preset Fast: Grounder will pick the best provider for it on each search."  # a preset leaves the live-data APIs alone
+    assert plugin.commands.search_command(Host(), "api:polymarket") == _apis_reply(every=["Polymarket"])
+    assert plugin.commands.search_command(Host(), "fast") == _preset_reply(*FAST, apis="1 on Grounder decides, 1 on Every call")  # a preset leaves the live-data APIs alone
     assert hermes.calls == [] and _lists_read(lists) == ["/v1/providers", "/v1/search-profiles"] * 2
     assert all("Authorization" not in r["headers"] for r in lists.requests if r["path"] != "/v1/search/settings")  # the public lists go with no credential
     assert all(r["headers"]["Authorization"] == "Bearer user-key" for r in lists.requests if r["path"] == "/v1/search/settings")  # the account's setting goes with the key
@@ -500,19 +552,18 @@ def test_with_a_search_key_the_lists_are_read_with_no_credential_and_never_throu
 # --- /search with an argument ------------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arg,saved,words", [
-    ("exa", {"server": "provider:exa", "server_mode": None, "preset": None}, "Grounder direct: Grounder will use only Exa as the search provider and return what it finds, even when that is nothing. Live-data APIs follow your live-data choices (`/search apis`)."),
-    ("EXA", {"server": "provider:exa", "server_mode": None, "preset": None}, "Grounder direct: Grounder will use only Exa as the search provider and return what it finds, even when that is nothing. Live-data APIs follow your live-data choices (`/search apis`)."),
-    ("provider:tavily", {"server": "provider:tavily", "server_mode": None, "preset": None}, "Grounder direct: Grounder will use only Tavily as the search provider and return what it finds, even when that is nothing. Live-data APIs follow your live-data choices (`/search apis`)."),
-    ("exa:instant", {"server": "provider:exa", "server_mode": "instant", "preset": None}, "Grounder direct: Grounder will use only Exa's instant mode as the search provider and return what it finds, even when that is nothing. Live-data APIs follow your live-data choices (`/search apis`)."),
-    ("mode:exa:deep", {"server": "provider:exa", "server_mode": "deep", "preset": None}, "Grounder direct: Grounder will use only Exa's deep mode as the search provider and return what it finds, even when that is nothing. Live-data APIs follow your live-data choices (`/search apis`)."),
-    ("fast", {"server": None, "server_mode": None, "preset": "fast"}, "Grounder preset Fast: Grounder will pick the best provider for it on each search."),
-    ("Fast", {"server": None, "server_mode": None, "preset": "fast"}, "Grounder preset Fast: Grounder will pick the best provider for it on each search."),
-    ("preset:deep", {"server": None, "server_mode": None, "preset": "deep"}, "Grounder preset Deep: Grounder will pick the best provider for it on each search."),
-    ("mode:fast", {"server": None, "server_mode": None, "preset": "fast"}, "Grounder preset Fast: Grounder will pick the best provider for it on each search."),  # what 0.5 called a preset
-    ("polymarket", {"server": None, "server_mode": None, "preset": None, "live_data_always": ["polymarket"]},
-     "Live-data APIs, in every mode. Every call: Polymarket. All the others: Grounder decides."),
-    ("api:polymarket", {"server": None, "server_mode": None, "preset": None, "live_data_always": ["polymarket"]},
-     "Live-data APIs, in every mode. Every call: Polymarket. All the others: Grounder decides."),
+    ("exa", {"server": "provider:exa", "server_mode": None, "preset": None}, _direct_reply("Exa", *EXA_DEFAULT)),
+    ("EXA", {"server": "provider:exa", "server_mode": None, "preset": None}, _direct_reply("Exa", *EXA_DEFAULT)),
+    ("provider:tavily", {"server": "provider:tavily", "server_mode": None, "preset": None}, _direct_reply("Tavily")),  # no modes, so no mode line
+    ("exa:instant", {"server": "provider:exa", "server_mode": "instant", "preset": None}, _direct_reply("Exa", *EXA_INSTANT)),
+    ("mode:exa:deep", {"server": "provider:exa", "server_mode": "deep", "preset": None}, _direct_reply("Exa", *EXA_DEEP)),
+    ("fast", {"server": None, "server_mode": None, "preset": "fast"}, _preset_reply(*FAST)),
+    ("Fast", {"server": None, "server_mode": None, "preset": "fast"}, _preset_reply(*FAST)),
+    ("preset:deep", {"server": None, "server_mode": None, "preset": "deep"}, _preset_reply("Deep", "Thorough research", "1 provider and 1 mode")),
+    ("mode:fast", {"server": None, "server_mode": None, "preset": "fast"}, _preset_reply(*FAST)),  # what 0.5 called a preset
+    ("cheap", {"server": None, "server_mode": None, "preset": "cheap"}, _preset_reply("Cheap", "Lowest cost")),  # Grounder does not say what it draws from
+    ("polymarket", {"server": None, "server_mode": None, "preset": None, "live_data_always": ["polymarket"]}, _apis_reply(every=["Polymarket"])),
+    ("api:polymarket", {"server": None, "server_mode": None, "preset": None, "live_data_always": ["polymarket"]}, _apis_reply(every=["Polymarket"])),
 ])
 def test_search_with_an_argument_skips_the_questions(plugin, lists, signed_in, tmp_path, arg, saved, words):
     host = Host()
@@ -533,7 +584,7 @@ def test_search_optimized_or_auto_clears_the_pick_and_keeps_the_rest(plugin, lis
     _config(tmp_path, search_backend="grounder")
     _account(lists, server="provider:exa", server_mode="deep", live_data_off=["espn"])
     host = Host()
-    assert plugin.commands.search_command(host, word) == "Grounder optimized: Grounder will pick the provider for each search from your question."
+    assert plugin.commands.search_command(host, word) == _optimized_reply(apis="1 on Grounder decides, 1 on Never")
     assert host.asked == []
     assert (_saved(lists, "server"), _saved(lists, "server_mode"), _saved(lists, "preset")) == (None, None, None)
     assert _saved(lists, "live_data_off") == ["espn"]
@@ -552,7 +603,7 @@ def test_an_id_that_is_more_than_one_kind_of_thing_needs_its_prefix(plugin, sign
     lists.providers_body = {"providers": [{"provider": "x", "display_name": "X search"}], "live_data_apis": [{"id": "x", "display_name": "X posts"}]}
     reply = plugin.commands.search_command(Host(), "x")
     assert reply.splitlines()[0] == "x is more than one thing: use `/search provider:x` or `/search api:x`." and _saved(lists, "server") is None
-    assert plugin.commands.search_command(Host(), "api:x") == "Live-data APIs, in every mode. Every call: X posts. All the others: Grounder decides."
+    assert plugin.commands.search_command(Host(), "api:x") == _apis_reply(every=["X posts"])
     assert _saved(lists, "server") is None and _saved(lists, "live_data_always") == ["x"]  # a pick the live-data API setting carries, not a server
 
 
@@ -569,24 +620,108 @@ def test_when_nothing_can_ask_search_lists_what_there_is(plugin, lists, signed_i
     assert _saved(lists, "server") is None
 
 
+# --- every row one line (ROW_WIDTH) ------------------------------------------------------------------------------------
+
+def test_every_row_of_every_card_is_one_line_whatever_is_set_and_however_long_a_name_is(plugin, signed_in, lists):
+    long = "A provider with a very long name indeed, longer than a row"
+    lists.providers_body = {"providers": [{"provider": f"p{n}", "display_name": f"{long} {n}" if n % 2 else f"P{n}", "description": "It searches a great many things, at length, and says so in a long line.",
+                                           "offerings": [{"type": f"p{n}", "mode": None, "features": ["web-search", "page-text", "academic-papers", "deep-research"]},
+                                                         {"type": f"p{n}:a_mode_with_a_long_name", "mode": "a_mode_with_a_long_name",
+                                                          "description": "A mode whose own line is far longer than any row could ever hold on one line."}]} for n in range(22)],
+                            "live_data_apis": [{"id": f"a{n}", "display_name": f"A live-data API with a long name {n}"} for n in range(25)]}
+    lists.profiles_body = {"profiles": [{"id": f"s{n}", "name": f"A preset with a long name {n}", "description": "It answers in a particular way, and this sentence says how at some length.",
+                                         "includes": ["p1", "p2:a_mode_with_a_long_name"]} for n in range(8)]}
+    assert plugin.commands.ROW_WIDTH == 56  # a numbered row is one line in the classic CLI's panel from a 66-column terminal up
+    for saved in ({}, {"preset": "s3"}, {"server": "provider:p1", "server_mode": "a_mode_with_a_long_name"},
+                  {"server": "provider:p0", "live_data_off": ["a1"], "live_data_always": ["a2", "a3"]}):
+        _account(lists, **saved)
+        host = Host(["presets", "back", "providers", "provider:p1", "back", "back", "apis", "a4", "back", "back", "done"])
+        assert plugin.commands.search_command(host, "") == "Nothing changed." and len(host.asked) == 11  # the hub, and every screen it leads to
+        for question, choices in host.asked:
+            for n, choice in enumerate(choices, 1):
+                assert len(_row_text(n, choice)) <= 56, (saved, question, _row_text(n, choice))
+        if saved.get("server_mode"):  # a name too long for its row is cut before the mark, which stays whole
+            assert host.asked[0][1][2]["label"].endswith("… (current)") and host.asked[4][1][1]["label"] == "a_mode_with_a_long_name (current)"
+    assert len(host.asked[3][1]) == 23 and len(host.asked[7][1]) == 27  # all 22 providers and all 25 APIs, each list one card
+
+
+def test_a_row_says_the_longest_note_that_fits_then_one_cut_at_a_word_then_none(plugin):
+    row = lambda **given: plugin.commands._card([{"value": "v", **given}])[0]
+    assert row(label="Short", notes=("n" * 60, "this one fits", "so")) == {"value": "v", "label": "Short", "description": "this one fits"}
+    cut = row(label="Short", notes=("one two three four five six seven eight nine ten eleven twelve thirteen",))
+    assert cut["description"].endswith("…") and " " in cut["description"] and not cut["description"].endswith(" …") and len(_row_text(1, cut)) <= 56
+    assert row(label="L" * 44, notes=("a note with no room left for it",)) == {"value": "v", "label": "L" * 44}  # a few characters of a note say nothing
+    assert row(label="Plain") == {"value": "v", "label": "Plain"} and row(label="Plain", notes=("",)) == {"value": "v", "label": "Plain"}
+    marked = row(label="N" * 70, tail=" (current)")
+    assert marked["label"].endswith("… (current)") and len(_row_text(1, marked)) <= 56
+    tenth = plugin.commands._card([{"value": str(n), "label": "L" * 60} for n in range(10)])
+    assert [len(_row_text(n, choice)) for n, choice in enumerate(tenth, 1)] == [56] * 10  # a two-digit number leaves a row one character less
+
+
+def test_the_hubs_live_data_row_counts_in_fewer_words_when_the_full_ones_do_not_fit(plugin):
+    counts = plugin.commands._apis_counts
+    states = {**{f"a{n}": "auto" for n in range(23)}, "x": "always", "y": "off"}
+    assert counts(states) == "23 on Grounder decides, 1 on Every call, 1 on Never" and counts(states, brief=True) == "23 auto, 1 every call, 1 never"
+    assert plugin.commands._card([{"value": "apis", "label": "Live-data APIs", "notes": (counts(states), counts(states, brief=True))}]) == [
+        {"value": "apis", "label": "Live-data APIs", "description": "23 auto, 1 every call, 1 never"}]
+
+
+def test_a_providers_row_says_what_its_standard_search_returns_and_how_many_modes_it_has(plugin, signed_in, lists):
+    lists.providers_body = {"providers": [
+        {"provider": "one", "display_name": "One", "offerings": [{"type": "one", "mode": None, "features": ["web-search", "page-text"]}, {"type": "one:m", "mode": "m"}]},
+        {"provider": "two", "display_name": "Two", "offerings": [{"type": "two", "mode": None, "features": ["encyclopedia"]}]},
+        {"provider": "three", "display_name": "Three", "offerings": [{"type": "three", "mode": None}, {"type": "three:m", "mode": "m"}, {"type": "three:n", "mode": "n"}]}], "live_data_apis": []}
+    host = Host(["providers", "back", "done"])
+    plugin.commands.search_command(host, "")
+    assert [c.get("description") for c in host.asked[1][1][:3]] == ["web search, page text · 1 mode", "encyclopedia", "2 modes"]
+
+
+def test_the_reply_to_a_pick_names_the_provider_its_mode_what_it_returns_what_narrows_it_and_where_it_is_saved(plugin, signed_in, lists):
+    lists.providers_body = {"providers": [{"provider": "one", "display_name": "One", "description": "One's index.", "offerings": [
+        {"type": "one", "mode": None, "description": "Its standard search.", "features": ["web-search"], "inputs": ["query", "days", "domains", "urls"]},
+        {"type": "one:quick", "mode": "quick", "description": "Cache only.", "features": ["web-search", "page-text"], "inputs": ["query", "language"]}]}],
+        "live_data_apis": PROVIDERS["live_data_apis"]}
+    assert plugin.commands.search_command(Host(), "one:quick") == "\n".join([
+        "✓ Search switched: Grounder direct", "  Provider: One, the only search provider called", "  Mode: quick · Cache only", "  Capabilities: web search, page text",
+        "  Filters: language", "  Results: what One finds is what you get, even when that is nothing", "  Live-data APIs: 2 on Grounder decides (`/search apis`)",
+        "  (saved to your Grounder account; it applies wherever that account searches)"])
+    reply = plugin.commands.search_command(Host(["providers", "provider:one", "provider:one"]), "")  # the menu answers the same block: Default is its standard search
+    assert reply.splitlines()[:5] == ["✓ Search switched: Grounder direct", "  Provider: One, the only search provider called", "  Mode: Default · Its standard search",
+                                      "  Capabilities: web search", "  Filters: date window, sites"]  # the query and the pages to read are not filters
+
+
 # --- a surface that caps a card ----------------------------------------------------------------------------------------
 
 def _many(n, prefix="p"):
     return {"providers": [{"provider": f"{prefix}{i}", "display_name": f"P{i}"} for i in range(n)], "live_data_apis": []}
 
 
-def test_a_long_list_is_a_page_of_eight_then_more_with_its_range_then_back_and_back_on_a_later_page_goes_to_the_page_before(plugin, signed_in, lists, tmp_path):
+def test_a_long_list_is_one_view_with_every_row_then_back_and_no_more_row(plugin, signed_in, lists, tmp_path):
     lists.providers_body = _many(22)
-    host = Host(["providers", "__more__", "__more__", "back", "back", "provider:p5", "done"])
-    assert plugin.commands.search_command(host, "") == "Grounder: direct P5"
-    cards = [(question, choices) for question, choices in host.asked[1:6]]
-    assert [len(choices) for _, choices in cards] == [10, 10, 7, 10, 10]  # eight items, More and Back; the last page has 6 items and Back
-    first, second, third = (_labels(choices) for _, choices in cards[:3])
-    assert first == [f"P{i}" for i in range(8)] + ["More: 9–16 of 22", "← Back"]
-    assert second == [f"P{i}" for i in range(8, 16)] + ["More: 17–22 of 22", "← Back: 1–8 of 22"]
-    assert third == [f"P{i}" for i in range(16, 22)] + ["← Back: 9–16 of 22"]  # no More on the last page
-    # Back on page 3 went to page 2 and Back on page 2 to page 1; Back on page 1 would have left the list.
-    assert _labels(cards[3][1])[0] == "P8" and _labels(cards[4][1])[0] == "P0"
+    host = Host(["providers", "provider:p5"])
+    assert plugin.commands.search_command(host, "") == _direct_reply("P5", apis=None)
+    (question, choices), = host.asked[1:]
+    assert question == "Which provider should Grounder direct search with?"
+    assert _labels(choices) == [f"P{i}" for i in range(22)] + ["← Back"]  # all 22 on one card: no More row, and Back leaves the list
+    assert _saved(lists, "server") == "provider:p5"
+    _account(lists, **{"server": "provider:p19"})
+    host = Host(["providers", "back", "done"])
+    plugin.commands.search_command(host, "")
+    assert _labels(host.asked[1][1])[19] == "P19 (current)" and len(host.asked[1][1]) == 23  # the one set now is marked where it stands
+
+
+def test_where_a_surface_caps_a_card_a_long_list_is_pages_with_more_and_its_range_and_back_on_a_later_page_goes_to_the_page_before(plugin, signed_in, lists, tmp_path):
+    lists.providers_body = _many(22)
+    host = Host(["providers", "__more__", "__more__", "__more__", "back", "back", "back", "provider:p5"], surface="whatsapp_cloud")
+    assert plugin.commands.search_command(host, "") == _direct_reply("P5", apis=None)
+    cards = [(question, choices) for question, choices in host.asked[1:8]]
+    assert [len(choices) for _, choices in cards] == [9, 9, 9, 2, 9, 9, 9]  # seven items, More and Back; the last page has 1 item and Back
+    first, second, third, fourth = (_labels(choices) for _, choices in cards[:4])
+    assert first == [f"P{i}" for i in range(7)] + ["More: 8–14 of 22", "← Back"]
+    assert second == [f"P{i}" for i in range(7, 14)] + ["More: 15–21 of 22", "← Back: 1–7 of 22"]
+    assert third[-2:] == ["More: 22–22 of 22", "← Back: 8–14 of 22"] and fourth == ["P21", "← Back: 15–21 of 22"]  # no More on the last page
+    # Back on page 4 went to page 3, then to page 2, then to page 1; Back on page 1 would have left the list.
+    assert [_labels(choices)[0] for _, choices in cards[4:]] == ["P14", "P7", "P0"]
     assert all(question == "Which provider should Grounder direct search with?" for question, _ in cards)
     assert _saved(lists, "server") == "provider:p5"
 
@@ -598,33 +733,32 @@ def test_back_on_the_first_page_leaves_the_list_for_the_hub(plugin, signed_in, l
     assert [question for question, _ in host.asked] == ["How should Grounder search?", "Which provider should Grounder direct search with?", "How should Grounder search?"]
 
 
-def test_a_list_opens_on_the_page_that_holds_the_current_choice_and_marks_it(plugin, signed_in, lists, tmp_path):
+def test_a_paged_list_opens_on_the_page_that_holds_the_current_choice_and_marks_it(plugin, signed_in, lists, tmp_path):
     lists.providers_body = _many(22)
     _account(lists, **{"server": "provider:p19"})
-    host = Host(["providers", "back", "back", "back", "done"])
+    host = Host(["providers", "back", "back", "back", "done"], surface="whatsapp_cloud")
     plugin.commands.search_command(host, "")
     labels = _labels(host.asked[1][1])  # the third page, where p19 is
-    assert labels[:6] == [f"P{i}" for i in range(16, 19)] + ["P19 (current)", "P20", "P21"] and labels[-1] == "← Back: 9–16 of 22" and "More: 17–22 of 22" not in labels
-    assert [_labels(choices)[0] for _, choices in host.asked[2:4]] == ["P8", "P0"]  # Back on a later page is the page before
+    assert labels[:7] == [f"P{i}" for i in range(14, 19)] + ["P19 (current)", "P20"] and labels[-2:] == ["More: 22–22 of 22", "← Back: 8–14 of 22"]
+    assert [_labels(choices)[0] for _, choices in host.asked[2:4]] == ["P7", "P0"]  # Back on a later page is the page before
     lists.providers_body = {"providers": [{"provider": "exa", "display_name": "Exa", "offerings": [{"type": "exa", "mode": None}] + [
         {"type": f"exa:m{i}", "mode": f"m{i}", "description": f"Mode {i}"} for i in range(16)]}], "live_data_apis": []}
     _account(lists, **{"server": "provider:exa", "server_mode": "m12"})
-    host = Host(["providers", "provider:exa", "back", "back", "back", "done"])
+    host = Host(["providers", "provider:exa", "back", "back", "back", "back", "done"], surface="whatsapp_cloud")
     plugin.commands.search_command(host, "")
-    modes = _labels(host.asked[2][1])  # m12 is on the second page of the modes, so that is where the modes open
-    assert "m12 (current)" in modes and modes[0] == "Default" and modes[-1] == "← Back: 1–8 of 16" and "More: 17–16 of 16" not in modes
+    modes = _labels(host.asked[2][1])  # six modes a page beside Default, More and Back: m12 is on the third page, so that is where the modes open
+    assert "m12 (current)" in modes and modes[0] == "Default" and modes[-1] == "← Back: 7–12 of 16" and not any(label.startswith("More") for label in modes)
 
 
-def test_a_providers_modes_are_two_pages_of_eight_with_default_on_each_and_their_own_descriptions(plugin, signed_in, lists, tmp_path):
+def test_a_providers_modes_are_one_view_under_default_with_their_own_descriptions(plugin, signed_in, lists, tmp_path):
     lists.providers_body = {"providers": [{"provider": "exa", "display_name": "Exa", "description": "Exa the engine", "offerings": [
         {"type": "exa", "mode": None, "description": "Exa's standard search"}] + [{"type": f"exa:m{i}", "mode": f"m{i}", "description": f"Mode {i} line"} for i in range(16)]}],
         "live_data_apis": []}
-    host = Host(["providers", "provider:exa", "__more__", "mode:exa:m10", "done"])
-    assert plugin.commands.search_command(host, "") == "Grounder: direct Exa m10"
-    first, second = host.asked[2][1], host.asked[3][1]
-    assert _labels(first) == ["Default"] + [f"m{i}" for i in range(8)] + ["More: 9–16 of 16", "← Back"]  # Default is on every page, so each is 11 rows
-    assert _labels(second) == ["Default"] + [f"m{i}" for i in range(8, 16)] + ["← Back: 1–8 of 16"]
-    assert [c["description"] for c in first[:3]] == ["Exa's standard search", "Mode 0 line", "Mode 1 line"]  # the API's own lines, the default's included
+    host = Host(["providers", "provider:exa", "mode:exa:m10"])
+    assert plugin.commands.search_command(host, "") == _direct_reply("Exa", "Mode: m10 · Mode 10 line", apis=None)
+    modes = host.asked[2][1]
+    assert _labels(modes) == ["Default"] + [f"m{i}" for i in range(16)] + ["← Back"]  # Default first, then all sixteen: one card
+    assert [c["description"] for c in modes[:3]] == ["Exa's standard search", "Mode 0 line", "Mode 1 line"]  # the API's own lines, the default's included
 
 
 def test_a_mode_with_no_description_from_an_older_api_is_made_from_its_note_or_its_features(plugin, signed_in, lists):
@@ -645,31 +779,35 @@ def test_a_card_a_surface_caps_holds_its_cap_counting_the_other_row_hermes_adds(
     # Discord's buttons stop at 25 and Hermes keeps one for Other; WhatsApp's list takes 10 rows and Hermes appends Other after slicing to 10, so a card holds 9.
     assert plugin.commands.SURFACE_CHOICE_CAPS == {"discord": 24, "whatsapp_cloud": 9}
     lists.providers_body = _many(30)
-    host = Host(["providers", "__more__", "__more__", "__more__", "provider:p25", "done"], surface="whatsapp_cloud")
-    assert plugin.commands.search_command(host, "") == "Grounder: direct P25"
+    host = Host(["providers", "__more__", "__more__", "__more__", "provider:p25"], surface="whatsapp_cloud")
+    assert plugin.commands.search_command(host, "") == _direct_reply("P25", apis=None)
     cards = [[c["value"] for c in choices] for _, choices in host.asked[1:5]]
     assert all(len(card) <= 9 for card in cards) and [len(card) for card in cards] == [9, 9, 9, 9]  # seven items, More and Back
     assert cards[0][-2:] == ["__more__", "back"] and "provider:p21" in cards[3] and _saved(lists, "server") == "provider:p25"
     _account(lists, **{})
-    host = Host(["providers", "provider:p3", "done"], surface="discord")
+    host = Host(["providers", "provider:p3"], surface="discord")
     plugin.commands.search_command(host, "")
-    assert len(host.asked[1][1]) == 10  # Discord holds 24: eight items, More and Back
+    assert len(host.asked[1][1]) == 24 and _values(host.asked[1][1])[-2:] == ["__more__", "back"]  # 30 do not fit Discord's 24: twenty-two items, More and Back
+    lists.providers_body = _many(22)
+    host = Host(["providers", "provider:p3"], surface="discord")
+    plugin.commands.search_command(host, "")
+    assert len(host.asked[1][1]) == 23 and "__more__" not in _values(host.asked[1][1])  # 22 and Back do: one card, as everywhere a card is not capped
 
 
-def test_every_page_of_the_live_data_apis_screen_has_set_all_and_back_and_the_list_returns_to_its_page(plugin, signed_in, lists, tmp_path):
+def test_the_live_data_apis_are_one_view_and_where_they_are_paged_every_page_has_set_all_and_back_and_the_list_returns_to_its_page(plugin, signed_in, lists, tmp_path):
     lists.providers_body = {"providers": [{"provider": "exa", "display_name": "Exa"}], "live_data_apis": [{"id": f"a{n}", "display_name": f"A{n}"} for n in range(20)]}
-    host = Host(["apis", "__more__", "__more__", "a17", "always", "back", "back", "back", "done"])
-    assert plugin.commands.search_command(host, "") == "Grounder: optimized · Live-data APIs: A17 every call"
-    cards = [[c["value"] for c in choices] for _, choices in host.asked[1:4]]
-    assert [len(card) for card in cards] == [11, 11, 6]  # Set all, then 8, 8 and 4 APIs, with More and Back (the last page has no More)
-    assert all(card[0] == "__all__" and card[-1] == "back" for card in cards)  # Set all first and Back last, on every page
-    assert [("__more__" in card) for card in cards] == [True, True, False]
-    assert host.asked[5][0] == "Live-data APIs: pick one to change how Grounder uses it." and host.asked[5][1][1]["value"] == "a16"  # asked again on the page it was on
-    assert _labels(host.asked[3][1])[-1] == "← Back: 9–16 of 20" and _saved(lists, "live_data_always") == ["a17"] and _saved(lists, "live_data_off") is None
-    # WhatsApp: Set all, six APIs, More and Back are nine.
-    host = Host(["apis", "back", "done"], surface="whatsapp_cloud")
+    host = Host(["apis", "back", "done"])
     plugin.commands.search_command(host, "")
-    assert len(host.asked[1][1]) == 9
+    assert _values(host.asked[1][1]) == ["__all__"] + [f"a{n}" for n in range(20)] + ["back"]  # Set all, all twenty and Back: one card
+    # WhatsApp holds nine: Set all, six APIs, More and Back.
+    host = Host(["apis", "__more__", "__more__", "a17", "always", "back", "back", "back"], surface="whatsapp_cloud")
+    assert plugin.commands.search_command(host, "") == _apis_reply(every=["A17"])
+    cards = [[c["value"] for c in choices] for _, choices in host.asked[1:4]]
+    assert [len(card) for card in cards] == [9, 9, 9]
+    assert all(card[0] == "__all__" and card[-2:] == ["__more__", "back"] for card in cards)  # Set all first, then More and Back last, on every page but the last
+    assert host.asked[5][0] == "Live-data APIs: pick one to change how Grounder uses it." and host.asked[5][1][1]["value"] == "a12"  # asked again on the page it was on
+    assert _labels(host.asked[3][1])[-1] == "← Back: 7–12 of 20" and _saved(lists, "live_data_always") == ["a17"] and _saved(lists, "live_data_off") is None
+    assert _labels(host.asked[1][1])[-1] == "← Back" and _labels(host.asked[7][1])[-1] == "Done"  # the first page's way out, before a change and after one
 
 
 # --- the form, where a Hermes offers ctx.ask_form -----------------------------------------------------------------------
@@ -717,10 +855,10 @@ def test_a_hermes_with_ask_form_gets_two_pages_the_presets_in_a_row_the_modes_un
 
 def test_what_the_form_answers_is_saved_each_live_api_by_its_one_setting(plugin, lists, signed_in, tmp_path):
     host = Host(form={"pick": "mode:exa:deep", "apis": ["polymarket:auto", "espn:off"]})
-    assert plugin.commands.search_command(host, "") == "Grounder direct: Grounder will use only Exa's deep mode as the search provider and return what it finds, even when that is nothing. Live-data APIs follow your live-data choices (`/search apis`). Live-data APIs, in every mode. Never: ESPN. All the others: Grounder decides."
+    assert plugin.commands.search_command(host, "") == _direct_reply("Exa", *EXA_DEEP, apis="1 on Grounder decides, 1 on Never") + "\n" + _apis_reply(never=["ESPN"])
     assert (_saved(lists, "server"), _saved(lists, "server_mode"), _saved(lists, "preset"), _saved(lists, "live_data_off")) == ("provider:exa", "deep", None, ["espn"])
     assert plugin.commands.search_command(Host(form={"pick": "auto", "apis": ["polymarket:always", "espn:auto"]}), "") == (
-        "Grounder optimized: Grounder will pick the provider for each search from your question. Live-data APIs, in every mode. Every call: Polymarket. All the others: Grounder decides.")
+        _optimized_reply(apis="1 on Grounder decides, 1 on Every call") + "\n" + _apis_reply(every=["Polymarket"]))
     assert _saved(lists, "server") is None and _saved(lists, "live_data_off") is None  # nothing set to Never: the key is not kept
     assert _saved(lists, "live_data_always") == ["polymarket"]
     # An API with none of its settings checked, or two of them, is left as it is (a form that did not hold the one-per-row rule).
@@ -732,13 +870,12 @@ def test_a_form_that_changes_only_the_live_data_page_leaves_the_pick_it_cannot_s
     for saved in ({"server": "provider:defunct", "server_mode": "x"}, {"preset": "gone"}):
         _account(lists, **saved)
         host = Host(form={"pick": "auto", "apis": ["polymarket:auto", "espn:off"]})  # page one answers as it started: on Grounder optimized, the nearest row
-        assert plugin.commands.search_command(host, "") == "Live-data APIs, in every mode. Never: ESPN. All the others: Grounder decides."
+        assert plugin.commands.search_command(host, "") == _apis_reply(never=["ESPN"])
         assert {k: _saved(lists, k) for k in saved} == saved and _saved(lists, "live_data_off") == ["espn"]
         assert _puts(lists)[-1] == {"specialized": {"espn": {"use": "off"}}}  # only the live-data page was written: the pick it could not show is not sent
     _account(lists, **{"preset": "fast"})
     assert plugin.commands.search_command(Host(form={"pick": "preset:fast", "apis": ["polymarket:auto", "espn:auto"]}), "") == "Nothing changed."
-    assert plugin.commands.search_command(Host(form={"pick": "auto", "apis": ["polymarket:auto", "espn:auto"]}), "") == (
-        "Grounder optimized: Grounder will pick the provider for each search from your question.")
+    assert plugin.commands.search_command(Host(form={"pick": "auto", "apis": ["polymarket:auto", "espn:auto"]}), "") == _optimized_reply()
 
 
 def test_a_form_of_one_page_has_no_tab_hint(plugin, signed_in, lists, tmp_path):
@@ -762,15 +899,15 @@ def test_an_api_that_is_new_to_grounder_is_grounder_decides_in_the_form_until_th
 def test_a_cancelled_form_changes_nothing_and_search_apis_is_the_second_page_alone(plugin, lists, signed_in, tmp_path):
     assert plugin.commands.search_command(Host(form=None), "") == "Nothing changed." and not (tmp_path / "config.yaml").exists()
     host = Host(form={"apis": ["espn:always", "polymarket:off"]})
-    assert plugin.commands.search_command(host, "apis") == "Live-data APIs, in every mode. Every call: ESPN. Never: Polymarket. All the others: Grounder decides."
+    assert plugin.commands.search_command(host, "apis") == _apis_reply(every=["ESPN"], never=["Polymarket"])
     assert [page["id"] for page in host.pages] == ["apis"] and host.pages[0]["optional"] is False
     assert _saved(lists, "live_data_off") == ["polymarket"] and _saved(lists, "live_data_always") == ["espn"]
 
 
 def test_a_hermes_whose_form_is_not_available_here_asks_in_the_hub(plugin, signed_in, tmp_path):
-    host = Host(["presets", "preset:fast", "done"], form=None)
+    host = Host(["presets", "preset:fast"], form=None)
     host.supports_form = lambda: False
-    assert plugin.commands.search_command(host, "") == "Grounder: preset Fast" and host.pages is None and len(host.asked) == 3
+    assert plugin.commands.search_command(host, "") == _preset_reply(*FAST) and host.pages is None and len(host.asked) == 2
 
 
 # --- the lists come from the API, when asked -------------------------------------------------------------------------------
@@ -813,11 +950,11 @@ def test_a_sign_in_hermes_refuses_is_said_not_raised(plugin, hermes, lists):
     assert plugin.commands.search_command(Host(), "") == "Could not load Grounder's list of providers: Grounder sign-in failed: grounder:grounder: GROUNDER_OAUTH_CLIENT_ID is not set."
 
 
-def test_on_slack_the_hub_runs_with_no_form_and_a_long_list_is_pages_of_eight(plugin, signed_in, lists, tmp_path):
+def test_on_slack_the_hub_runs_with_no_form_and_a_long_list_is_one_card(plugin, signed_in, lists, tmp_path):
     lists.providers_body = {"providers": [{"provider": f"p{n}", "display_name": f"P{n}"} for n in range(22)], "live_data_apis": []}
-    host = Host(["providers", "__more__", "__more__", "provider:p21", "done"], surface="slack")  # `/hermes search`: Slack's own /search is not this command
-    assert plugin.commands.search_command(host, "") == "Grounder: direct P21"
-    assert [len(choices) for _, choices in host.asked] == [4, 10, 10, 7, 4]
+    host = Host(["providers", "provider:p21"], surface="slack")  # `/hermes search`: Slack's own /search is not this command
+    assert plugin.commands.search_command(host, "") == _direct_reply("P21", apis=None)
+    assert [len(choices) for _, choices in host.asked] == [4, 23]
     assert _saved(lists, "server") == "provider:p21"
 
 
@@ -842,9 +979,8 @@ _OK = (200, {"query": "q", "results": [{"title": "T", "url": "https://example.co
 
 def test_the_words_everywhere_say_only_that_provider_and_that_what_it_finds_is_what_you_get_even_when_that_is_nothing(plugin, signed_in, lists):
     assert plugin.commands.PIN_NOTE == "The only search provider called."
-    host = Host()
-    plugin.commands.search_command(host, "exa:instant")
-    assert "only Exa's instant mode as the search provider and return what it finds, even when that is nothing." in plugin.commands.search_command(Host(), "exa:instant")
+    reply = plugin.commands.search_command(Host(), "exa:instant")
+    assert "Provider: Exa, the only search provider called" in reply and "Results: what Exa finds is what you get, even when that is nothing" in reply
     docs = {name: (PLUGIN_DIR / name).read_text() for name in ("README.md", "after-install.md")}
     docs["plugin.yaml"] = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())["description"]
     for name, text in docs.items():
@@ -881,18 +1017,22 @@ def test_every_document_and_docstring_names_the_three_modes_and_none_says_the_ol
 
 
 def test_the_screens_that_ask_for_a_provider_and_a_mode_say_which_mode_they_are_choosing(plugin, signed_in, tmp_path):
-    host = Host(["providers", "provider:exa", "mode:exa:deep", "done"])
-    plugin.commands.search_command(host, "")
-    assert [question for question, _ in host.asked] == ["How should Grounder search?", "Which provider should Grounder direct search with?", "Which Exa mode?",
-                                                        "How should Grounder search?"]
-    assert host.asked[0][1][2]["label"] == "A provider" and host.asked[3][1][2]["label"] == "A provider: Exa deep (current)"
+    host = Host(["providers", "provider:exa", "mode:exa:deep"])
+    assert plugin.commands.search_command(host, "").splitlines()[0] == "✓ Search switched: Grounder direct"
+    assert [question for question, _ in host.asked] == ["How should Grounder search?", "Which provider should Grounder direct search with?", "Which Exa mode?"]
+    again = Host(["done"])
+    plugin.commands.search_command(again, "")
+    assert host.asked[0][1][2]["label"] == "A provider" and again.asked[0][1][2]["label"] == "A provider: Exa deep (current)"
 
 
-def test_a_pick_words_still_say_grounder_direct_for_a_mode_or_provider_grounder_no_longer_lists(plugin, signed_in):
+def test_a_picks_words_still_say_grounder_direct_for_a_mode_or_provider_grounder_no_longer_lists(plugin, signed_in):
     catalog, _ = plugin.commands._catalog()
-    assert plugin.commands._pick_words("mode:exa:gone", catalog) == "Grounder direct: Grounder will use only exa:gone as the search provider and return what it finds, even when that is nothing. Live-data APIs follow your live-data choices (`/search apis`)."
-    assert plugin.commands._pick_words("provider:gone", catalog) == "Grounder direct: Grounder will use only gone as the search provider and return what it finds, even when that is nothing. Live-data APIs follow your live-data choices (`/search apis`)."
-    assert plugin.commands._pick_words("preset:gone", catalog) == "Grounder preset gone: Grounder will pick the best provider for it on each search."
+    saved = plugin.provider.read_account()[0]
+    lines = lambda value: plugin.commands._switched(saved, catalog, value).splitlines()
+    assert lines("mode:exa:gone")[:3] == ["✓ Search switched: Grounder direct", "  Provider: exa:gone, the only search provider called",
+                                          "  Results: what exa:gone finds is what you get, even when that is nothing"]
+    assert lines("provider:gone")[:2] == ["✓ Search switched: Grounder direct", "  Provider: gone, the only search provider called"]
+    assert lines("preset:gone")[:3] == ["✓ Search switched: Grounder preset", "  Preset: gone", "  Provider: Grounder picks the best provider for this preset"]
 
 
 # --- a live-data API: Every call, Never or Grounder decides, in every mode -------------------------------------------------------
@@ -903,10 +1043,9 @@ _SETTINGS = {"always": {"use": "always"}, "off": {"use": "off"}, "auto": None}
 
 def test_search_apis_with_arguments_sets_apis_without_the_page_and_saves_every_pair_or_none(plugin, lists, signed_in, tmp_path):
     host = Host()
-    assert plugin.commands.search_command(host, "apis espn=every polymarket=never") == (
-        "Live-data APIs, in every mode. Every call: ESPN. Never: Polymarket. All the others: Grounder decides.")
+    assert plugin.commands.search_command(host, "apis espn=every polymarket=never") == _apis_reply(every=["ESPN"], never=["Polymarket"])
     assert _saved(lists, "live_data_always") == ["espn"] and _saved(lists, "live_data_off") == ["polymarket"] and host.asked == []
-    assert plugin.commands.search_command(host, "apis ESPN:auto") == "Live-data APIs, in every mode. Never: Polymarket. All the others: Grounder decides."  # a name, a colon, any case
+    assert plugin.commands.search_command(host, "apis ESPN:auto") == _apis_reply(never=["Polymarket"])  # a name, a colon, any case
     assert _saved(lists, "live_data_always") is None
     before = (_saved(lists, "live_data_always"), _saved(lists, "live_data_off"))
     reply = plugin.commands.search_command(host, "apis espn=every nonesuch=never")
@@ -938,14 +1077,16 @@ def test_the_second_page_hint_names_the_keys_that_set_a_choice_and_every_word_sa
 # --- the account's setting: read when /search opens, written with every choice, shared with grounder.net's Routing page ----------------
 
 def test_the_hub_reads_the_account_once_when_it_opens_and_writes_each_choice_as_one_write_answered_by_that_write(plugin, signed_in, lists, tmp_path):
-    host = Host(["presets", "preset:fast", "providers", "provider:exa", "mode:exa:instant", "apis", "espn", "always", "back", "done"])
-    assert plugin.commands.search_command(host, "") == "Grounder: direct Exa instant · Live-data APIs: ESPN every call"
+    host = Host(["apis", "espn", "always", "polymarket", "off", "back"])
+    assert plugin.commands.search_command(host, "") == _apis_reply(every=["ESPN"], never=["Polymarket"])
     assert len(_reads(lists)) == 1  # the screens after the first use what each write answered, so no turn reads the account again
-    assert _puts(lists) == [{"search": {"mode": "preset", "profile": "fast"}},
-                            {"search": {"mode": "direct", "requested_provider": "exa", "provider_mode": "instant", "fallback": False}},
-                            {"specialized": {"espn": {"use": "always"}}}]
+    assert _puts(lists) == [{"specialized": {"espn": {"use": "always"}}}, {"specialized": {"polymarket": {"use": "off"}}}]
+    host = Host(["providers", "provider:exa", "mode:exa:instant"])  # a pick ends the menu, so it is the one write of its run
+    plugin.commands.search_command(host, "")
+    assert len(_reads(lists)) == 2 and _puts(lists)[2:] == [{"search": {"mode": "direct", "requested_provider": "exa", "provider_mode": "instant", "fallback": False}}]
     # What the site's Routing page reads now is what was chosen here, and nothing was kept in Hermes's own config.
-    assert lists.saved_search == {"mode": "direct", "profile": None, "requested_provider": "exa", "provider_mode": "instant", "fallback": False} and lists.saved_live == {"espn": "always"}
+    assert lists.saved_search == {"mode": "direct", "profile": None, "requested_provider": "exa", "provider_mode": "instant", "fallback": False}
+    assert lists.saved_live == {"espn": "always", "polymarket": "off"}
     assert not (tmp_path / "config.yaml").exists()
 
 
@@ -996,6 +1137,7 @@ def test_a_change_made_on_the_site_is_what_the_hub_shows_the_next_time_it_opens_
     assert plugin.commands.search_command(second, "") == "Nothing changed."
     rows = second.asked[0][1]
     assert _labels(rows)[:3] == ["Let Grounder pick", "A preset: Deep (current)", "A provider"] and rows[3]["description"] == "1 on Grounder decides, 1 on Never"
+    assert rows[1]["description"] == "6 presets" and rows[2]["description"] == "Exa, Tavily and Parallel"  # the row for what is set counts; the others name
     _account(lists, server="provider:exa", server_mode="instant")
     third = Host(["done"])
     plugin.commands.search_command(third, "")
@@ -1012,19 +1154,17 @@ def test_a_form_writes_its_pick_and_its_live_data_page_in_one_write(plugin, sign
 
 
 def test_a_direct_pick_saves_its_fallback_off_and_a_fallback_the_account_saved_for_the_same_provider_stays_on(plugin, signed_in, lists):
-    assert plugin.commands.search_command(Host(), "exa") == ("Grounder direct: Grounder will use only Exa as the search provider and return what it finds, even when that is nothing. "
-                                                           "Live-data APIs follow your live-data choices (`/search apis`).")
+    assert plugin.commands.search_command(Host(), "exa") == _direct_reply("Exa", *EXA_DEFAULT)
     assert _puts(lists)[-1]["search"]["fallback"] is False
     _account(lists, server="provider:exa", fallback=True)  # saved on the Routing page: when Exa finds nothing, Grounder picks one other
     reply = plugin.commands.search_command(Host(), "exa:deep")
     assert _puts(lists)[-1]["search"] == {"mode": "direct", "requested_provider": "exa", "provider_mode": "deep", "fallback": True}
-    assert reply == ("Grounder direct: Grounder will use only Exa's deep mode as the search provider; if it finds nothing, Grounder picks one other. "
-                     "Live-data APIs follow your live-data choices (`/search apis`).")
+    assert reply == _direct_reply("Exa", *EXA_DEEP, fallback=True)
     plugin.commands.search_command(Host(), "tavily")  # another provider is a new choice: the fallback is off
     assert _puts(lists)[-1]["search"]["fallback"] is False and lists.saved_search["fallback"] is False
     _account(lists, server="provider:exa", fallback=True)
-    host = Host(["apis", "espn", "always", "back", "done"])
-    assert plugin.commands.search_command(host, "") == "Grounder: direct Exa (if it finds nothing, Grounder picks one other) · Live-data APIs: ESPN every call"
+    host = Host(["providers", "provider:exa", "provider:exa"])  # the menu says so too, and that the pick was what the account had
+    assert plugin.commands.search_command(host, "") == _direct_reply("Exa", *EXA_DEFAULT, fallback=True, changed=False)
 
 
 def test_a_live_data_api_the_account_saved_and_grounders_list_does_not_show_is_left_as_it_is(plugin, signed_in, lists):
@@ -1054,9 +1194,10 @@ def test_a_write_the_account_refuses_says_grounders_own_words_and_changes_nothin
     refusal = "Exa is your search provider and is turned off: turn it on, or choose another provider for your searches first."
     assert plugin.commands.search_command(Host(), "exa") == f"Could not save that to your Grounder account, so nothing changed: {refusal}"
     assert _saved(lists, "server") is None and not (tmp_path / "config.yaml").exists()
-    # In the hub the failed write ends the menu with its reason; the choice made before it was written, and the view is what Grounder answered last.
-    host = Host(["presets", "preset:fast", "providers", "provider:exa", "mode:exa:deep", "done"])
-    assert plugin.commands.search_command(host, "").endswith(refusal)
+    # In the hub the failed write ends the menu with its reason, and what was saved before it stays.
+    assert plugin.commands.search_command(Host(["presets", "preset:fast"]), "") == _preset_reply(*FAST)
+    host = Host(["providers", "provider:exa", "mode:exa:deep"])
+    assert plugin.commands.search_command(host, "") == f"Could not save that to your Grounder account, so nothing changed: {refusal}" and len(host.asked) == 3
     assert _saved(lists, "preset") == "fast" and _saved(lists, "server") is None
     # A failure that is not a 400 says what it is.
     lists.settings_script = [(200, lists.settings_answer()), (503, {"error": {"code": "unavailable", "message": "later"}})]
