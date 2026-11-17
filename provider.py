@@ -16,7 +16,8 @@ page's own ``error`` for an extract. A failure the user must act on (a limit rea
 sign-in Grounder no longer accepts) is reported as a result that carries Grounder's message (``_notice``),
 because Hermes serves a failed search from its keyless ring of other vendors' results, and the message would never reach the user.
 
-A result Grounder served asks the model to cite what it uses by number, and an
+A result Grounder served says so in one line (``served_by``: the mode, who answered, and how
+many of its results the model is shown) and asks the model to cite what it uses by number, and an
 answer ends with the Sources list of what it cites and, when it searched, the line
 Grounder's card shows (``after_tool`` and ``after_answer``, Hermes's result and reply
 hooks). Both work on what is already on this machine and send nothing. A
@@ -88,7 +89,7 @@ PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /sea
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.7.7"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.7.8"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -113,7 +114,14 @@ CITE_REQUEST = ("Cite every result your answer uses by its position in square br
                 "and page reads returned: an answer that made no search cites nothing by number, and never reuses a number from an earlier answer, so search "
                 "again when you need a source. "
                 "End the answer with its last sentence: write no Sources, References or Citations list and no links, since Grounder adds the list of "
-                "every cited result's title and link under the answer, and one you write costs tokens for nothing.")
+                "every cited result's title and link under the answer, and one you write costs tokens for nothing. "
+                "Grounder also adds one line under the answer that starts \"Searched with\": its own record of this answer's searches (mode, who answered, "
+                "sources shown, time). Each result's `served_by` says the same of that search, so when asked whether Grounder was used, answer from them.")
+# What a result Grounder served says of itself, in one line the model reads (GRO-918). Hermes marks only a search another backend rescued (`data.served_by`,
+# `data.rescued_from`, `data.backend_error`), so a model shown a served result with no such field told its user Grounder "contributed nothing" and disowned the line
+# under its own answer (Harlan, 2026-11-17: "big issue high priority"). The same key, one line a search, never a result's own provenance (GRO-698):
+# `Grounder preset (Live) via You.com, ESPN; 5 of its 10 results shown`.
+SERVED_KEY = "served_by"
 # For a host that names no turn the plugin cannot tell which answer a result serves, so the model writes the list itself. The first sentence is word for
 # word what Grounder's MCP server ends every search's notes with (CITE_REMINDER in routes/mcp.ts).
 CITE_REQUEST_LISTED = ("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first. "
@@ -247,7 +255,8 @@ def _mode_name(body: dict[str, Any], sent: Optional[dict[str, Any]]) -> str:
 
 def _summary(body: dict[str, Any], sources: int, sent: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """What the line under an answer needs of one search: its mode, who answered, how long it took and when it ran. Who answered is ``routing.provider`` (Grounder 0.9.0)
-    when the response names one, else the providers whose calls returned results.
+    when the response names one, then each live-data API whose call returned results beside it (GRO-918: a line that said "via You.com" over five ESPN scores read as
+    wrong to the model that saw them), else the providers whose calls returned results.
 
     ``sources`` is how many results the plugin got, which says whether it found any; the line counts the ones the model was shown (``after_tool``).
     ``sent`` is the request that was sent, which names the mode when the response does not (``_mode_name``).
@@ -259,9 +268,19 @@ def _summary(body: dict[str, Any], sources: int, sent: Optional[dict[str, Any]] 
     latency = usage.get("latency_ms")
     ms = latency if isinstance(latency, int) and not isinstance(latency, bool) else 0
     named = routing.get("provider")
-    via = [_provider_name(named.strip())] if isinstance(named, str) and named.strip() else [_provider_name(p) for p in dict.fromkeys(answered)]
+    live = [str(c.get("provider")) for c in _listed(routing.get("live_calls")) if isinstance(c, dict) and c.get("status") == "ok" and c.get("result_count")]
+    who = [named.strip(), *live] if isinstance(named, str) and named.strip() else answered
+    via = [_provider_name(p) for p in dict.fromkeys(who)]
     return {"mode": _mode_name(body, sent), "via": via, "sources": sources, "ms": ms,
             "from": _clock() - ms / 1000, "fresh": True}
+
+
+def _served_line(summary: dict[str, Any], shown: int) -> str:
+    """``SERVED_KEY``'s line for one search Grounder served: the mode it ran in, who answered, and how many of the results Grounder returned the model is shown when
+    Hermes cut them to the model's ``limit``. With no mode known it says only Grounder."""
+    line = (summary.get("mode") or "Grounder") + (" via " + ", ".join(summary["via"]) if summary.get("via") else "")
+    found = summary.get("sources") or 0
+    return line + (f"; {shown} of its {found} results shown" if shown < found else "")
 
 
 def _waited(searches: list[dict[str, Any]]) -> int:
@@ -1347,8 +1366,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
 
     def after_tool(self, tool_name: str = "", args: Any = None, result: Any = None, session_id: str = "", turn_id: str = "", conversation_id: str = "",
                    **_: Any) -> Optional[str]:
-        """Hermes's ``transform_tool_result``: note a search for the line under the answer, number each result Grounder served across the turn, and add
-        the citation request to the turn's first one.
+        """Hermes's ``transform_tool_result``: note a search for the line under the answer, number each result Grounder served across the turn, say on each
+        result that Grounder served it and how (``SERVED_KEY``), and add the citation request to the turn's first one.
 
         Hermes keeps only a page's url, title, content and error from an extract, so its number and the note are added here, after that trim, and never
         inside a page's text. What the line under the answer counts is what the model was shown, which is this result: Hermes asks for more rows than a
@@ -1374,9 +1393,15 @@ class GrounderWebSearchProvider(WebSearchProvider):
                 entries = data.get("results") if isinstance(data.get("results"), list) else []
                 served = [entry for entry in entries if isinstance(entry, dict) and entry.get("content") and entry.get("url")
                           and (chat, _page_key(str(entry["url"]))) in self._read]
+                if served:
+                    data[SERVED_KEY] = "Grounder" + (f"; {len(served)} of these {len(entries)} pages read" if len(served) < len(entries) else "")
             else:
-                summary = self._searched.get(str((args or {}).get("query", ""))[:MAX_QUERY_CHARS])
-                rows = (data.get("data") or {}).get("web") if isinstance(data.get("data"), dict) else None
+                inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+                # Another backend's rows under a query Grounder answered before (Hermes's rescue of a search that failed this time) are not Grounder's: Hermes says
+                # so in the result, and the summary kept from the earlier search must not claim them.
+                rescued = bool(inner.get("rescued_from")) or (isinstance(inner.get(SERVED_KEY), str) and not inner[SERVED_KEY].startswith("Grounder"))
+                summary = None if rescued else self._searched.get(str((args or {}).get("query", ""))[:MAX_QUERY_CHARS])
+                rows = inner.get("web")
                 served = [row for row in rows if isinstance(row, dict) and row.get("url")] if summary is not None and summary["sources"] and isinstance(rows, list) else []
                 if served and summary is not None:
                     # A search is timed once, when it ran: the same query answered again from Hermes's cache took no time.
@@ -1384,6 +1409,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
                     self._turns.setdefault(turn, []).append({"mode": summary["mode"], "via": summary["via"], "ms": summary["ms"] if ran else 0, "from": summary["from"],
                                                              "pages": {_page_key(str(row["url"])) for row in served}})
                     _bounded(self._turns, REMEMBERED_TURNS)
+                    inner[SERVED_KEY] = _served_line(summary, len(served))
             if not served:
                 return None
             if named:

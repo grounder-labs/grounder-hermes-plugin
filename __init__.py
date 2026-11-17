@@ -7,8 +7,8 @@
 time it runs in a profile, selects it where the user has chosen no backend (``_select_once``). Sign-in is Hermes's own:
 ``hermes auth add grounder:grounder`` signs in to the ``oauth:`` client
 ``plugin.yaml`` declares, and Hermes stores, refreshes and attaches the grant, so
-this plugin keeps no credential of its own. Two hooks ask the model to cite a read
-Grounder served and end an answer that searched with the line Grounder's card shows. Two tools
+this plugin keeps no credential of its own. Two hooks say on each result that Grounder served it, ask the
+model to cite a read Grounder served and end an answer that searched with the line Grounder's card shows. Two tools
 carry what Hermes's ``web_search`` cannot: every option of Grounder's MCP search, and its feature list.
 Grounder has three modes, and ``/search``, the plugin's one command, chooses which a signed-in search uses (``commands``), saving the choice on the user's Grounder account, where grounder.net's Routing page shows the same one: Grounder optimized (Grounder picks the provider for the
 question; the default), a Grounder preset (Fast, Cheap, Live, Deep, Code or Balanced) or Grounder direct (the user picks the provider, and optionally its mode). Every mode returns

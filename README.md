@@ -146,6 +146,11 @@ of what Grounder returns, in any of its three modes:
 Where each result came from (whose it is, the feature and provider that found it, why it may be served) stays in Grounder's
 records and in its API response; the model does not read it row by row, and the line under the answer names the providers.
 
+Every search and read Grounder served says so once, in `served_by`: the mode it ran in, the provider and any live-data API that
+answered, and how many of Grounder's results the model is shown when Hermes cut them to the model's `limit`, such as
+`Grounder preset (Live) via You.com, ESPN; 5 of its 10 results shown`. Hermes writes the same field on a search another backend
+answered after Grounder failed, so a model asked whether Grounder was used can tell from the result itself.
+
 The first result Grounder serves in a turn, a search or a read, ends with a note the model then has for its answer, `cite_sources`, which
 asks the model to cite each result it uses by its number in square brackets, like `[3]`, and to write no Sources list, since
 the plugin adds one. A result's number belongs to the answer that searched: the numbers run on across that turn's searches and
@@ -162,8 +167,8 @@ source. The turn's later results carry no note, which saves about 680 characters
 | `content` | The page's text as Grounder returned it, whole: the plugin sends no `text_max_chars` and cuts nothing. Hermes itself applies a model's `char_limit` to the whole page |
 | `error` | Only on a page that could not be read and that no search returned. It says why when Grounder knows: the address does not exist, the site refused the read, or the read ran out of time. The other pages still return. A page a search returned that cannot be read comes back without an error, as the text that search showed of it, which says so |
 
-A `web_extract` returns whole pages, so a long page is long: Hermes applies the `char_limit` the model asks for. A read that is the turn's first Grounder result
-carries the citation note too.
+A `web_extract` returns whole pages, so a long page is long: Hermes applies the `char_limit` the model asks for. A read Grounder served carries `served_by`
+beside its pages, and one that is the turn's first Grounder result carries the citation note too.
 
 A `web_search` whose query holds a page's address reads that page for the query's other words, for example
 `https://en.wikipedia.org/wiki/Jamie_Oliver books`. It returns the page whole, as Grounder returned it, as the result's `description`, and counts as one search.
@@ -179,8 +184,10 @@ neither does a bracketed number inside code, like `items[2]`, make one. Only `ht
 is shown as plain words: a page's own title cannot add a link or a heading to your answer. Then an answer that searched ends with
 one line saying which Grounder mode it searched in, who answered, how many sources the model was shown and how long you waited, for example
 `Searched with Grounder optimized · via Exa, Brave · 8 sources · 1.4 s`, `Searched with Grounder preset (Fast) · via Exa · 3 sources · 600 ms` or
-`Searched with Grounder direct · via Exa · 5 sources · 1.1 s`. Searches of one answer that ran in different modes name each once, and where no mode is known
-(a free search, whose response names none) the line says only `Searched with Grounder`. Both are added by the plugin. Hermes keeps them with the answer,
+`Searched with Grounder direct · via Exa · 5 sources · 1.1 s`. A live-data API that answered beside the provider is named with it, as in
+`via You.com, ESPN`. Searches of one answer that ran in different modes name each once, and where no mode is known
+(a free search, whose response names none) the line says only `Searched with Grounder`. Both are added by the plugin, and the citation note tells
+the model the line is Grounder's record of the answer's searches. Hermes keeps them with the answer,
 so they are also in the history later turns send. A host that does not say which answer a search serves gets no list: there
 the model is asked to write its own, as in any client.
 
@@ -308,7 +315,7 @@ pays, the validity window and the signature. Grounder, and the facilitator that 
 
 Searches are recorded under your Grounder account, and a free search with no account as Grounder's
 [privacy policy](https://grounder.net/privacy) and [data use](https://grounder.net/docs/data-use) pages describe. The plugin logs how many results a search
-returned or pages an extract read, never the query or an address. To add `cite_sources`, the Sources list and the line under an
+returned or pages an extract read, never the query or an address. To add `served_by`, `cite_sources`, the Sources list and the line under an
 answer it reads its own results and the finished answer on your machine, and sends neither.
 
 ## Development
