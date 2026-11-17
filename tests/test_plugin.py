@@ -361,6 +361,34 @@ def test_http_errors_become_readable_messages(plugin, stub, hermes):
         "success": False, "error": "Could not parse the Grounder response as JSON"}
 
 
+def test_a_failed_search_names_the_provider_that_failed_and_the_way_out_when_it_was_the_only_one_called(plugin, stub, hermes):
+    # GRO-917: `/search` pinned to Wikipedia while its key was rate limited answered "Grounder returned HTTP 503: Every provider failed", which read as Grounder being
+    # down: a model guessed at "a real regression" in the release just installed. Grounder's error names each call; one call and no other is a pin.
+    hermes.token = "t"
+    provider = plugin.GrounderWebSearchProvider()
+    stub.search_status = 503
+    failed = lambda *calls: {"error": {"code": "no_provider_available", "message": "Every provider failed", "details": {"calls": list(calls)}}}
+    stub.search_body = failed({"provider": "wikimedia", "status": "rate_limited", "error_code": "rate_limited", "result_count": 0})
+    pinned = provider.search("q")["error"]
+    assert pinned == ("Grounder's search failed: Wikimedia (rate limited), and no other provider was tried. If `/search` is set to one provider, pick another with `/search`, "
+                      "or run `/search optimized` so Grounder picks one that is up.")
+    assert len(pinned) < 300  # Hermes keeps 300 characters of a failed backend's reason beside the results it serves in its place
+    # The tool's own search says the same, and a call with no error code is named by its status.
+    assert json.loads(provider.search_tool({"query": "q"}))["error"] == pinned
+    stub.search_body = failed({"provider": "you", "status": "timeout"})
+    assert provider.search("q")["error"].startswith("Grounder's search failed: You.com (timeout), and no other provider was tried.")
+    # More than one provider called is no pin: each is named, and the search is worth making again.
+    stub.search_body = failed({"provider": "exa", "status": "error", "error_code": "timeout"}, {"provider": "brave", "status": "rate_limited"}, {"status": "error"}, "odd")
+    assert provider.search("q")["error"] == "Grounder's search failed: Exa (timeout); Brave (rate limited). Search again in a moment."
+    # No calls named, or another code: Grounder's own words, as before.
+    for body in (failed(), {"error": {"code": "no_provider_available", "message": "Every provider failed", "details": {"calls": "none"}}},
+                 {"error": {"code": "no_provider_available", "message": "Every provider failed"}}):
+        stub.search_body = body
+        assert provider.search("q")["error"] == "Grounder returned HTTP 503: Every provider failed"
+    stub.search_body = {"error": {"code": "internal", "message": "boom", "details": {"calls": [{"provider": "exa", "status": "error"}]}}}
+    assert provider.search("q")["error"] == "Grounder returned HTTP 503: boom"
+
+
 def test_unreachable_api_with_a_key_is_reported_not_raised(plugin, stub, keyed, monkeypatch):
     monkeypatch.setattr(plugin.provider, "SEARCH_URL", "http://127.0.0.1:9/v1/search")
     result = plugin.GrounderWebSearchProvider().search("q")

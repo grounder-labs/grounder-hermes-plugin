@@ -89,7 +89,7 @@ PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /sea
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.7.8"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.7.9"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -678,6 +678,19 @@ def _error_parts(body: Any) -> tuple[dict[str, Any], Optional[str], dict[str, An
     return error, detail, details
 
 
+def _failed_calls(details: dict[str, Any]) -> list[str]:
+    """The providers a failed search called and how each ended, as ``Wikimedia (rate limited)``: the ``calls`` of Grounder's ``error.details``, each with its
+    ``error_code``, else its ``status``. A call with no provider named is left out, and a ``calls`` of another shape is none."""
+    named = []
+    for call in _listed(details.get("calls")):
+        provider = call.get("provider") if isinstance(call, dict) else None
+        if not isinstance(provider, str) or not provider.strip():
+            continue
+        reason = next((value for value in (call.get("error_code"), call.get("status")) if isinstance(value, str) and value.strip()), "")
+        named.append(_provider_name(provider.strip()) + (f" ({reason.strip().replace('_', ' ')})" if reason else ""))
+    return named
+
+
 def _must_act(status: int, body: Any, via: str) -> bool:
     """Whether a failed search is an answer the user must act on (a limit, a rejected key or sign-in), not a transient failure."""
     error, _detail, details = _error_parts(body)
@@ -715,6 +728,15 @@ def _error_message(status: int, body: Any, via: str, declined: str = "") -> str:
         return f"Grounder rate limit reached: {detail or 'try again later'}"
     if 300 <= status < 400:
         return f"Grounder answered HTTP {status}, a redirect, which this plugin does not follow."
+    failed = _failed_calls(details) if status == 503 and error.get("code") == "no_provider_available" else []
+    if len(failed) == 1:
+        # One provider called and none behind it: a search `/search` set to one provider (Grounder direct, its fallback off), which fails for as long as that provider
+        # does. "Every provider failed" read as Grounder being down, and a model guessed at a broken release (GRO-917). The cause and the way out lead the message:
+        # Hermes keeps the first 300 characters of a failed backend's reason beside the results it serves in its place.
+        return (f"Grounder's search failed: {failed[0]}, and no other provider was tried. If `/search` is set to one provider, pick another with `/search`, "
+                "or run `/search optimized` so Grounder picks one that is up.")
+    if failed:
+        return f"Grounder's search failed: {'; '.join(failed)}. Search again in a moment."
     return f"Grounder returned HTTP {status}" + (f": {detail}" if detail else "")
 
 

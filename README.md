@@ -214,6 +214,8 @@ tier, and a Hermes that honours a provider's `keyless_rescue` setting never resc
 | Grounder sign-in failed | Follow Hermes's reason in the message |
 | Blocked: an address carries a key or token, or is not public | Leave that address out: nothing was sent to Grounder |
 | Grounder rate limit reached | Wait; the message says which limit |
+| Grounder's search failed: a provider and why, and no other provider was tried | `/search` is set to one provider (Grounder direct) and that provider is failing. Pick another with `/search`, or run `/search optimized` so Grounder picks one that is up |
+| Grounder's search failed: several providers and why | Every provider Grounder called failed. Search again in a moment |
 | Could not reach Grounder | Check the network, then search again |
 
 ## More control: `grounder_search`
