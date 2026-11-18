@@ -20,7 +20,9 @@ Needs Hermes Agent 0.22.3 or later.
 hermes plugins install grounder-labs/grounder-hermes-plugin --enable
 ```
 
-Once Grounder is listed in the Hermes plugin catalog, `hermes plugins install grounder --enable` installs the same plugin.
+Grounder is also in the Hermes plugin catalog: `hermes plugins install grounder --enable` installs the version the catalog pins, which can be older than this repository's.
+
+The text Hermes shows after an install starts with your account: free searches with no account, unless this profile already has a search key or a sign-in, and the command that signs in. After an install or an update, a chat that is already open has the new `/search` at once; for the new tools and command list, run `/reload-mcp`, then `/reload-skills`, in that chat, or start a new one with `/new`.
 
 ## Free searches
 

@@ -1,5 +1,9 @@
 # Grounder is installed
 
+Account: your searches are Grounder's free searches, with no account, unless this profile already has a search key or a sign-in, which an install or an update keeps. To search on your account instead, run `hermes auth add grounder:grounder` (it signs in through the browser), or `hermes config set GROUNDER_API_KEY <your-key>` with a key from https://grounder.net/account/keys. `/search` shows which you are on: with no account it answers with how to sign in, and with one it opens its menu.
+
+A chat that is already open: it has this version's `/search` now. For this version's tools and command list, run `/reload-mcp`, then `/reload-skills`, in that chat, or start a new one with `/new`.
+
 The next time Hermes starts, Grounder becomes this profile's `web_search` and `web_extract` backend, for each of the two that has no
 backend chosen yet; a backend already chosen is left alone. Each query and page address Grounder serves then goes to `api.grounder.net`.
 To use another backend, pick it in `hermes tools`; that choice stands.
