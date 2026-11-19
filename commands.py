@@ -4,7 +4,7 @@
 """``/search``, the plugin's one command: choose how Grounder searches.
 
 Grounder has three modes, and ``/search`` chooses one: **Grounder optimized** (Grounder picks the provider for the user's question; the default), a **Grounder preset**
-(Fast, Cheap, Live, Deep, Code or Balanced: Grounder picks the best provider for that preset) or **Grounder direct** (the user picks the provider, and optionally one of
+(Fast, Cheap, Live, Deep, Code or Balanced: Grounder picks the best provider for that preset) or **Grounder pinned** (the user picks the provider, and optionally one of
 its modes: that provider is the only search provider called, and what it finds is what the user gets, even when that is nothing). Every mode returns the provider's own results, each uncut and in its own
 order. ``/search`` also sets each live-data API, in every mode, to **Every call**, **Never** or **Grounder decides** (the default: asked only when the question's features call for it).
 Every Hermes today asks with ``ctx.ask_choice``, and ``/search`` opens a hub, "How should Grounder search?": Let Grounder pick (Grounder optimized), A preset, A provider, Live-data APIs
@@ -32,6 +32,7 @@ from __future__ import annotations
 import textwrap
 from typing import Any, Optional
 
+from . import direct_dev
 from . import provider as api
 
 AUTO = "auto"
@@ -39,6 +40,12 @@ OPTIMIZED = "optimized"  # typed as an argument, the same as ``auto``
 OPTIMIZED_HEADER = "Grounder optimized"
 AUTO_LABEL = "Grounder picks the provider for your question"
 AUTO_NOTE = "The default. The provider's own results, each uncut and in its own order."
+DEV = "dev"  # Grounder direct by itself: the hub row, and typed as ``/search direct`` (or the other words in DEV_WORDS)
+DEV_WORDS = (DEV, "direct", "grounder-direct", "direct-dev", "grounder-direct-dev")
+ADDON = "addon"  # the hub row and typed word (``/search addon [on|off]``) for Grounder direct as an add-on to the search mode
+ADDON_WORDS = (ADDON, "add-on", "direct-addon", "direct-add-on")
+ADDON_NOTES = ("either or both",)
+DEV_NOTES = ("by itself: only the address you give", "only the address you give", "by itself")
 APIS = "apis"  # the typed argument, and the step that leads to the live-data APIs where there is no second page
 PICK_TAB = "Search"
 APIS_TAB = "Live-data APIs"
@@ -59,7 +66,7 @@ LIVE_NOTES = {"always": "Grounder asks {name} on every search, in every mode, be
 LIVE_BRIEF = {"always": "on every search, in every mode", "off": "never asked, in any mode", "auto": "when a question needs it"}
 LIVE_SHORT = {"always": "every call", "off": "never", "auto": "auto"}
 LIVE_ANSWERS = {"every": "always", "always": "always", "never": "off", "off": "off", "auto": "auto", "decides": "auto"}
-PRESETS_HEADER, PROVIDERS_HEADER = "Grounder preset", "Grounder direct"
+PRESETS_HEADER, PROVIDERS_HEADER = "Grounder preset", "Grounder pinned"
 PICK_QUESTION = "How should Grounder search?"
 PRESET_NOTE = "Grounder picks the best provider for this preset."
 PIN_NOTE = "The only search provider called."
@@ -463,8 +470,85 @@ def _pick(account: Account, catalog: Catalog, value: str) -> str:
     """Save a pick to the account and answer with what is set now (``_switched``). A pick the account already shows is still written: the view this command read may be a minute old."""
     was = (account.saved["preset"], account.saved["server"], account.saved["server_mode"])
     account.save(**_pick_changes(value))
+    left_dev = direct_dev.is_on()
+    if left_dev:  # a search mode leaves Grounder direct by itself; the add-on, when on, stays on
+        direct_dev.set_state(direct_dev.OFF)
     now = account.saved
-    return _switched(now, catalog, value, changed=(now["preset"], now["server"], now["server_mode"]) != was)
+    return _with_direct(_switched(now, catalog, value, changed=left_dev or (now["preset"], now["server"], now["server_mode"]) != was))
+
+
+DIRECT_LINE = "  Grounder direct: a site you name is read straight from it, as you; otherwise this mode searches"
+DIRECT_QUESTION = "Also read sites you name directly, as you?"
+
+
+def _with_direct(reply: str) -> str:
+    """A search mode's reply, saying "Grounder direct + " in its headline and what that does when Grounder direct is on with it, and neither when it is not."""
+    head, _, rest = reply.partition("\n")
+    head = head.replace("Grounder direct + ", "", 1)
+    rest = rest.replace(DIRECT_LINE + "\n", "", 1)
+    if not direct_dev.addon_on():
+        return f"{head}\n{rest}" if rest else head
+    head = head.replace("switched: ", "switched: Grounder direct + ", 1).replace("unchanged: ", "unchanged: Grounder direct + ", 1)
+    return f"{head}\n{DIRECT_LINE}\n{rest}"
+
+
+def _ask_direct(ctx) -> None:
+    """After a search mode is picked in the hub: whether Grounder direct goes with it. Yes reads a site the user names straight from it, as them (their Safari's
+    user agent and headers, and a sign-in they saved for it); No searches only. A question the user leaves changes nothing."""
+    on = direct_dev.addon_on()
+    rows = [{"value": "direct-yes", "label": "Yes", "tail": CURRENT if on else "", "notes": ("sites you name, read directly as you", "read directly as you")},
+            {"value": "direct-no", "label": "No", "tail": "" if on else CURRENT, "notes": ("search only",)}]
+    picked = ctx.ask_choice(DIRECT_QUESTION, _card(rows))
+    if picked in ("direct-yes", "direct-no"):
+        direct_dev.set_state(direct_dev.ADDON if picked == "direct-yes" else direct_dev.OFF)
+
+
+def _mode_label(saved: dict[str, Any], catalog: Catalog) -> str:
+    """The account's search mode in a few words: ``Grounder optimized``, ``Grounder preset Fast`` or ``Grounder pinned Exa instant``."""
+    current = _current_pick(saved, catalog)
+    kind = current.partition(":")[0]
+    if current == AUTO:
+        return OPTIMIZED_HEADER
+    return f"{PRESETS_HEADER if kind == 'preset' else PROVIDERS_HEADER} {catalog.name(current)}"
+
+
+def _set_addon(account: Account, catalog: Catalog, on: bool) -> str:
+    """Turn Grounder direct on or off as an add-on to the search mode, on this Mac only. On, it replaces Grounder direct by itself, and the account's mode searches again."""
+    was = direct_dev.state()
+    direct_dev.set_state(direct_dev.ADDON if on else direct_dev.OFF)
+    mode = _mode_label(account.saved, catalog)
+    changed = was != direct_dev.state()
+    if not on:
+        return _block(f"Search {'switched' if changed else 'unchanged'}: {mode}", [f"Search: {mode}", "Grounder direct: off; pages are read by Grounder's reader"])
+    version = direct_dev.safari_version()
+    return _block(f"Search {'switched' if changed else 'unchanged'}: Grounder direct + {mode}", [
+        f"A site you name: Grounder direct reads it straight from the site on this Mac" + (f", as your Safari {version} asks for it" if version else ""),
+        f"No site named: {mode} searches",
+        "Both: when a question needs the site and wider context, the model uses both and says which part came from where",
+        "No fallback: a page that cannot be read says why",
+        "Credits: a direct read uses no search provider credits and no Grounder credits",
+        "(saved on this machine: web.grounder.direct in config.yaml)"])
+
+
+def _pick_dev(account: Account, catalog: Catalog) -> str:
+    """Turn Grounder direct on by itself, on this machine only, and answer with what it does. The account's own setting is left as it is, and applies again at the next pick."""
+    was = direct_dev.is_on()
+    direct_dev.set_on(True)
+    current = _current_pick(account.saved, catalog)
+    kind = current.partition(":")[0]
+    kept = OPTIMIZED_HEADER if current == AUTO else f"{PRESETS_HEADER if kind == 'preset' else PROVIDERS_HEADER}: {catalog.name(current)}"
+    version = direct_dev.safari_version()
+    signed = direct_dev.sites()
+    lines = ["Goes to: only the address you give, read straight from its site on this Mac",
+             f"Asks as: your Safari {version} (its user agent and headers), in a fresh session" if version else "Asks as: nothing; Safari is not installed here",
+             (f"Sign-ins (optional): signed in on {', '.join(site for site, _ in signed)}; every other site is read logged out" if signed
+              else "Sign-ins (optional): none needed; every site is read logged out"),
+             "(to read a site signed in: /search-login <site>; /search-logout <site> forgets it)",
+             "Search: none. No search provider is called, and nothing else is tried when a page cannot be read",
+             "Credits: none; no search provider credits and no Grounder credits",
+             f"Your account: keeps {kept}, which applies again when you pick another mode",
+             "(saved on this machine: web.grounder.direct in config.yaml)"]
+    return _block(f"Search {'unchanged' if was else 'switched'}: {direct_dev.NAME}", lines)
 
 
 def _apis_words(states: dict[str, str], catalog: Catalog) -> str:
@@ -558,19 +642,26 @@ def _provider_notes(owner: dict[str, Any]) -> tuple[str, ...]:
 def _hub_rows(catalog: Catalog, saved: dict[str, Any]) -> list[dict[str, str]]:
     """The hub: Let Grounder pick, A preset, A provider, Live-data APIs (where Grounder lists any) and Done, each one line (``_card``). The row for what is set now is marked
     "(current)" and says which; the others say what they hold in as many names as fit."""
-    current = _current_pick(saved, catalog)
+    now = direct_dev.state()
+    current = DEV if now == direct_dev.ONLY else _current_pick(saved, catalog)
     kind = current.partition(":")[0]
     presets, providers = [p["name"] for p in catalog.presets], [p["name"] for p in catalog.providers]
 
     def row(value: str, label: str, on: bool, count: str, *notes: str) -> dict[str, Any]:
         return {"value": value, "label": f"{label}: {catalog.name(current)}", "tail": CURRENT, "notes": (count,)} if on else {"value": value, "label": label, "notes": (*notes, count)}
 
-    rows = [{"value": AUTO, "label": "Let Grounder pick", "tail": CURRENT if current == AUTO else "", "notes": (HUB_NOTE,)},
-            row("presets", "A preset", kind == "preset", _count(len(presets), "preset"), ", ".join(presets), _names(presets)),
-            row("providers", "A provider", kind in ("provider", "mode"), _count(len(providers), "provider"), _names(providers), _names(providers, 2), _names(providers, 1))]
+    rows = [{"value": AUTO, "label": OPTIMIZED_HEADER, "tail": CURRENT if current == AUTO else "", "notes": (HUB_NOTE, "picks per question")},
+            row("presets", "Grounder presets", kind == "preset", _count(len(presets), "preset"), ", ".join(presets), _names(presets)),
+            row("providers", PROVIDERS_HEADER, kind in ("provider", "mode"), _count(len(providers), "provider"), _names(providers), _names(providers, 2), _names(providers, 1)),
+            {"value": DEV, "label": "Grounder direct", "tail": CURRENT if current == DEV else "", "notes": DEV_NOTES}]
+    if now == direct_dev.ADDON:  # the mode set now says Grounder direct goes with it
+        for r in rows[:3]:
+            if r.get("tail") == CURRENT:
+                r["notes"] = ("+ Grounder direct",)
     if catalog.apis:
         states = _live_states(saved, catalog)
         rows.append({"value": APIS, "label": "Live-data APIs", "notes": (_apis_counts(states), _apis_counts(states, brief=True))})
+    rows.append({"value": SETTINGS, "label": "Settings", "notes": (f"resolver: {RESOLVER_SHORT[direct_dev.resolver()]}",)})
     return _card([*rows, {"value": DONE, "label": "Done"}])
 
 
@@ -603,7 +694,7 @@ def _step_providers(ctx, account: Account, catalog: Catalog) -> Optional[str]:
     page = None  # where a surface pages the list: the first time, the page that holds the provider set now; after a provider's modes, the page it was picked on
     while True:
         rows = [{"value": f"provider:{p['id']}", "label": p["name"], "tail": CURRENT if p["id"] == held else "", "notes": _provider_notes(p)} for p in catalog.providers]
-        picked, page = _ask_paged(ctx, "Which provider should Grounder direct search with?", rows, page=page, current=f"provider:{held}")
+        picked, page = _ask_paged(ctx, "Which provider should Grounder pin?", rows, page=page, current=f"provider:{held}")
         if picked == _RETURN:
             return None
         owner = catalog.provider(picked.partition(":")[2]) if picked else None
@@ -625,6 +716,47 @@ def _step_api(ctx, account: Account, catalog: Catalog, ident: str) -> None:
     picked, _ = _ask_paged(ctx, f"How should Grounder use {name}?", rows)
     if picked in LIVE_LABEL:
         _save_live(account, catalog, {ident: picked})
+
+
+SETTINGS = "settings"
+SETTINGS_QUESTION = "Grounder direct settings"
+RESOLVER_QUESTION = "How should Grounder direct look sites up?"
+RESOLVER_LABEL = {"system": "Your own resolver", "grounder": "Grounder's resolver"}
+RESOLVER_SHORT = {"system": "your own", "grounder": "Grounder's"}
+RESOLVER_NOTES = {"system": ("the default: as the rest of this Mac does", "as the rest of this Mac does", "the default"),
+                  "grounder": ("your network's filter does not block reads", "not blocked by your filter")}
+RESOLVER_LINES = {"system": ["Reads look sites up the way the rest of this Mac does, through any filter you or your network set"],
+                  "grounder": ["Reads look sites up through Grounder, so a filter on this Mac or its network does not block them",
+                               "Grounder sees which sites are read, not what is on them; pages still go straight from this Mac to each site"]}
+
+
+def _resolver_reply(value: str, was: str) -> str:
+    return _block(f"Resolver {'switched' if value != was else 'unchanged'}: {RESOLVER_LABEL[value]}",
+                  [*RESOLVER_LINES[value], "(saved on this machine: web.grounder.direct_resolver in config.yaml)"])
+
+
+def _set_resolver(value: str) -> str:
+    was = direct_dev.resolver()
+    direct_dev.set_resolver(value)
+    from . import direct_formats
+    direct_formats.forget_cached_searches()
+    return _resolver_reply(value, was)
+
+
+def _step_settings(ctx) -> Optional[str]:
+    """Settings: Grounder direct's own settings, saved on this machine. Today one, the resolver reads look sites up with; it opens its two choices, the current
+    one marked, then "← Back". A pick is saved and is the reply; None for Back from Settings, which asks the hub again."""
+    while True:
+        now = direct_dev.resolver()
+        rows = [{"value": "resolver", "label": "Resolver", "notes": (RESOLVER_LABEL[now],)}]
+        picked, _ = _ask_paged(ctx, SETTINGS_QUESTION, rows)
+        if picked != "resolver":
+            return None if picked == _RETURN else UNCHANGED
+        choices = [{"value": v, "label": RESOLVER_LABEL[v], "tail": CURRENT if v == now else "", "notes": RESOLVER_NOTES[v]} for v in direct_dev.RESOLVERS]
+        chosen, _ = _ask_paged(ctx, RESOLVER_QUESTION, choices)
+        if chosen == _RETURN:
+            continue
+        return _set_resolver(chosen) if chosen in direct_dev.RESOLVERS else UNCHANGED
 
 
 def _step_apis(ctx, account: Account, catalog: Catalog, hub: bool = False) -> Optional[str]:
@@ -659,14 +791,26 @@ def _hub(ctx, catalog: Catalog, account: Account) -> tuple[bool, Optional[str]]:
         picked = ctx.ask_choice(PICK_QUESTION, _hub_rows(catalog, account.saved))
         if picked is None and not turn:
             return False, None
-        if picked == AUTO:
-            return True, _pick(account, catalog, AUTO)
-        if picked == "presets":
-            reply = _step_presets(ctx, account, catalog)
-        elif picked == "providers":
-            reply = _step_providers(ctx, account, catalog)
-        elif picked == APIS:
+        if picked == DEV:
+            return True, _pick_dev(account, catalog)
+        if picked == ADDON:
+            return True, _set_addon(account, catalog, direct_dev.state() != direct_dev.ADDON)
+        if picked in (AUTO, "presets", "providers"):  # a search mode, then whether Grounder direct goes with it
+            reply = _pick(account, catalog, AUTO) if picked == AUTO else _step_presets(ctx, account, catalog) if picked == "presets" else _step_providers(ctx, account, catalog)
+            if reply is None or reply == UNCHANGED:
+                if reply is None:
+                    continue
+                return True, reply
+            before = direct_dev.addon_on()
+            _ask_direct(ctx)
+            reply = _with_direct(reply)
+            if direct_dev.addon_on() != before:  # the mode was already set, but Grounder direct changed with it
+                reply = reply.replace("✓ Search unchanged: ", "✓ Search switched: ", 1)
+            return True, reply
+        if picked == APIS:
             reply = _step_apis(ctx, account, catalog, hub=True)
+        elif picked == SETTINGS:
+            reply = _step_settings(ctx)
         else:  # Done, or a hub the user left
             break
         if reply is not None:
@@ -678,7 +822,11 @@ def _listing(catalog: Catalog, usage: str, saved: dict[str, Any]) -> str:
     lines = [f"{OPTIMIZED_HEADER} (`/search optimized`, the default): {AUTO_LABEL}.",
              f"{PRESETS_HEADER} (`/search <preset>`):", *(f"  {p['id']} ({p['name']}): {p['description']}" for p in catalog.presets),
              f"{PROVIDERS_HEADER} (`/search <provider>` or `/search <provider>:<mode>`, the only search provider called), each provider with its modes:",
-             *(f"  {p['id']} ({p['name']})" + (f": {', '.join(m['mode'] for m in p['modes'])}" if p["modes"] else "") for p in catalog.providers)]
+             *(f"  {p['id']} ({p['name']})" + (f": {', '.join(m['mode'] for m in p['modes'])}" if p["modes"] else "") for p in catalog.providers),
+             "Grounder direct (on this Mac only): by itself (`/search direct`), it goes only to the address you give, as your Safari asks for it, with no search and no "
+             "fallback; as an add-on (`/search addon on|off`), searches run in the mode above and every page and named site is read straight from its site. "
+             "`/search-login <site>` saves a sign-in it then uses on every page of that site, `/search-logout <site>` forgets it; sign-ins are optional. "
+             "`/search-direct-format` sets how a page comes back: full-page, highlights or summary."]
     if catalog.apis:
         lines += ["Live-data APIs, each Every call, Never or Grounder decides (`/search apis <id>=every|never|auto`), in every mode:",
                   *(f"  {a['id']} ({a['name']}): {LIVE_LABEL[_live_state(saved, a['id'])]}" for a in catalog.apis)]
@@ -704,6 +852,9 @@ def search_command(ctx, raw_args: str) -> Optional[str]:
     """``/search [<id>|optimized|apis]``: the hub (or one form, on a Hermes that has one) for the mode and the live-data APIs, or an argument that skips it. ``auto`` is ``optimized``.
     A pick, from the hub or typed, is answered with what is set now (``_switched``).
     The choices are read from and written to the user's Grounder account (``Account``); a read or write that fails is the reply."""
+    words = (raw_args or "").split()
+    if len(words) >= 2 and words[0].lower() in DEV_WORDS and words[1].lower() in direct_dev.DEV_COMMANDS:  # saved sign-ins: on this Mac, no account needed
+        return direct_dev.command(words[1:])
     catalog, problem = _catalog()
     if catalog is None:
         return problem
@@ -717,20 +868,37 @@ def search_command(ctx, raw_args: str) -> Optional[str]:
 
 def _run(ctx, catalog: Catalog, account: Account, raw_args: str) -> Optional[str]:
     saved = account.saved
-    usage = ("Use `/search <id>` to choose a Grounder preset or the one search provider to call (Grounder direct; `/search <provider>:<mode>` for one of its modes), "
-             "`/search optimized` to let Grounder pick the provider, or `/search apis` to set each live-data API to Every call, Never or Grounder decides.")
+    usage = ("Use `/search <id>` to choose a Grounder preset or the one search provider to call (Grounder pinned; `/search <provider>:<mode>` for one of its modes), "
+             "`/search optimized` to let Grounder pick the provider, `/search direct` for Grounder direct by itself, `/search addon on|off` for it as an add-on, or `/search apis` to set each live-data API to Every call, Never or Grounder decides.")
     arg = (raw_args or "").strip().lower()
     if not arg:
         if _has_form(ctx):
             return _form(ctx, catalog, account, _pages(catalog, saved))
         asked, reply = _hub(ctx, catalog, account)
         return reply if asked else _listing(catalog, usage, saved)
+    if arg == SETTINGS:
+        return _step_settings(ctx) or UNCHANGED
+    if arg.startswith("resolver"):  # /search resolver grounder|system
+        word = arg.partition(" ")[2].strip().replace("own", "system").replace("mine", "system")
+        if word not in direct_dev.RESOLVERS:
+            return "Use `/search resolver system` (your own resolver, the default) or `/search resolver grounder` (Grounder's resolver)."
+        return _set_resolver(word)
     if arg == APIS:
         if _has_form(ctx):
             return _form(ctx, catalog, account, [{**_apis_page(catalog, saved), "optional": False, "hint": APIS_ALONE_HINT}])
         return _step_apis(ctx, account, catalog)
     if arg.startswith(f"{APIS} "):
         return _apis_argument(arg[len(APIS):].split(), catalog, account, usage)
+    if arg in DEV_WORDS:
+        return _pick_dev(account, catalog)
+    words = arg.split()
+    if len(words) == 2 and words[0] in DEV_WORDS and words[1] in ("with-search", "add-on", "addon", "off"):  # /search direct with-search | off
+        return _set_addon(account, catalog, words[1] != "off")
+    if words and words[0] in ADDON_WORDS and len(words) <= 2:  # /search addon [on|off]: no word toggles it
+        wanted = {"on": True, "off": False}.get(words[1]) if len(words) == 2 else not direct_dev.addon_on()
+        if wanted is None:
+            return "Use `/search addon on` or `/search addon off`."
+        return _set_addon(account, catalog, wanted)
     pick = AUTO if arg in (AUTO, OPTIMIZED) else _match(arg, catalog)[0]
     if pick is None:
         return f"{_match(arg, catalog)[1]}\n{_listing(catalog, usage, saved)}"
@@ -754,8 +922,44 @@ def _apis_argument(tokens: list[str], catalog: Catalog, account: Account, usage:
     return _apis_words(_save_live(account, catalog, wanted), catalog)
 
 
+FORMAT_QUESTION = "How should Grounder direct return a page?"
+FORMAT_NOTES = {"full-page": "the page's whole text", "highlights": "its passages that match the question", "summary": "answered in a few sentences"}
+
+
+def _format_reply(fmt: str, was: Optional[str]) -> str:
+    lines = [f"Pages: {FORMAT_NOTES[fmt]}", "A format you name in chat, or a call's own format, wins for that turn", "(saved on this machine: web.grounder.direct_format in config.yaml)"]
+    if not direct_dev.reads_pages():
+        lines.insert(0, "Grounder direct is off: `/search direct` or `/search addon on` to use it")
+    return _block(f"Format {'unchanged' if was == fmt else 'switched'}: {fmt}", lines)
+
+
+def search_format_command(ctx, raw_args: str) -> Optional[str]:
+    """``/search-direct-format [full-page|highlights|summary]``: how a page Grounder direct reads comes back, and how the model answers from it. Saved on this machine only."""
+    from . import direct_formats
+    was = direct_formats.saved()
+    arg = (raw_args or "").strip()
+    current = was or direct_formats.FULL
+    if arg:
+        fmt = direct_formats.valid(arg)
+        if fmt is None:
+            return f"`{arg}` is not a format: use `/search-direct-format full-page`, `/search-direct-format highlights` or `/search-direct-format summary`."
+    elif callable(getattr(ctx, "ask_choice", None)):
+        rows = [{"value": f, "label": f, "tail": CURRENT if f == current else "", "notes": (FORMAT_NOTES[f],)} for f in direct_formats.FORMATS]
+        fmt = ctx.ask_choice(FORMAT_QUESTION, _card(rows))
+        if fmt not in direct_formats.FORMATS:
+            return UNCHANGED
+    else:
+        return f"Format now: {current}. Use `/search-direct-format full-page`, `/search-direct-format highlights` or `/search-direct-format summary`."
+    direct_formats.save(fmt)
+    return _format_reply(fmt, was)
+
+
 def register_commands(ctx) -> None:
+    direct_dev.register_login(ctx)  # /search-login <site>: a saved sign-in for Grounder direct (the sign-in part of direct_dev)
     ctx.register_command(
-        "search", lambda raw_args: search_command(ctx, raw_args), args_hint="[optimized|preset|provider|provider:mode|apis]",
-        description="Choose how Grounder searches: Grounder optimized, a Grounder preset, or Grounder direct (one provider and its mode), and set each live-data API to "
+        "search-direct-format", lambda raw_args: search_format_command(ctx, raw_args), args_hint="[full-page|highlights|summary]",
+        description="Choose how Grounder direct returns a page: full-page, highlights or summary")
+    ctx.register_command(
+        "search", lambda raw_args: search_command(ctx, raw_args), args_hint="[direct|direct with-search|settings|optimized|preset|provider|provider:mode|apis]",
+        description="Choose how Grounder searches: Grounder optimized, a Grounder preset, Grounder pinned (one provider and its mode) or Grounder direct (by itself, or as an add-on), and set each live-data API to "
                     "Every call, Never or Grounder decides (on Slack: /hermes search)")

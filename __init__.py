@@ -11,7 +11,7 @@ this plugin keeps no credential of its own. Two hooks say on each result that Gr
 model to cite a read Grounder served and end an answer that searched with the line Grounder's card shows. Two tools
 carry what Hermes's ``web_search`` cannot: every option of Grounder's MCP search, and its feature list.
 Grounder has three modes, and ``/search``, the plugin's one command, chooses which a signed-in search uses (``commands``), saving the choice on the user's Grounder account, where grounder.net's Routing page shows the same one: Grounder optimized (Grounder picks the provider for the
-question; the default), a Grounder preset (Fast, Cheap, Live, Deep, Code or Balanced) or Grounder direct (the user picks the provider, and optionally its mode). Every mode returns
+question; the default), a Grounder preset (Fast, Cheap, Live, Deep, Code or Balanced) or Grounder pinned (the user picks the provider, and optionally its mode). Every mode returns
 the provider's own results: this plugin cuts and reranks nothing of them. ``/search`` is registered only while Grounder is the profile's web search backend (``_grounder_is_backend``, read at load: a switch in ``hermes tools`` takes effect at the
 next start), and a Hermes that bundles its own Grounder provider has the command, so there ``register`` adds none (``_commands_taken``).
 """
@@ -24,6 +24,7 @@ from importlib.util import find_spec
 from agent.secret_scope import get_secret
 from hermes_cli.config import is_managed, load_config, save_config, save_env_value
 
+from . import direct_dev, direct_formats
 from .commands import register_commands
 from .provider import LIST_PROVIDERS_SCHEMA, SEARCH_SCHEMA, TOOLSET, CLIENT_ENV, CLIENT_ID, KEY_ENV, GrounderWebSearchProvider, note_message, note_model, note_turn, sharing_usage
 
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 SELECTED_MARK = "backends_selected"  # in the plugin's own per-profile state: this profile has been set up
 BUNDLED = "plugins.web.grounder"  # Hermes's own Grounder web provider, in the Hermes releases that ship one; it registers the same command
-COMMANDS = ("search",)
+COMMANDS = ("search", "search-direct-format", "search-login", "search-logout")
 
 
 def _bundled() -> bool:
@@ -126,6 +127,12 @@ def _select_once(ctx) -> None:
         logger.info("A web backend was already chosen: Grounder selected none")
 
 
+def before_llm(**call):
+    """``pre_llm_call``: remember the user's latest message (``note_message``) and, while Grounder direct (dev) is on, add its note to it (``direct_dev.turn_note``)."""
+    note_message(**call)
+    return direct_dev.turn_note(**call)
+
+
 def register(ctx) -> None:
     """Hermes's plugin entry point."""
     provider = GrounderWebSearchProvider()
@@ -148,4 +155,5 @@ def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", note_turn)
     if sharing_usage():  # the model behind each answer is learned only while share_usage_context is on
         ctx.register_hook("post_api_request", note_model)
-    ctx.register_hook("pre_llm_call", note_message)
+    ctx.register_hook("pre_llm_call", before_llm)
+    direct_formats.use_host(ctx)  # the summary format's AI summary runs on the user's active model (ctx.llm)

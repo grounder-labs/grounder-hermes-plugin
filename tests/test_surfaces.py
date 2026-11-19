@@ -97,6 +97,20 @@ def test_an_address_check_needs_no_normalizer(plugin, monkeypatch):
     assert refusal(f"https://example.com/K%C3%B6ln?k={_sample('ghp_', 20)}") == plugin.provider.SECRET_REFUSED
 
 
+@pytest.mark.parametrize("address", [
+    "http://%31%32%37.0.0.1:18765/", "http://127.0.0.1%2e:18765/", "http://\u2460\u2461\u2466.0.0.1/", "http://\uff11\uff12\uff17.\uff10.\uff10.\uff11/",
+    "http://127\u30020\u30020\u30021/", "http://1\u00ad27.0.0.1/", "http://192.168.\uff11.1/", "http://%6c%6f%63%61%6c%68%6f%73%74/",
+])
+def test_a_host_a_browser_reads_as_a_private_address_is_refused_however_it_is_spelled(plugin, monkeypatch, address):
+    monkeypatch.setitem(sys.modules, "tools.url_safety", None)
+    assert plugin.provider._refusal(address) == plugin.provider.PRIVATE_REFUSED
+
+
+def test_a_plain_and_an_international_host_are_still_read(plugin, monkeypatch):
+    monkeypatch.setitem(sys.modules, "tools.url_safety", None)
+    assert plugin.provider._refusal("https://example.com/") == "" and plugin.provider._refusal("https://m\u00fcnchen.de/") == ""
+
+
 # Hermes's skill scan (tools/skills_guard.py, ``inline_shell_exec``) reads a bang and a backtick followed by text and a closing backtick as a snippet to run. Spelled here from the
 # character, so this file holds no such line itself.
 TICK = chr(96)

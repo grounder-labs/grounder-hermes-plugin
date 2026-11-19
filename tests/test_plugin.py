@@ -413,7 +413,7 @@ def test_register_adds_the_backend_and_no_command(plugin):
     assert "command" not in calls
     # The hook that learns the model behind each answer is registered only while share_usage_context is on, which it is not unless the user turned it on (below).
     assert calls["hooks"] == {"transform_tool_result": calls["provider"].after_tool, "transform_llm_output": calls["provider"].after_answer, "pre_tool_call": plugin.provider.note_turn,
-                              "pre_llm_call": plugin.provider.note_message}
+                              "pre_llm_call": plugin.before_llm}  # note_message, then Grounder direct (dev)'s note while it is on
 
 
 def test_setup_entry_asks_for_no_key_and_names_both_ways_in(plugin):
@@ -971,12 +971,12 @@ def test_no_list_is_added_to_an_answer_that_wrote_its_own_or_cites_none(plugin, 
                        ("t3", "It is so, as Example says.")):
         provider.after_tool("web_search", {"query": "q"}, json.dumps(provider.search("q")), session_id="s", turn_id=turn)
         assert provider.after_answer(text, session_id="s", turn_id=turn) == f"{text}\n\n{card}"
-    # A turn that only read a page gets its list and no card line.
+    # A turn that only read a page gets its list and, instead of a card line, the line saying Grounder extracted it.
     stub.search_body = {"results": [_page(PAGE_A)]}
     provider.extract([PAGE_A])
     page = json.dumps({"results": [{"url": PAGE_A, "title": "T", "content": "x", "error": None}]})
     provider.after_tool("web_extract", {}, page, session_id="s", turn_id="t4")
-    assert provider.after_answer("Read [1].", session_id="s", turn_id="t4") == f"Read [1].\n\nSources:\n- T — {PAGE_A}"
+    assert provider.after_answer("Read [1].", session_id="s", turn_id="t4") == f"Read [1].\n\nSources:\n- T — {PAGE_A}\n\nGrounder extracted example.com"
 
 
 def test_a_host_that_names_no_turn_keeps_the_searchs_positions_and_the_model_writes_the_list(plugin, stub, keyed):
@@ -1385,7 +1385,7 @@ def test_the_card_line_names_the_mode_the_search_ran_in_from_what_grounder_answe
     # The plugin sends no mode, so the saved setting or the model's own options chose it: Grounder says which in routing.mode.
     assert lines([("one", ROUTED)]) == "Searched with Grounder optimized · via Exa, xAI +1 · 1 source · 1.4 s"
     assert lines([("two", _ran_as("preset", profile="fast"))], "t2") == "Searched with Grounder preset (Fast) · via Exa, xAI +1 · 1 source · 1.4 s"
-    assert lines([("three", _ran_as("direct", provider="exa"))], "t3") == "Searched with Grounder direct · via Exa, ESPN · 1 source · 1.4 s"
+    assert lines([("three", _ran_as("direct", provider="exa"))], "t3") == "Searched with Grounder pinned · via Exa, ESPN · 1 source · 1.4 s"
 
 
 def test_a_preset_is_named_by_its_id_capitalised_as_grounder_or_the_model_named_it(plugin, stub, keyed):
@@ -1401,7 +1401,7 @@ def test_a_preset_is_named_by_its_id_capitalised_as_grounder_or_the_model_named_
 
 def test_the_response_names_the_mode_when_it_says_one_of_the_three_and_nothing_else_does(plugin, stub, keyed, lines):
     # Grounder's own word, routing.mode first and a top-level mode where there is none; only the three names count, and with nothing naming a mode the line says only Grounder.
-    assert lines([("a", {**_unnamed(), "mode": "direct"})], "t1").startswith("Searched with Grounder direct · via Exa")
+    assert lines([("a", {**_unnamed(), "mode": "direct"})], "t1").startswith("Searched with Grounder pinned · via Exa")
     assert lines([("b", _ran_as("preset"))], "t2").startswith("Searched with Grounder preset · via Exa")
     assert lines([("c", {**_ran_as("preset"), "mode": "direct"})], "t3").startswith("Searched with Grounder preset · via Exa")  # routing.mode first
     for odd in ("turbo", "", None, 7, ["direct"], {"mode": "direct"}):
@@ -1420,7 +1420,7 @@ def test_the_card_line_reads_the_routing_of_a_grounder_that_names_its_mode_provi
     assert lines([("b", _answered(mode="preset", profile="fast", provider="brave", provider_mode="news"))], "t2") == "Searched with Grounder preset (Fast) · via Brave · 1 source"
     # A direct search whose provider found nothing: the provider that answered, not the one chosen.
     fallback = {"from": "exa", "from_mode": "deep", "reason": "no_results"}
-    assert lines([("d", _answered(mode="direct", provider="brave", provider_mode=None, fallback=fallback))], "t4") == "Searched with Grounder direct · via Brave · 1 source"
+    assert lines([("d", _answered(mode="direct", provider="brave", provider_mode=None, fallback=fallback))], "t4") == "Searched with Grounder pinned · via Brave · 1 source"
     # routing.provider stands over the providers whose calls returned results, and a live-data API that answered beside it is named with it (GRO-918).
     both = {**ROUTED, "usage": {}, "routing": {**ROUTED["routing"], "mode": "optimized", "provider": "tavily"}}
     assert lines([("e", both)], "t5") == "Searched with Grounder optimized · via Tavily, ESPN · 1 source"
@@ -1453,7 +1453,7 @@ def test_a_preset_search_with_no_name_anywhere_is_just_a_preset(plugin, stub, ke
 def test_a_free_search_names_a_mode_only_when_the_response_does(plugin, stub, free, lines):
     assert lines([("a", _unnamed())], "t1") == "Searched with Grounder · via Exa, xAI +1 · 1 source · 1.4 s"
     assert lines([("b", {**_unnamed(), "mode": "optimized"})], "t2") == "Searched with Grounder optimized · via Exa, xAI +1 · 1 source · 1.4 s"
-    assert lines([("c", _answered(mode="direct", provider="brave"))], "t3") == "Searched with Grounder direct · via Brave · 1 source"
+    assert lines([("c", _answered(mode="direct", provider="brave"))], "t3") == "Searched with Grounder pinned · via Brave · 1 source"
 
 
 def test_a_page_read_by_search_names_a_mode_only_when_the_response_does(plugin, stub, keyed, lines):
@@ -1470,11 +1470,11 @@ def test_searches_of_one_answer_in_different_modes_name_each_mode_once(plugin, s
         stub.search_body = _unseen({**_routed(f"https://example.com/{query}"), "routing": response["routing"]})
         provider.after_tool("web_search", {"query": query}, json.dumps(provider.search(query)), session_id="s", turn_id="t")
     assert provider.after_answer("A", session_id="s", turn_id="t") == (
-        "A\n\nSearched with Grounder optimized, Grounder preset (Fast), Grounder preset (Deep), Grounder direct · via Exa, xAI +1 · 6 sources")
+        "A\n\nSearched with Grounder optimized, Grounder preset (Fast), Grounder preset (Deep), Grounder pinned · via Exa, xAI +1 · 6 sources")
     # Every search in one mode: that mode once.
     direct = _ran_as("direct", provider="exa")["routing"]
     assert lines([("seven", _unseen({**_routed("https://example.com/7"), "routing": direct})), ("eight", _unseen({**_routed("https://example.com/8"), "routing": direct}))], "t2").startswith(
-        "Searched with Grounder direct · via Exa")
+        "Searched with Grounder pinned · via Exa")
     # A page read that names no mode, among searches that have one, adds no name.
     stub.search_body = _unseen(_routed("https://example.com/9"))
     provider.after_tool("web_search", {"query": "nine"}, json.dumps(provider.search("nine")), session_id="s", turn_id="t3")

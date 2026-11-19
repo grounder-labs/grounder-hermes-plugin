@@ -4,6 +4,8 @@ Licensed, live sources for Hermes Agent's `web_search` and `web_extract`. With G
 call to one search provider, such as Exa, Brave, Tavily or Perplexity, and asks the live-data APIs (scores, prices, odds, flights and more) beside it
 as you set each one: every call, never, or when Grounder decides the question needs it. It returns each source's own results.
 
+Grounder direct is a fourth mode, on a Mac: it searches nothing and reads only the pages you name, straight from their own sites, the way your Safari asks for them, and it uses no search provider credits and no Grounder credits. It stands alone or goes together with the other three. See [Grounder direct](#grounder-direct-read-the-page-from-its-own-site-as-you).
+
 Every result is licensed: no site's robots.txt, license or AI opt-out refuses the provider that found it. A search can
 return fewer results than asked for, and is never filled with unlicensed ones.
 
@@ -135,7 +137,7 @@ Until you connect your account, your searches are Grounder's free searches.
 ## What Hermes gets
 
 Each search returns the rows Hermes asked for, up to 100 (Hermes asks for 5 unless told otherwise), in Grounder's order. This plugin cuts, reranks and reorders nothing
-of what Grounder returns, in any of its three modes:
+of what Grounder returns, in any of its three search modes (a Grounder direct read is not one of them: [Grounder direct](#grounder-direct-read-the-page-from-its-own-site-as-you) says what it returns):
 
 | Field | From Grounder |
 |---|---|
@@ -186,7 +188,7 @@ neither does a bracketed number inside code, like `items[2]`, make one. Only `ht
 is shown as plain words: a page's own title cannot add a link or a heading to your answer. Then an answer that searched ends with
 one line saying which Grounder mode it searched in, who answered, how many sources the model was shown and how long you waited, for example
 `Searched with Grounder optimized · via Exa, Brave · 8 sources · 1.4 s`, `Searched with Grounder preset (Fast) · via Exa · 3 sources · 600 ms` or
-`Searched with Grounder direct · via Exa · 5 sources · 1.1 s`. A live-data API that answered beside the provider is named with it, as in
+`Searched with Grounder pinned · via Exa · 5 sources · 1.1 s`. A live-data API that answered beside the provider is named with it, as in
 `via You.com, ESPN`. Searches of one answer that ran in different modes name each once, and where no mode is known
 (a free search, whose response names none) the line says only `Searched with Grounder`. Both are added by the plugin, and the citation note tells
 the model the line is Grounder's record of the answer's searches. Hermes keeps them with the answer,
@@ -216,7 +218,7 @@ tier, and a Hermes that honours a provider's `keyless_rescue` setting never resc
 | Grounder sign-in failed | Follow Hermes's reason in the message |
 | Blocked: an address carries a key or token, or is not public | Leave that address out: nothing was sent to Grounder |
 | Grounder rate limit reached | Wait; the message says which limit |
-| Grounder's search failed: a provider and why, and no other provider was tried | `/search` is set to one provider (Grounder direct) and that provider is failing. Pick another with `/search`, or run `/search optimized` so Grounder picks one that is up |
+| Grounder's search failed: a provider and why, and no other provider was tried | `/search` is set to one provider (Grounder pinned) and that provider is failing. Pick another with `/search`, or run `/search optimized` so Grounder picks one that is up |
 | Grounder's search failed: several providers and why | Every provider Grounder called failed. Search again in a moment |
 | Could not reach Grounder | Check the network, then search again |
 
@@ -235,16 +237,17 @@ Signing in grants searching only, so `user_info` of Grounder's MCP server is not
 
 ## Choose how Grounder searches: `/search`
 
-Grounder has three modes. Every one returns the provider's own results, each uncut and not reranked, by Grounder or by this plugin. A result whose site's rules refuse that provider is left out, and nothing replaces it.
+Grounder has four modes. The first three search, and each makes one search-provider call; they return the provider's own results, each uncut and not reranked, by Grounder or by this plugin. A result whose site's rules refuse that provider is left out, and nothing replaces it. The fourth, Grounder direct, makes no search-provider call at all and has [its own section](#grounder-direct-read-the-page-from-its-own-site-as-you).
 
 | Mode | What it is | How to choose it |
 |---|---|---|
 | **Grounder optimized** | Grounder picks the provider for your question. The default | `/search optimized` (or `/search auto`), or pick it in `/search` |
 | **Grounder preset** | Fast, Cheap, Live, Deep, Code or Balanced: Grounder picks the best provider for that preset | `/search <preset>`, for example `/search fast`; or pick one in `/search` |
-| **Grounder direct** | You pick the provider, and optionally one of its modes: the only search provider called, and what it finds is what you get, even when that is nothing | `/search <provider>` or `/search <provider>:<mode>`, for example `/search exa:instant`; or pick one in `/search` |
+| **Grounder pinned** | You pick the provider, and optionally one of its modes: the only search provider called, and what it finds is what you get, even when that is nothing | `/search <provider>` or `/search <provider>:<mode>`, for example `/search exa:instant`; or pick one in `/search` |
+| **Grounder direct** | You name the page; Grounder reads it from its own site, on your Mac, with your Safari's user agent: no search provider, no fallback, no credits. By itself, or as an add-on to any of the three above | `/search direct` (by itself), `/search direct with-search` (add-on), `/search direct off`; or pick it in `/search` |
 
-`/search` is the plugin's only command, and it chooses between them. Your choice is saved on your Grounder account, in the same setting as the Routing page on grounder.net: a change made in `/search` shows on that page, and a change made on that page shows in `/search` the next time it opens. It offers Grounder's own lists, read when you run it, so a preset, provider, mode or live-data
-API Grounder adds is on offer at once. It is registered only while Grounder is your web search backend (`web.search_backend: grounder`, or the older `web.backend`): the plugin
+`/search` chooses between them. The plugin has three more commands, `/search-direct-format`, `/search-login` and `/search-logout` (`/search_login` and `/search_logout` on Telegram), which belong to Grounder direct and are described below. Your choice is saved on your Grounder account, in the same setting as the Routing page on grounder.net: a change made in `/search` shows on that page, and a change made on that page shows in `/search` the next time it opens. It offers Grounder's own lists, read when you run it, so a preset, provider, mode or live-data
+API Grounder adds is on offer at once. The commands are registered only while Grounder is your web search backend (`web.search_backend: grounder`, or the older `web.backend`): the plugin
 makes Grounder the backend the first time it loads where you chose none, and a switch you make in `hermes tools` takes effect at the next start. With another backend chosen the plugin registers no command, and
 its search tools and its web provider work as they do otherwise.
 
@@ -255,13 +258,17 @@ its search tools and its web provider work as they do otherwise.
 | **Let Grounder pick** | Grounder optimized: Grounder picks a provider for each question. Picking it sets it |
 | **A preset** | The six presets, each with its purpose and, where the line has room, how many providers it uses (for example "Fast: the quickest answer · 16 providers"), then **← Back**. Picking one sets it |
 | **A provider** | Every provider in one list, each with what its standard search returns and how many modes it has (for example "Exa: web search, page text · 16 modes"), then **← Back**. A provider with modes opens them: **Default** (its standard search), then each mode with the line Grounder gives for what it is, cut to fit the row, then **← Back**. Picking a mode, or a provider that has none, sets it |
+| **Grounder direct** | Grounder direct by itself: only the pages you name are read, from their own sites, on this Mac. Picking it sets it, and answers with what it does. It is saved on this Mac, not on your account |
 | **Live-data APIs** | **Set all to Grounder decides**, then every live-data API with its setting, then **← Back**. An API opens **Every call**, **Grounder decides** and **Never**, then **← Back**, and the list comes back so you can set another. Once a setting has changed, the list's last row is **Done**. The menu's row shows a count, for example "18 on Grounder decides, 1 on Every call, 1 on Never" |
+| **Settings** | Grounder direct's own settings, saved on this Mac. **Resolver** opens **Your own resolver** (the default) and **Grounder's resolver**, then **← Back**. The row shows the one set now |
 | **Done** | Ends it, and says nothing changed |
+
+After a pick of Grounder optimized, a preset or a provider, the menu asks one more question, "Also read sites you name directly, as you?", with **Yes** and **No** (the one now set marked "(current)"). Yes sets Grounder direct as an add-on to that mode and the reply's first line reads "Grounder direct + Grounder pinned" (or the mode you picked); No sets the mode alone.
 
 A pick closes the menu and answers with what is set now, in the shape of Hermes's own reply to a model switch:
 
 ```text
-✓ Search switched: Grounder direct
+✓ Search switched: Grounder pinned
   Provider: Wikipedia, the only search provider called
   Capabilities: encyclopedia, page text
   Filters: language
@@ -273,14 +280,14 @@ A pick closes the menu and answers with what is set now, in the shape of Hermes'
 A provider with modes adds a **Mode** line: the mode, or Default, and the line Grounder gives it. A preset's reply says what the preset is for and how many providers it draws from. Grounder optimized's says Grounder picks the provider. Leaving the live-data APIs by **Done** lists the ones set to Every call or Never. A typed argument is answered the same way, and when the pick is what your account already had, the first line says "Search unchanged". No line of a reply is longer than 64 characters: a longer one is wrapped at a word, so a terminal does not break it mid-word.
 
 The row for what is set now says "(current)". Each choice is saved to your account when you make it. A row takes at most 56 characters with its number, so it stays one line in Hermes's panel in a terminal 66 columns wide or more: a note that does not fit gives way to a shorter one, or is cut at a word with "…". A list is one card, except where a messaging app limits a card and the list does not fit it (Discord 24 choices; WhatsApp's list takes 10 rows and Hermes adds its own "Other" row, so 9 here). There it is a page at a time, with **More: 8–14 of 22** and, on a later page, a Back row that goes to the page before. Hermes numbers the first ten rows of a card (1 to 9, then 0); the rows after them have no number, and the arrow keys reach them. In a terminal with fewer rows than a list, Hermes's panel shows the part of the list around the cursor and its question line scrolls out of view; the arrow keys still reach every row. A name typed in Hermes's "Other (type your answer)" row picks an item on the card shown. Typed arguments skip the menu: `/search exa`, `/search exa:instant` (a provider's mode), `/search fast` (a preset), `/search optimized` (or `/search auto`), `/search apis`
-(the live-data APIs), and `/search apis espn=every mlb=never polymarket=auto` to set some without the page (`every`, `never` or `auto`). `/search api:<id>` sets one live-data API to Every call.
+(the live-data APIs), and `/search apis espn=every mlb=never polymarket=auto` to set some without the page (`every`, `never` or `auto`). `/search api:<id>` sets one live-data API to Every call. For Grounder direct: `/search direct` (by itself), `/search direct with-search` (as an add-on to the mode you have), `/search direct off`, and the shorter `/search addon on|off`. `/search settings` opens Settings, and `/search resolver system|grounder` sets the resolver without the menu.
 
 ### Live-data APIs: Every call, Never or Grounder decides
 
-Each live-data API (scores, prices, odds, flights, weather and more: Grounder lists them) has its own setting, and it applies in every mode, Grounder optimized, a Grounder preset and Grounder direct,
+Each live-data API (scores, prices, odds, flights, weather and more: Grounder lists them) has its own setting, and it applies in every mode, Grounder optimized, a Grounder preset and Grounder pinned,
 in any combination. **Every call**: Grounder asks it on every search. **Never**: Grounder never asks it. **Grounder decides**, the default: Grounder asks it only when your question's features
 call for it. The live-data APIs are asked beside the mode's one search-provider call, never in place of it, and their results come back beside the provider's, each labeled with its source.
-Grounder direct changes only the search provider: it is the one you picked, and the live-data APIs follow their settings.
+Grounder pinned changes only the search provider: it is the one you picked, and the live-data APIs follow their settings.
 
 A preset and a provider you pick clear each other. A provider you pick is the only search provider a search calls, saved with its fallback off: if it
 finds nothing, the search returns nothing and Grounder picks no other provider. (A provider already saved with its fallback on, on the Routing page, keeps it when you pick it again here, and Grounder
@@ -300,7 +307,100 @@ With no search key and no sign-in, a command answers with how to sign in instead
 search has no account to save a choice on. A Hermes that bundles Grounder's provider has the command already, and this plugin adds none there. A Hermes that
 cannot register a command or ask a choice gets none, and search works the same.
 
+## Grounder direct: read the page from its own site, as you
+
+Grounder direct is the fourth mode. You name the page, or the site, and Grounder reads it straight from that site with your own user agent: no search provider is asked, no search runs, and nothing else is tried if the page cannot be read. It is a plugin feature on your Mac, and it works through Safari's engine.
+
+What a direct read uses and sends:
+
+- No search provider credits and no Grounder credits. A direct read is not a search, so it is not counted against the free searches and is not charged to your account or your wallet.
+- Nothing goes to Grounder with it. The page comes from the site to your Mac, and what it returns is not kept or sent anywhere. The one exception is a lookup: when you choose Grounder's resolver (below), the host names the reader looks up go to Grounder as DNS queries, and nothing else does.
+
+### What a Mac needs
+
+- macOS, because the reader is a small Swift program that opens each page in a hidden WebKit view, the engine Safari is built on.
+- Safari, installed at `/Applications/Safari.app`. The reader asks for the page with the user agent your installed Safari's version makes (Safari freezes the platform and WebKit parts of it, so only the `Version/` part follows your Safari), and a fresh, empty session.
+- The reader, which is a signed, notarized program, `grounder-direct`, installed by `curl -fsSL https://grounder.net/install | sh` into `~/Library/Application Support/Grounder Direct/bin`. The plugin runs it for every read (as `grounder-direct reader`), so no Xcode and no command line tools are needed. Without it, a Mac that has Xcode's command line tools still works: the plugin compiles the same reader with `xcrun swiftc` the first time it reads a page, and again when the reader's source changes, into `$HERMES_HOME/cache/grounder-direct`.
+
+Elsewhere, Grounder direct does not read: on a machine that is not a Mac, or a Mac without Safari, the plugin does not fall back to Grounder's page reader or to any other host. A read returns a result that says so ("this machine is not a Mac", or "Safari is not installed here"), and the model tells you. Use one of the three search modes there.
+
+### Choosing it
+
+Grounder direct is chosen by itself, or as an add-on to any of the other three modes. It is set on this Mac only, in `web.grounder.direct` of your Hermes `config.yaml`, and never on your Grounder account.
+
+- **By itself.** Only the pages you name are read, and no search runs. `web_search`, `web_extract` and `grounder_search` all read only the addresses they are given (or the addresses in your latest message). A request that names no address and no site reads nothing: the model asks which site to go to. Choose it with `/search direct`, or with the **Grounder direct** row of the `/search` menu.
+- **As an add-on.** Searches run as the mode you chose says (Grounder optimized, a Grounder preset or Grounder pinned), and every page you name, or a search asks to read, is read with Grounder direct instead of Grounder's page reader. A question that names a site is read from that site; one that names none is searched; one that needs both gets both, and the answer says which part came from the site itself. After you pick Grounder optimized, a preset or a provider in the `/search` menu, it asks "Also read sites you name directly, as you?": Yes turns the add-on on, No turns it off. The reply then says "Grounder direct + Grounder optimized" (or the mode you picked). Typed: `/search direct with-search` turns the add-on on for the mode you have, and `/search direct off` turns Grounder direct off, so a page is read by Grounder's reader again. Picking a search mode, in the menu or typed (`/search fast`), ends Grounder direct by itself and searches again as that mode says; an add-on that was on stays as it was.
+
+`/search` needs a connected account, like the rest of its menu, and so do `/search settings` and `/search resolver`. `/search-login`, `/search-logout` and `/search-direct-format` do not. `hermes config set web.grounder.direct only` (by itself), `with-search` (the add-on) or `off` sets the same thing without one.
+
+You never need to give a site's exact address. Name the site (a forum, a wiki, a publication) and the model works out the most specific page that answers you, written the way the site serves it, then reads it. The plugin's instructions to the model say the same of every web lookup: use Grounder's tools for them, including reading a page you link or a site you name, and not a browser or a terminal command such as `curl`.
+
+### Formats: how a page comes back
+
+A page comes back in one of three formats. Name one in your message ("give me the highlights", "summarize it", "the full page"), or set a default with `/search-direct-format`. A format you name in chat, or that a call sets, wins for that turn, and the saved default is `full-page` until you set one.
+
+| Format | What you get |
+|---|---|
+| `full-page` | The page's text as it was read, in full and in its order, without summarizing. Only menus, buttons and other navigation lines are left out. At most 60,000 characters of a page's text are returned |
+| `highlights` | Exact quotes from the page, word for word, as a bulleted list in page order. The plugin picks the passages that share the most words with your question (at most 10, each cut at 400 characters), lists each once in page order, and drops advertisements and the unlabelled copies of their text, so the model adds no words of its own to them |
+| `summary` | An AI summary written by your own active model through Hermes (`ctx.llm`): one sentence on what the page is, then three to six bullet points, most important first, with names and numbers kept. When your request names a topic beyond reading the page, the summary puts what the page says about it first, and ends with a line saying so if the page says nothing about it. The page's first 20,000 characters go to that model (500 tokens at most for the answer), under the heading "AI summary". If this Hermes gives plugins no model, or the model call fails or returns nothing, the page's text comes back with the ask to the answering model to write the summary itself, and says why. The plugin calls no model of its own |
+
+`/search-direct-format` opens a choice of the three. `/search-direct-format highlights` sets one at once, and the saved default is `web.grounder.direct_format`, on this Mac only. A messaging chat that cannot show a choice answers with the current format and how to set one.
+
+### Sign-ins: read a site signed in as you
+
+A direct read starts with a fresh, logged-out session. For a site that needs you signed in, save a sign-in once:
+
+`/search-login reddit.com` (`/search_login` on Telegram, which allows no hyphen in a command name). Give a site, such as `reddit.com`, or any address on it: `https://old.reddit.com/login` is cleaned to the site, `reddit.com`, and the sign-in then covers every subdomain and page of it. A window opens on your Mac at the site's own sign-in page. Sign in there, passing the site's own checks yourself, then click Save sign-in (Command-S). From then on Grounder direct reads that site signed in as you, with the same Safari user agent. `/search-login` with no site lists the sign-ins you have saved.
+
+Signing in is optional. A saved sign-in that cannot be used (it expired, or its keychain key is gone) never stops a read: the page is read logged out instead, and the page's first line says so. To read a site logged out on purpose while a sign-in is saved for it, say so in your message ("not logged in", "without my sign-in"); the model then passes `signed_in: false` to `grounder_search`.
+
+How a sign-in is kept: the site's cookies are sealed in a file only your user can read (`~/Library/Application Support/Grounder Direct/sign-ins`), under a key that only your login keychain holds (service `grounder-direct`). No cookie passes through Hermes, the model, a log or a command line, and none is sent to any site but the one it was saved for. Cookies the site refreshes during a read are saved back. A sign-in is never sent to Grounder.
+
+To forget one: `/search-logout reddit.com` (`/search_logout` on Telegram) removes its keychain key and its sealed file, and the site is read logged out again; like `/search-login`, it cleans what you type to the site. `/search-logout` with no site, like `/search-login` with none, lists the saved sign-ins, by site and when each was saved, never their values. Neither command needs a connected account. The older `/search direct signin`, `signout` and `sites` still work as aliases. From a terminal, `python3 direct_dev.py forget <site>` and `python3 direct_dev.py sites` in the plugin's folder do the same, and `python3 direct_dev.py paste <site>` saves a Cookie header at a hidden prompt, for a site that refuses to sign in inside the window.
+
+### Which resolver it looks sites up with
+
+Some sites blank their own page when your DNS filter blocks one of their scripts (a site whose ad-block check cannot load its helper script, for example). The Settings section of `/search` (`/search settings`, then Resolver) chooses the resolver a direct read looks sites up through, saved on this Mac as `web.grounder.direct_resolver`. `/search resolver system` and `/search resolver grounder` set it without the menu. When it is Grounder's, a page's header says its name was looked up through Grounder's resolver.
+
+| Resolver | What it means |
+|---|---|
+| `system` (the default; "Your own resolver") | Your own: this Mac's, with any filter on it or on your network |
+| `grounder` ("Grounder's resolver") | Grounder's, at `https://api.grounder.net/v1/dns-query` (DNS over HTTPS, no account needed). Grounder's resolver sees the host names the reader looks up, not the pages, which go from your Mac to the site, encrypted end to end. Grounder keeps no log of the names |
+
+`hermes config set web.grounder.direct_resolver grounder` sets it without the menu.
+
+### The line under the answer
+
+An answer that read pages with `web_extract` or a direct read ends with one more line, beside the "Searched with ..." line. For pages Grounder direct read on your Mac: `Grounder fetched www.cnn.com (summary) · 9.0 s`: the host, the format, and how long the reads took (with the number of pages when there are several; at most three hosts are named, then `+n`). For pages Grounder's own reader extracted: `Grounder extracted example.com`.
+
+### Limits
+
+- Public `http` and `https` addresses only: an address that carries a key or token, or is not public, is refused, as everywhere in the plugin. Up to 10 pages in a call, though Hermes's `web_extract` asks for at most 5.
+- One page at a time, with at least 2 seconds between two reads of one site. A read stops itself after 30 seconds, and the plugin gives up on it at 45.
+- A site's own check, a block page or a "verify you are human" page, is reported with what it said, and never solved or skipped. The page is not retried through another route.
+- A page that builds its text with scripts that have not finished when it is read can come back with no text, and says so. A page the site answers with HTTP 400 or above comes back as not read, with the status.
+- No fallback: a page that cannot be read says why, and nothing else is tried, with one exception. When a page does not load at all (not when the site answers with a status, a check or a block), the plugin reads the same address once more on the site's other host name: `www.` added to a bare domain, or taken off a `www.` one. The page then says its other host was read. Nothing else is tried.
+
+### When a read does not work
+
+| What you see | What it means and what to do |
+|---|---|
+| The site showed a check instead of the page ("verify you are human", "just a moment", "access denied", "unusual traffic") | The site's own bot check answered. Nothing was done to get past it. Save a sign-in with `/search-login <site>`, where you pass the check yourself, or give another address |
+| The site served an empty page that only runs a script | This is how a bot check such as Akamai's looks. A sign-in saved with `/search-login <site>`, where you pass the check yourself, may get through |
+| The page asks you to log in, or comes back as a log-in page | Save a sign-in with `/search-login <site>`; the site is then read signed in as you |
+| The site answered HTTP 403 or another status above 399 | The site refused the read. It is reported as it was, and not retried through another route |
+| The page showed no text when it was read | It builds its text with scripts that had not finished. Try again, or read another page of the site |
+| Safari is not installed here | Grounder direct needs Safari's version for the user agent it reads with. Install or restore Safari, or use a search mode |
+| Could not build the reader | The program is not installed and this Mac has no Xcode command line tools to build one: run `curl -fsSL https://grounder.net/install | sh`, then read again |
+| This machine is not a Mac | Grounder direct reads with Safari's engine on a Mac only. Use a search mode here |
+| The page did not load, and its other host name was read | The page at the address you gave did not load at all, so the plugin read its `www.` or bare twin once. The header of the page says so |
+| "Grounder direct searches nothing: it goes only to an exact address, and this call had none" | Name a site or give an address. In Grounder direct by itself, nothing is searched |
+| A site blanks its page and nothing changes | Your DNS filter may be blocking one of its scripts. Choose Grounder's resolver in Settings of `/search` |
+
 ## What is sent
+
+**A Grounder direct read sends nothing to Grounder.** The page address goes from your Mac to the page's own site, with your Safari's user agent and, for a site you saved a sign-in for, that site's own cookies. It uses no search provider credits and no Grounder credits, and nothing it returns is kept or sent anywhere. The three things that do leave your Mac, each only to the one they are for: the site you read gets the address you asked for; with Grounder's resolver chosen, Grounder gets the host names the reader looks up, as DNS queries to `https://api.grounder.net/v1/dns-query`, and not the pages; and with the `summary` format, the page's first 20,000 characters and your question go to your own active model through Hermes, the model you already use. In the add-on, the search itself is sent and billed as its mode says, and only the page reads are Grounder direct's.
 
 Each `web_search` query, up to its first 2,000 characters, goes to `https://api.grounder.net/v1/search` with the number
 of results wanted, your search key or, when you signed in, the
