@@ -86,10 +86,11 @@ SEARCH_URL = f"{ORIGIN}/v1/search"
 FEATURES_URL = f"{ORIGIN}/v1/features"
 PROVIDERS_URL = f"{ORIGIN}/v1/providers"  # public: the search providers and the live-data APIs, which /search offers
 PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /search offers
+SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports the sites it has a saved sign-in for (names, this Mac, when saved), with the key or the sign-in
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.8.1"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.8.2"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -602,6 +603,49 @@ def _settings_call(method: str, body: Optional[dict[str, Any]] = None) -> tuple[
     if not isinstance(answer, dict) or not isinstance(answer.get("search"), dict):
         return None, "Grounder's answer was not what was expected"
     return answer, None
+
+
+def _sign_ins_call(body: dict[str, Any], timeout: float) -> Optional[dict[str, Any]]:
+    """``PUT`` Grounder direct's saved sign-in names (``direct_dev.sync_body``) and return Grounder's answer, or None when there is no credential or it failed.
+    Never raises: a sync is best effort. It goes with the search key when one is set, else through Hermes's sign-in, and follows no redirect."""
+    key = _key()
+    if key and not _key_fits(key):
+        return None
+    headers = {"Accept": "application/json", "User-Agent": USER_AGENT, "Content-Type": "application/json"}
+    try:
+        if key:
+            request = urllib.request.Request(SIGN_INS_URL, json.dumps(body).encode(), method="PUT", headers={**headers, "Authorization": f"Bearer {key}"})
+            try:
+                with _open(request, timeout) as response:
+                    status, raw = response.status, response.read()
+            except urllib.error.HTTPError as error:
+                status, raw = error.code, error.read()
+        else:
+            response = credentialed_provider_request(OAUTH_ID, "PUT", SIGN_INS_URL, headers=headers, timeout=timeout, json=body)
+            status, raw = response.status, response.body
+        answer = json.loads(raw)
+    except Exception as error:  # no sign-in, a refusal, no network, a body that is not JSON: the list stays as it is
+        logger.info("Grounder direct's sign-in list was not synced: %s", error)
+        return None
+    return answer if status == 200 and isinstance(answer, dict) else None
+
+
+direct_dev.account_sender = _sign_ins_call
+
+
+def _can_sync_sign_ins() -> bool:
+    """Whether there is a credential to report the saved sign-ins with: a search key, or a Hermes sign-in (which only a request can show, so it is asked with the
+    settings read, which spends no search). Asked before the keychain is listed."""
+    if _key():
+        return True
+    try:
+        _settings_call("GET")
+    except ProviderNotSignedIn:
+        return False
+    return True
+
+
+direct_dev.credential_probe = _can_sync_sign_ins
 
 
 def read_account() -> tuple[Optional[dict[str, Any]], Optional[str]]:

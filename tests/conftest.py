@@ -119,6 +119,8 @@ def _load_plugin():
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    # No test syncs the saved sign-ins by itself (that lists this Mac's login keychain and calls Grounder); the ones that test it set a sender.
+    sys.modules["grounder_hermes_plugin.direct_dev"].account_sender = None
     return module
 
 

@@ -28,8 +28,10 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -216,6 +218,7 @@ def read(url: str, signed_out: bool = False) -> dict[str, Any]:
     (the user asked for that). Signing in is optional, so a saved sign-in that cannot be used never stops a read: the page is read logged out instead and says
     why (``sign_in_skipped``). When the page does not load at all (not a site's answer such as a 403 or a check, which stands), the same address on the site's
     other host, ``www.`` or bare, is read once instead, and the page says so (``resolved_from``). Nothing else is tried."""
+    sync_soon()
     page = _read_at(url, signed_out)
     problem = str(page.get("problem") or "")
     if not signed_out and "/search-login" in problem:  # the saved sign-in is broken or missing: read logged out
@@ -396,7 +399,8 @@ def sign_in(raw: str, wait: bool = False) -> str:
     command = [*_reader_command(helper), "--signin", site, agent, start]
     env = {**os.environ, **reader_env()}  # the window looks the site up through the same resolver reads use
     if not wait:
-        subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+        window = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+        threading.Thread(target=lambda: (window.wait(), sync_soon(True)), daemon=True).start()  # once the window closes, the account hears of what was saved
         return (f"A window opened on this Mac at {start}. Sign in to {site} there, then click Save sign-in (Command-S). From then on {NAME} reads {site}, "
                 f"every subdomain of it and every page, signed in, with your Safari's user agent; its cookies stay sealed on this Mac and go only to {site}. "
                 f"`/search-login` lists sign-ins, `/search-logout {site}` forgets this one.")
@@ -450,9 +454,15 @@ def sign_out(raw: str) -> str:
     return f"Forgot the {site} sign-in: {NAME} reads {site} logged out again." if gone else f"No sign-in was saved for {site}."
 
 
-def sites() -> list[tuple[str, str]]:
-    """Each site with a saved sign-in, and when and how it was saved (the keychain item's comment). Names only: no value is read."""
-    done = subprocess.run([SECURITY, "dump-keychain"], capture_output=True, text=True, timeout=30)
+def listed(timeout: float = 30) -> Optional[list[tuple[str, str]]]:
+    """Each site with a saved sign-in, and when and how it was saved (the keychain item's comment). Names only: no value is read. ``None`` when the keychain
+    could not be listed (locked, ``security`` failed or timed out): that is not an empty list, and nothing may treat it as one."""
+    try:
+        done = subprocess.run([SECURITY, "dump-keychain"], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if done.returncode != 0:
+        return None
     found = []
     for item in done.stdout.split("keychain: ")[1:]:
         if f'"svce"<blob>="{SERVICE}"' not in item and f'"svce"<blob>="{LEGACY_SERVICE}"' not in item:
@@ -464,11 +474,228 @@ def sites() -> list[tuple[str, str]]:
     return sorted(dict(found).items())
 
 
+
+def sites() -> list[tuple[str, str]]:
+    """``listed``, with a keychain that could not be listed shown as none."""
+    return listed() or []
+
+
+# The account's copy of this list (GRO-933): the site names, which Mac and when each was saved, listed on grounder.net so a sign-in can be removed from there;
+# the cookies never leave this Mac. ``sync`` reports the list and applies the removals the account asks for. It is best effort and never fails what called it.
+ACCOUNT_URL = "https://grounder.net/account/routing#route-signins"
+SYNC_EVERY_S = 600  # a read syncs first when the last sync was longer ago than this
+SYNC_TIMEOUT_S = 3  # one request, and the keychain listing a sync of a read waits for
+MAX_NAME = 60
+UUID_V4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+SAVED_NOTE = re.compile(r"^saved ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z) by ")
+BACKGROUND_LISTING_S = 30  # a sync on a thread of its own can wait for a slow keychain
+# Set by provider.py: ``account_sender(body, timeout)`` is the answer of ``PUT /v1/direct/sign-ins`` (a dict) or None when it failed, and ``credential_probe()`` is
+# whether the plugin has anything to send it with (a search key, or a Hermes sign-in): asked before the keychain is listed, so a plugin with neither lists nothing.
+account_sender: Optional[Callable[[dict[str, Any], float], Optional[dict[str, Any]]]] = None
+credential_probe: Callable[[], bool] = lambda: True
+
+
+def support_dir() -> Path:
+    return Path.home() / "Library" / "Application Support" / "Grounder Direct"
+
+
+def _write_private(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    partial = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(text)
+    os.replace(partial, path)
+
+
+def device_id() -> str:
+    """This Mac's id for the account: a random lowercase UUID made on first need and kept in ``device.json``, shared with grounder-direct."""
+    path = support_dir() / "device.json"
+    try:
+        known = json.loads(path.read_text()).get("id")
+        if isinstance(known, str) and UUID_V4.match(known):
+            return known
+    except (OSError, ValueError, AttributeError):
+        pass
+    return claim_device_id(str(uuid.uuid4()))
+
+
+def claim_device_id(made: str) -> str:
+    """Make ``made`` this Mac's id unless one is already kept, and return the one that is. The file is written whole and linked into place, which fails when the file
+    exists, so the plugin and grounder-direct starting together never keep two ids. A file that exists but holds no id is replaced."""
+    path = support_dir() / "device.json"
+    try:
+        known = json.loads(path.read_text()).get("id")
+        if isinstance(known, str) and UUID_V4.match(known):
+            return known
+    except (OSError, ValueError, AttributeError):
+        pass
+    if path.exists():
+        _write_private(path, json.dumps({"id": made}))
+        return made
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    partial = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(json.dumps({"id": made}))
+    try:
+        os.link(partial, path)
+        return made
+    except FileExistsError:
+        try:
+            known = json.loads(path.read_text()).get("id")
+            return known if isinstance(known, str) and UUID_V4.match(known) else made
+        except (OSError, ValueError, AttributeError):
+            return made
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def device_name() -> str:
+    """The name the account shows for this Mac: its computer name, else its host name, trimmed and cut to 60 characters."""
+    for command in (["/usr/sbin/scutil", "--get", "ComputerName"], ["/bin/hostname", "-s"]):
+        try:
+            done = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        name = done.stdout.strip()
+        if done.returncode == 0 and name:
+            return name[:MAX_NAME].strip()
+    return "Mac"
+
+
+def saved_at(note: str) -> Optional[str]:
+    """When a sign-in was saved, from its keychain comment (``saved <time> by <how>, N cookies``), or None."""
+    found = SAVED_NOTE.match(note or "")
+    if not found:
+        return None
+    text = found.group(1)
+    try:  # a time that is no real instant (2026-02-30) would be refused by the account, and with it the whole report
+        datetime(int(text[0:4]), int(text[5:7]), int(text[8:10]), int(text[11:13]), int(text[14:16]), int(text[17:19]))
+    except ValueError:
+        return None
+    return text
+
+
+def sync_body(identity: str, name: str, found: list[tuple[str, str]]) -> dict[str, Any]:
+    """The body of ``PUT /v1/direct/sign-ins`` for a listing: this Mac and each site once, in order, with when it was saved. A name that is no site is left out."""
+    rows, seen = [], set()
+    for site, note in found:
+        if site in seen or len(site) > 253 or not SITE.match(site) or site != site.lower():
+            continue
+        seen.add(site)
+        rows.append({"site": site, "saved_at": saved_at(note)})
+    return {"device": {"id": identity, "name": (name or "Mac").strip()[:MAX_NAME]}, "sites": sorted(rows, key=lambda row: row["site"])}
+
+
+def removal_site(raw: Any) -> str:
+    """The site a removal the account sent names, or "" when it is not one this Mac could have saved: only a name ``site_of`` would give back is used, so a name with
+    a slash, a dot-dot, a capital or anything else never reaches a path."""
+    if not isinstance(raw, str) or len(raw) > 253 or raw != raw.strip() or raw != raw.lower() or not SITE.match(raw):
+        return ""
+    return raw if site_of(raw)[0] == raw else ""
+
+
+def account_line(connected: bool) -> str:
+    """The line under the list of sign-ins: where else the list is."""
+    if connected:
+        return f"This list is also on your Grounder account, under Saved sign-ins on the Routing page ({ACCOUNT_URL}); the cookies stay on this Mac."
+    return "This list is on this Mac only."
+
+
+def last_sync() -> Optional[datetime]:
+    try:
+        return datetime.strptime(json.loads((support_dir() / "sync.json").read_text()).get("last_sync_at"), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def sync_due() -> bool:
+    last = last_sync()
+    return last is None or (datetime.now(timezone.utc) - last).total_seconds() > SYNC_EVERY_S
+
+
+_sync_lock = threading.Lock()
+_last_attempt = -1.0  # when this process last started a background sync (monotonic), so a read that finds no credential does not list the keychain again and again
+RETRY_S = 60
+
+
+def sync(listing_timeout: float = 30) -> str:
+    """Report this Mac's sign-ins to the account and forget the ones the account asks to remove, then report again so the site sees them gone. Says what happened.
+    With no credential nothing is sent; with a keychain that cannot be listed nothing is sent either (an empty report would delete every row of this Mac)."""
+    if account_sender is None or not _has_credential():
+        return "No Grounder account is connected here, so the sign-in list stays on this Mac only."
+    with _sync_lock:
+        removed: list[str] = []
+        for _ in range(3):  # a report, and at most two more after removals
+            found = listed(listing_timeout)
+            if found is None:
+                return "Skipped: the login keychain could not be listed, and an empty report would delete this Mac's rows on your account."
+            try:
+                answer = account_sender(sync_body(device_id(), device_name(), found), SYNC_TIMEOUT_S)
+            except Exception as error:  # a sync never fails what called it
+                logger.warning("Could not sync the saved sign-ins: %s", error)
+                answer = None
+            if answer is None:
+                return "Nothing was sent: no Grounder account is connected here, or it could not be reached. The sign-ins stay as they are."
+            _write_private(support_dir() / "sync.json", json.dumps({"last_sync_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}))
+            held = {site for site, _ in found}
+            asked = answer.get("remove") if isinstance(answer.get("remove"), list) else []
+            todo = []
+            for raw in asked:
+                site = removal_site(raw)
+                if site and site in held:
+                    todo.append(site)
+                else:
+                    logger.warning("Ignored a sign-in removal the account sent for %r", raw if isinstance(raw, str) else type(raw).__name__)
+            todo = [site for site in dict.fromkeys(todo) if not sign_out(site).startswith("Could not")]
+            if not todo:
+                break
+            removed += todo
+        return (f"Synced {len(found)} saved sign-in{'s' if len(found) != 1 else ''} with your Grounder account"
+                + (f"; forgot {', '.join(removed)} as asked on grounder.net." if removed else "."))
+
+
+def sync_soon(force: bool = False) -> None:
+    """Sync in the background (the credential probe runs there too, as it can be a network call), for the first use in this process, after a sign-in or sign-out (``force``) and before a read when the last sync is old. Never raises."""
+    global _last_attempt
+    try:
+        now = time.monotonic()
+        first = _last_attempt < 0
+        if account_sender is None or not (force or first or (now - _last_attempt > RETRY_S and sync_due())):
+            return
+        _last_attempt = now
+        threading.Thread(target=_quiet_sync, daemon=True).start()
+    except Exception as error:
+        logger.warning("Could not start the sign-in sync: %s", error)
+
+
+def _has_credential() -> bool:
+    try:
+        return bool(credential_probe())
+    except Exception:
+        return False
+
+
+def _quiet_sync() -> None:
+    try:
+        said = sync(BACKGROUND_LISTING_S)
+        if said.startswith("Skipped"):
+            logger.warning("%s", said)
+    except Exception as error:
+        logger.warning("Could not sync the saved sign-ins: %s", error)
+
+
 def sites_text() -> str:
     found = sites()
     if not found:
         return f"No saved sign-ins: {NAME} reads every site logged out. `/search-login <site>` saves one."
-    return "\n".join([f"{NAME} reads these sites signed in:", *(f"  {site}: {note}" for site, note in found)])
+    return "\n".join([f"{NAME} reads these sites signed in:", *(f"  {site}: {note}" for site, note in found), account_line(_connected())])
+
+
+def _connected() -> bool:
+    """Whether a sync has worked, which is what says the list is on the account (a key that was revoked, or never sent, is not)."""
+    return last_sync() is not None
 
 
 DEV_COMMANDS = ("signin", "signout", "sites", "paste")
@@ -539,7 +766,9 @@ def logout_command(raw_args: str) -> str:
     typed = (raw_args or "").strip()
     if not typed:
         return f"Usage: `/{LOGOUT_COMMAND} <site>`, for example `/{LOGOUT_COMMAND} reddit.com`.\n{sites_text()}"
-    return sign_out(typed.split()[0])
+    said = sign_out(typed.split()[0])
+    sync_soon(True)
+    return said
 
 
 def register_login(ctx) -> None:
