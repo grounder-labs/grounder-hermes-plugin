@@ -145,7 +145,7 @@ def test_the_request_is_a_put_with_the_key_and_follows_no_redirect(plugin, monke
     assert answer == {"remove": ["reddit.com"]} and timeout == 3
     assert request.get_method() == "PUT" and request.full_url == "https://api.grounder.net/v1/direct/sign-ins"
     assert request.get_header("Authorization") == "Bearer gr-test-key" and json.loads(request.data)["device"]["name"] == "M"
-    assert request.get_header("User-agent") == "grounder-hermes/0.8.2"
+    assert request.get_header("User-agent") == "grounder-hermes/0.8.3"
 
 
 def test_a_refusal_or_a_missing_credential_is_no_answer_and_raises_nothing(plugin, monkeypatch):

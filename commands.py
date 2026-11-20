@@ -513,7 +513,7 @@ def _mode_label(saved: dict[str, Any], catalog: Catalog) -> str:
 
 
 def _set_addon(account: Account, catalog: Catalog, on: bool) -> str:
-    """Turn Grounder direct on or off as an add-on to the search mode, on this Mac only. On, it replaces Grounder direct by itself, and the account's mode searches again."""
+    """Turn Grounder direct on or off as an add-on to the search mode, saved on the account when there is a credential, else on this Mac. On, it replaces Grounder direct by itself, and the account's mode searches again."""
     was = direct_dev.state()
     direct_dev.set_state(direct_dev.ADDON if on else direct_dev.OFF)
     mode = _mode_label(account.saved, catalog)
@@ -527,11 +527,11 @@ def _set_addon(account: Account, catalog: Catalog, on: bool) -> str:
         "Both: when a question needs the site and wider context, the model uses both and says which part came from where",
         "No fallback: a page that cannot be read says why",
         "Credits: a direct read uses no search provider credits and no Grounder credits",
-        "(saved on this machine: web.grounder.direct in config.yaml)"])
+        direct_dev.saved_note()])
 
 
 def _pick_dev(account: Account, catalog: Catalog) -> str:
-    """Turn Grounder direct on by itself, on this machine only, and answer with what it does. The account's own setting is left as it is, and applies again at the next pick."""
+    """Turn Grounder direct on by itself, saved on the account when there is a credential, else on this machine, and answer with what it does. """
     was = direct_dev.is_on()
     direct_dev.set_on(True)
     current = _current_pick(account.saved, catalog)
@@ -547,7 +547,7 @@ def _pick_dev(account: Account, catalog: Catalog) -> str:
              "Search: none. No search provider is called, and nothing else is tried when a page cannot be read",
              "Credits: none; no search provider credits and no Grounder credits",
              f"Your account: keeps {kept}, which applies again when you pick another mode",
-             "(saved on this machine: web.grounder.direct in config.yaml)"]
+             direct_dev.saved_note()]
     return _block(f"Search {'unchanged' if was else 'switched'}: {direct_dev.NAME}", lines)
 
 
@@ -823,7 +823,7 @@ def _listing(catalog: Catalog, usage: str, saved: dict[str, Any]) -> str:
              f"{PRESETS_HEADER} (`/search <preset>`):", *(f"  {p['id']} ({p['name']}): {p['description']}" for p in catalog.presets),
              f"{PROVIDERS_HEADER} (`/search <provider>` or `/search <provider>:<mode>`, the only search provider called), each provider with its modes:",
              *(f"  {p['id']} ({p['name']})" + (f": {', '.join(m['mode'] for m in p['modes'])}" if p["modes"] else "") for p in catalog.providers),
-             "Grounder direct (on this Mac only): by itself (`/search direct`), it goes only to the address you give, as your Safari asks for it, with no search and no "
+             "Grounder direct (saved on your Grounder account, or on this Mac without one): by itself (`/search direct`), it goes only to the address you give, as your Safari asks for it, with no search and no "
              "fallback; as an add-on (`/search addon on|off`), searches run in the mode above and every page and named site is read straight from its site. "
              "`/search-login <site>` saves a sign-in it then uses on every page of that site, `/search-logout <site>` forgets it; sign-ins are optional. "
              "`/search-direct-format` sets how a page comes back: full-page, highlights or summary."]
@@ -927,14 +927,14 @@ FORMAT_NOTES = {"full-page": "the page's whole text", "highlights": "its passage
 
 
 def _format_reply(fmt: str, was: Optional[str]) -> str:
-    lines = [f"Pages: {FORMAT_NOTES[fmt]}", "A format you name in chat, or a call's own format, wins for that turn", "(saved on this machine: web.grounder.direct_format in config.yaml)"]
+    lines = [f"Pages: {FORMAT_NOTES[fmt]}", "A format you name in chat, or a call's own format, wins for that turn", direct_dev.saved_note("direct_format")]
     if not direct_dev.reads_pages():
         lines.insert(0, "Grounder direct is off: `/search direct` or `/search addon on` to use it")
     return _block(f"Format {'unchanged' if was == fmt else 'switched'}: {fmt}", lines)
 
 
 def search_format_command(ctx, raw_args: str) -> Optional[str]:
-    """``/search-direct-format [full-page|highlights|summary]``: how a page Grounder direct reads comes back, and how the model answers from it. Saved on this machine only."""
+    """``/search-direct-format [full-page|highlights|summary]``: how a page Grounder direct reads comes back, and how the model answers from it. Saved on the account when there is a credential, else on this machine."""
     from . import direct_formats
     was = direct_formats.saved()
     arg = (raw_args or "").strip()

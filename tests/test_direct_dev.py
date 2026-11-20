@@ -13,8 +13,14 @@ import os
 
 import pytest
 import yaml
-
-from test_commands import Host, _labels, _saved, _values, lists, signed_in  # noqa: F401  (fixtures)
+from test_commands import (  # noqa: F401  (fixtures)
+    Host,
+    _labels,
+    _saved,
+    _values,
+    lists,
+    signed_in,
+)
 
 PAGE = "https://www.reddit.com/r/MechanicalKeyboards/"
 
@@ -58,14 +64,15 @@ def test_the_hub_offers_grounder_direct_as_the_fourth_choice_after_the_three_sea
     assert _labels(host.asked[0][1])[:4] == ["Grounder optimized (current)", "Grounder presets", "Grounder pinned", "Grounder direct"]
 
 
-def test_picking_it_turns_it_on_here_and_writes_nothing_to_the_account(plugin, signed_in, tmp_path, monkeypatch):
+def test_picking_it_turns_it_on_here_and_on_the_account_when_there_is_one(plugin, signed_in, tmp_path, monkeypatch):
     monkeypatch.setattr(plugin.direct_dev, "safari_version", lambda: "27.2")
     host = Host(["dev"])
     reply = plugin.commands.search_command(host, "")
     assert reply.startswith("✓ Search switched: Grounder direct\n")
     assert "Goes to: only the address you give" in reply and "your Safari 27.2" in reply and "keeps Grounder optimized" in reply
     assert _dev(tmp_path) is True
-    assert [r["method"] for r in signed_in.stub.requests if r["path"] == "/v1/search/settings"] == ["GET"]  # read, never written
+    puts = [json.loads(r["body"]) for r in signed_in.stub.requests if r["path"] == "/v1/search/settings" and r["method"] == "PUT"]
+    assert puts == [{"direct": {"use": "only"}}] and signed_in.stub.saved_direct["use"] == "only"  # saved on the account too, and nothing else of it written
     again = Host(["done"])
     plugin.commands.search_command(again, "")
     assert _labels(again.asked[0][1])[:4] == ["Grounder optimized", "Grounder presets", "Grounder pinned", "Grounder direct (current)"]
@@ -132,7 +139,7 @@ def test_live_reads_a_reddit_community_and_stops_at_reddits_search_block(plugin,
     assert not stub.requests
 
 
-def test_while_on_each_message_asks_the_model_to_turn_a_named_site_into_its_exact_address(plugin, tmp_path):
+def test_while_on_each_message_asks_the_model_to_turn_a_named_site_into_its_exact_address(plugin, hermes, tmp_path):
     host = Host()
     plugin.register(host)
     assert host.hooks["pre_llm_call"] is plugin.before_llm
@@ -197,7 +204,7 @@ def test_the_users_words_pick_the_format_of_a_web_extract(plugin, stub, hermes, 
     assert "Format: summary" in entry["content"]
 
 
-def test_the_turn_note_asks_for_the_format_the_user_named(plugin, dev_on):
+def test_the_turn_note_asks_for_the_format_the_user_named(plugin, hermes, dev_on):
     note = plugin.direct_dev.turn_note(user_message="highlights from the wikipedia page on switches")["context"]
     assert 'format "highlights"' in note and 'mode "grounder-direct"' in note
     assert "format" not in plugin.direct_dev.turn_note(user_message="what does wikipedia say")["context"].split("ask which site to go to.")[1]
@@ -328,8 +335,10 @@ def test_an_empty_script_only_page_is_reported_as_a_bot_check(plugin, monkeypatc
     assert "bot check" in problem and "Nothing was done to get past it" in problem
 
 
-def test_a_changed_format_or_mode_drops_hermess_cached_grounder_searches(plugin, monkeypatch, dev_on):
-    import sys, threading, types
+def test_a_changed_format_or_mode_drops_hermess_cached_grounder_searches(plugin, hermes, monkeypatch, dev_on):
+    import sys
+    import threading
+    import types
     memo = types.SimpleNamespace(_store={("grounder", "q", 10): (0, {}), ("exa", "q", 10): (0, {})}, _store_lock=threading.Lock())
     monkeypatch.setitem(sys.modules, "tools.web_result_cache", types.SimpleNamespace(search_memo=memo))
     plugin.direct_formats.save("summary")
@@ -360,8 +369,11 @@ def test_a_read_through_grounders_resolver_says_so(plugin, monkeypatch):
     assert "its name looked up through Grounder's resolver" in line
 
 
-def test_turning_grounder_direct_on_drops_pages_hermes_cached_from_grounders_reader(plugin, monkeypatch, tmp_path):
-    import hashlib, sys, threading, types
+def test_turning_grounder_direct_on_drops_pages_hermes_cached_from_grounders_reader(plugin, hermes, monkeypatch, tmp_path):
+    import hashlib
+    import sys
+    import threading
+    import types
     digest = lambda url, fmt, provider="": hashlib.sha256(f"{url}\n{fmt or 'markdown'}\n{provider or ''}".encode()).hexdigest()[:16]
     mine, other = tmp_path / "g.cache.md", tmp_path / "e.cache.md"
     mine.write_text("x"); other.write_text("y")
@@ -526,7 +538,6 @@ def test_search_login_opens_the_window_for_the_cleaned_site(plugin, monkeypatch)
 
 @pytest.mark.skipif(os.environ.get("GROUNDER_DIRECT_LIVE") != "1", reason="writes a test item to the login keychain and reads httpbin.org; set GROUNDER_DIRECT_LIVE=1")
 def test_live_one_sign_in_covers_every_subdomain_and_page(plugin):
-    import subprocess
     dev = plugin.direct_dev
     helper, _ = dev._helper()
     # Cookies as a site might scope them: one host-only, one on a path, one __Host- (which must stay host-only).

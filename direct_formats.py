@@ -129,7 +129,11 @@ SETTINGS_KEY, FORMAT_KEY = "grounder", "direct_format"  # web.grounder.direct_fo
 
 
 def saved() -> Optional[str]:
-    """The format ``/search-direct-format`` saved on this machine, or None."""
+    """The format saved for a direct read: the account's ``direct.format`` when it has one, else the one ``/search-direct-format`` saved on this machine, or None."""
+    from . import direct_dev
+    from_account = valid((direct_dev.account_direct_reader() or {}).get("format"))
+    if from_account:
+        return from_account
     try:
         from hermes_cli.config import load_config
         web = load_config().get("web")
@@ -142,12 +146,14 @@ def saved() -> Optional[str]:
 def save(fmt: str) -> None:
     from . import direct_dev
     direct_dev.save_setting(FORMAT_KEY, fmt)
+    direct_dev.save_to_account({"format": fmt})  # and on the account, with a credential
     forget_cached_searches()
 
 
-def chosen(asked: Optional[str] = None, words: object = None) -> str:
-    """The format a read comes back in: the call's own, else the one the user's words name, else the one /search-direct-format saved, else full-page."""
-    return valid(asked) or from_words(words) or saved() or FULL
+def chosen(asked: Optional[str] = None, words: object = None, default: str | None = None) -> str:
+    """The format a read comes back in: the call's own, else the one the user's words name, else ``default`` (the account's saved one), else the one /search-direct-format
+    saved on this machine, else full-page."""
+    return valid(asked) or from_words(words) or valid(default) or saved() or FULL
 
 
 def from_words(text: object) -> Optional[str]:

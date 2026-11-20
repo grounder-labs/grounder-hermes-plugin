@@ -14,9 +14,9 @@ import abc
 import importlib.util
 import json
 import os
-import re
 import sys
 import threading
+import time
 import types
 import urllib.parse
 import urllib.request
@@ -37,8 +37,8 @@ PLUGIN_DIR = Path(__file__).resolve().parents[1]
 def _install_hermes_stand_ins():
     """Hermes's interfaces the plugin imports, when Hermes is not installed here."""
     try:
-        import agent.web_search_provider  # noqa: F401
-        import hermes_cli.plugin_provider_requests  # noqa: F401
+        import agent.web_search_provider
+        import hermes_cli.plugin_provider_requests
         return
     except ImportError:
         pass
@@ -151,6 +151,7 @@ class Stub:
         self.rejected = {"revoked-token", "revoked-key"}  # bearers /v1/search answers 401 for
         # The account's saved search setting, the one grounder.net's Routing page shows too: a test that changes these plays a change made on the site.
         self.saved_search = dict(SETTINGS["answer"]["search"])
+        self.saved_direct = None  # the account's ``direct`` block ({use, format, user_agent}); None is a server that has none
         self.saved_live = {}  # {live-data API id: "always" | "off"}; one not here is Grounder decides
         self.off_providers = set()  # providers turned off on the account: saving one as the search provider is a 400
         self.settings_script = []  # (status, body) answers to the next reads and writes of the setting, in order, before the stub answers as the server does
@@ -158,16 +159,23 @@ class Stub:
     def settings_answer(self):
         live = {api["id"]: {"use": self.saved_live.get(api["id"], "auto")} for api in self.providers_body.get("live_data_apis", [])}
         live.update({ident: {"use": use} for ident, use in self.saved_live.items()})
-        return {**SETTINGS["answer"], "search": dict(self.saved_search), "specialized": live}
+        return {**SETTINGS["answer"], "search": dict(self.saved_search), "specialized": live, **({"direct": dict(self.saved_direct)} if self.saved_direct is not None else {})}
 
     def apply_settings(self, change):
         """The server's PUT: the 400 message when it refuses ``change`` (nothing is saved then), else None once saved."""
         if not isinstance(change, dict) or not change:
             return SETTINGS_SHAPE
-        other = next((key for key in change if key not in ("search", "specialized")), None)
+        other = next((key for key in change if key not in ("search", "specialized", "direct")), None)
         if other is not None:
             return f"{other} is not part of the saved search setting. {SETTINGS_SHAPE}"
         search, live = dict(self.saved_search), dict(self.saved_live)
+        if "direct" in change:
+            given = change["direct"]
+            if not isinstance(given, dict) or any(k not in ("use", "format", "user_agent") for k in given):
+                return "direct must be {use?, format?, user_agent?}"
+            if given.get("use") not in (None, "off", "only", "add-on") or given.get("format") not in (None, "full-page", "highlights", "summary"):
+                return "direct.use must be off, only or add-on; direct.format full-page, highlights or summary"
+            self.saved_direct = {**(self.saved_direct or {"use": "off", "format": "full-page"}), **given}
         if "search" in change:
             given = change["search"]
             if not isinstance(given, dict):
@@ -336,6 +344,9 @@ def plugin(stub, tmp_path, monkeypatch):
     safety.is_safe_url = lambda url: "resolves-private" not in url
     monkeypatch.setitem(sys.modules, "tools.url_safety", safety)
     module = _load_plugin()
+    # The account's saved ``direct`` block is read once in 30 seconds before a search; a test that does not mean to test it starts with it read and absent, so no search carries an
+    # extra request. ``test_direct_addon.py`` clears this to play an account that has one.
+    module.provider._direct_cache.update(at=time.monotonic() + 1e9, value=None)
     # ``register`` asks the import system whether this Hermes bundles its own Grounder provider (``_bundled``, ``find_spec("plugins.web.grounder")``), and the answer is
     # the machine's: a Hermes checkout on ``PYTHONPATH``, or run from in, holds one, and then every test that registers the commands finds none. 0.6.1's run
     # of this suite failed 6 such tests once in four, by where it was started from. Every test starts with no bundled provider; one that needs the other answer says so.

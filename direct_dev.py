@@ -65,10 +65,48 @@ _last_read: dict[str, float] = {}
 ONLY, ADDON, OFF = "only", "addon", "off"
 
 
+# Set by provider.py: ``account_direct_reader()`` is the ``direct`` block of the account's saved setting (``use``, ``format``) or None with no credential or no block, and
+# ``account_direct_writer(change)`` saves ``change`` (``{"use": ...}`` or ``{"format": ...}``) there, True when it was saved. The account is the source when there is one.
+account_direct_reader: Callable[[], dict[str, Any] | None] = lambda: None
+account_direct_writer: Callable[[dict[str, Any]], bool | None] = lambda change: None  # True saved, False Grounder did not take it, None no credential
+account_save_error = ""  # why the last account save was not taken (set by provider.py)
+_last_save: dict[str, Any] = {"on_account": None}  # the last save's outcome: True (on the account), False (the account refused it), None (no credential: this machine only)
+USE_WORDS = {"only": "only", "addon": "add-on", "off": "off"}
+
+
+def account_use() -> str | None:
+    """The account's ``direct.use`` as ONLY, ADDON or OFF, or None when the account has none."""
+    use = (account_direct_reader() or {}).get("use")
+    if not (isinstance(use, str) and use.strip()):
+        return None
+    word = use.strip().lower().replace("_", "-")
+    return ONLY if word == "only" else ADDON if word in ("add-on", "addon", "with-search") else OFF
+
+
+def save_to_account(change: dict[str, Any]) -> None:
+    """Save ``change`` on the account (``direct.use`` or ``direct.format``) and keep what came of it for the words under the reply (``saved_note``)."""
+    _last_save["on_account"] = account_direct_writer(change)
+
+
+def saved_note(key: str = DIRECT_KEY) -> str:
+    """The line under a reply that says where the setting just saved went: the account when it took it, this machine alone with no credential, and when the account refused it,
+    this machine alone and why, since the account's own value still applies."""
+    saved = _last_save["on_account"]
+    if saved is True:
+        return "(saved on your Grounder account)"
+    if saved is False:
+        return (f"(saved on this machine only: Grounder did not take it{f' ({account_save_error})' if account_save_error else ''}, "
+                "so the setting on your Grounder account still applies)")
+    return f"(saved on this machine: web.grounder.{key} in config.yaml)"
+
+
 def state() -> str:
     """How Grounder direct is set on this Mac: ``only`` (the mode by itself: no search, only the addresses given), ``addon`` (on top of the search mode: searches run
     as set, and every page and named site is read straight from its site) or ``off``. ``web.grounder.direct`` holds it (``only``, ``with-search`` or ``off``); without it,
-    the dev builds' ``web.grounder.direct_dev`` (true is ``only``, ``"addon"`` the add-on)."""
+    the dev builds' ``web.grounder.direct_dev`` (true is ``only``, ``"addon"`` the add-on). The account's saved ``direct.use`` wins over both when there is one."""
+    from_account = account_use()
+    if from_account is not None:
+        return from_account
     try:
         from hermes_cli.config import load_config
         web = load_config().get("web")
@@ -114,7 +152,9 @@ def save_setting(key: str, value: Any) -> None:
 
 
 def set_state(value: str) -> None:
+    """Save the setting on this machine and, with a credential, on the account (``direct.use``) too."""
     save_setting(DIRECT_KEY, ONLY if value == ONLY else "with-search" if value == ADDON else OFF)
+    save_to_account({"use": USE_WORDS["only" if value == ONLY else "addon" if value == ADDON else "off"]})
     from . import direct_formats
     direct_formats.forget_cached_searches()
     if value != OFF:  # reading straight from sites from now on: no page Grounder's reader cached earlier is served in its place
