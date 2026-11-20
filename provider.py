@@ -24,9 +24,9 @@ hooks). Both work on what is already on this machine and send nothing. A
 ``web_search`` whose query holds a page's address reads that page for the rest of
 the query, and the page comes back whole.
 
-Grounder has three modes: Grounder optimized (Grounder picks the provider for the question: the default), Grounder preset (the user
+Grounder has three search modes: Grounder optimized (Grounder picks the provider for the question: the default), Grounder preset (the user
 chose Fast, Cheap, Live, Deep, Code or Balanced, and Grounder picks the best provider for it) and Grounder pinned (the user chose one
-provider, and optionally its mode: that provider is the only search provider called). Each live-data API has its own setting, in every mode: Every call, Never or
+provider, and optionally its mode: that provider is the only search provider called). A fourth, Grounder direct, calls no search provider: the pages the user names are read from their own sites, on the user's Mac (``direct_dev``), by itself or as an add-on to the three. Each live-data API has its own setting, in every mode: Every call, Never or
 Grounder decides (the default: it is asked only when the question's features call for it), asked beside the mode's one provider call. The choice lives on the user's Grounder account
 (``GET`` and ``PUT /v1/search/settings``: ``read_account`` and ``save_account``), shared with the Routing page on grounder.net, so a change made in either place is what the other shows.
 A search made with a key or a sign-in sends none of it: Grounder runs a search that sends no mode, profile or provider of its own as the saved setting and bills it as that mode. What the
@@ -89,7 +89,7 @@ PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /sea
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.8.0"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.8.1"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -97,7 +97,7 @@ CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when ther
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
 MAX_RESULTS = 100  # most results one search asks Grounder for: its top_k range, and the 100 Hermes clamps a model's limit to
 MAX_QUERY_CHARS = 2000  # Grounder's limit on a query
-MODES = ("optimized", "preset", "direct")  # Grounder's three modes (a response's ``routing.mode``)
+MODES = ("optimized", "preset", "direct")  # Grounder's three search modes (a response's ``routing.mode``; ``direct`` is Grounder pinned's wire id)
 MAX_PAGES = 10  # Grounder's limit on the pages one call reads; Hermes asks for at most 5
 REMEMBERED_PAGES = 500  # how many pages the plugin remembers the web_search of, in memory only
 REMEMBERED_TURNS = 200  # how many searches and unfinished turns it remembers for the line under an answer, in memory only
@@ -690,7 +690,7 @@ def _under_saved_choice(payload: dict[str, Any], saved: Optional[dict[str, Any]]
 
 ACT_CODES = ("daily_limit_reached", "capacity_reached", "cap_reached")  # a search refused for the user's own allowance, which only the user can change
 GROUNDER_SITE = "https://grounder.net/account"
-NOTICE_KEY = "grounder_notice"  # on a result that is Grounder's message to the user in place of rows: "act" (what the user must do first) or "refused"
+NOTICE_KEY = "grounder_notice"  # on a result that is Grounder's message to the user in place of rows ("act": what the user must do first; "refused"), or a Grounder direct read ("direct"), whose rows are pages read from their own sites and are no search source
 PAYMENT_KEY = "grounder_payment"  # on the data of a result Grounder served for a wallet's payment: what was paid, and the settlement's transaction hash (``payment.receipt``)
 
 
@@ -1439,7 +1439,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
             text = (direct_dev.not_read(url, page["problem"]) if page.get("problem")
                     else direct_formats.shape(direct_dev.header(page), str(page.get("text") or ""), fmt, question, str(page.get("url") or url)))
             rows.append({"title": str(page.get("title") or url), "url": str(page.get("url") or url), "description": text, "position": len(rows) + 1})
-        return {"success": True, "data": {"web": rows, NOTICE_KEY: "direct-dev"}}
+        return {"success": True, "data": {"web": rows, NOTICE_KEY: "direct"}}
 
     def _dev_extract(self, urls: list[str]) -> list[dict[str, Any]]:
         """Grounder direct's ``web_extract``: each page read straight from its site, in order. A page not read says why as its text, with no ``error`` and filed under

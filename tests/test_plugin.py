@@ -413,7 +413,7 @@ def test_register_adds_the_backend_and_no_command(plugin):
     assert "command" not in calls
     # The hook that learns the model behind each answer is registered only while share_usage_context is on, which it is not unless the user turned it on (below).
     assert calls["hooks"] == {"transform_tool_result": calls["provider"].after_tool, "transform_llm_output": calls["provider"].after_answer, "pre_tool_call": plugin.provider.note_turn,
-                              "pre_llm_call": plugin.before_llm}  # note_message, then Grounder direct (dev)'s note while it is on
+                              "pre_llm_call": plugin.before_llm}  # note_message, then Grounder direct's note while it is on
 
 
 def test_setup_entry_asks_for_no_key_and_names_both_ways_in(plugin):
@@ -1244,7 +1244,7 @@ def test_a_failed_read_says_why_when_the_api_knows(plugin, stub, keyed):
     assert plugin.GrounderWebSearchProvider().search(f"{PAGE_A} books") == {"success": False, "error": plugin.provider.UNREAD["refused"]}
 
 
-# --- Grounder's three modes: the request's `mode`, and the card line --------------------------------------------------------
+# --- Grounder's three search modes: the request's `mode`, and the card line --------------------------------------------------------
 
 def _last(stub):
     return json.loads(_searches(stub)[-1]["body"])

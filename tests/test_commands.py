@@ -838,7 +838,7 @@ def test_a_hermes_with_ask_form_gets_two_pages_the_presets_in_a_row_the_modes_un
     values = [c["value"] for c in pick["choices"] if "value" in c]
     assert values == ["auto", "preset:fast", "preset:cheap", "preset:live", "preset:deep", "preset:code", "preset:balanced",
                       "provider:exa", "mode:exa:instant", "mode:exa:deep", "provider:tavily", "provider:parallel", "mode:parallel:turbo"]
-    # The three modes in order, each under its header: Grounder optimized (one row), Grounder preset (a row of presets), Grounder direct (the providers).
+    # The three search modes in order, each under its header: Grounder optimized (one row), Grounder preset (a row of presets), Grounder pinned (the providers).
     assert pick["choices"][:3] == [{"header": "Grounder optimized"},
                                    {"value": "auto", "label": "Grounder picks the provider for your question",
                                     "description": "The default. The provider's own results, each uncut and in its own order."},
@@ -1006,7 +1006,7 @@ def test_the_words_everywhere_say_only_that_provider_and_that_what_it_finds_is_w
     assert "Grounder will always include" not in source and "will search with only" not in source
 
 
-# --- Grounder's three modes: optimized, preset, direct --------------------------------------------------------------------
+# --- Grounder's three search modes: optimized, preset, pinned --------------------------------------------------------------------
 
 def test_the_three_modes_are_named_by_the_constants_the_hermes_copy_uses(plugin):
     commands = plugin.commands
@@ -1027,7 +1027,7 @@ def test_every_document_and_docstring_names_the_three_modes_and_none_says_the_ol
     for name in ("README.md", "after-install.md", "plugin.yaml"):
         assert "uncut" in texts[name] and "reranked" in texts[name], name  # every mode returns what the provider returns
     readme = texts["README.md"]
-    assert all(f"| **{mode}** |" in readme for mode in ("Grounder optimized", "Grounder preset", "Grounder pinned"))  # the table of the three modes
+    assert all(f"| **{mode}** |" in readme for mode in ("Grounder optimized", "Grounder preset", "Grounder pinned"))  # the table of the three search modes
     for stale in ("800 characters", "6,000", "30,000", "20 rows", "two notes", "saves no page to a file"):
         assert not any(stale in text for name, text in texts.items() if name in ("README.md", "after-install.md", "plugin.yaml")), stale
 

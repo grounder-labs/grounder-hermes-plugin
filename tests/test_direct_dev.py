@@ -51,7 +51,7 @@ def reads(plugin, monkeypatch):
     return done
 
 
-def test_the_hub_offers_grounder_direct_dev_where_let_grounder_pick_was(plugin, signed_in, tmp_path):
+def test_the_hub_offers_grounder_direct_as_the_fourth_choice_after_the_three_search_modes(plugin, signed_in, tmp_path):
     host = Host(["done"])
     plugin.commands.search_command(host, "")
     assert _values(host.asked[0][1])[:4] == ["auto", "presets", "providers", "dev"]
@@ -71,7 +71,7 @@ def test_picking_it_turns_it_on_here_and_writes_nothing_to_the_account(plugin, s
     assert _labels(again.asked[0][1])[:4] == ["Grounder optimized", "Grounder presets", "Grounder pinned", "Grounder direct (current)"]
 
 
-def test_typed_dev_turns_it_on_and_another_pick_turns_it_off(plugin, signed_in, tmp_path):
+def test_typed_direct_turns_it_on_and_another_pick_turns_it_off(plugin, signed_in, tmp_path):
     assert plugin.commands.search_command(Host(), "dev").startswith("✓ Search switched: Grounder direct")
     assert plugin.commands.search_command(Host(), "dev").startswith("✓ Search unchanged: Grounder direct")
     reply = plugin.commands.search_command(Host(), "fast")
@@ -422,7 +422,7 @@ def test_a_logged_out_read_tells_the_reader_to_use_no_sign_in(plugin, monkeypatc
 
 # Saved sign-ins (0.8.0-dev.2): the reader holds the values in the login keychain; Hermes only names sites.
 
-def test_dev_signin_opens_the_window_without_an_account_and_never_takes_a_value_in_chat(plugin, monkeypatch):
+def test_the_older_search_direct_signin_form_opens_the_window_without_an_account_and_never_takes_a_value_in_chat(plugin, monkeypatch):
     opened = []
     monkeypatch.setattr(plugin.direct_dev, "sign_in", lambda raw, wait=False: opened.append(raw) or f"opened {raw}")
     monkeypatch.setattr(plugin.commands, "_catalog", lambda: (_ for _ in ()).throw(AssertionError("no account or catalog is needed")))

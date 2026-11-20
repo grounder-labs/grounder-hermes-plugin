@@ -3,10 +3,10 @@
 
 """``/search``, the plugin's one command: choose how Grounder searches.
 
-Grounder has three modes, and ``/search`` chooses one: **Grounder optimized** (Grounder picks the provider for the user's question; the default), a **Grounder preset**
+Grounder has three search modes, and ``/search`` chooses one: **Grounder optimized** (Grounder picks the provider for the user's question; the default), a **Grounder preset**
 (Fast, Cheap, Live, Deep, Code or Balanced: Grounder picks the best provider for that preset) or **Grounder pinned** (the user picks the provider, and optionally one of
 its modes: that provider is the only search provider called, and what it finds is what the user gets, even when that is nothing). Every mode returns the provider's own results, each uncut and in its own
-order. ``/search`` also sets each live-data API, in every mode, to **Every call**, **Never** or **Grounder decides** (the default: asked only when the question's features call for it).
+order. A fourth mode, Grounder direct (``/search direct``), calls no search provider and reads the pages the user names, on their Mac, by itself or as an add-on to any of the three. ``/search`` also sets each live-data API, in every mode, to **Every call**, **Never** or **Grounder decides** (the default: asked only when the question's features call for it).
 Every Hermes today asks with ``ctx.ask_choice``, and ``/search`` opens a hub, "How should Grounder search?": Let Grounder pick (Grounder optimized), A preset, A provider, Live-data APIs
 and Done, the current choice marked "(current)". Each choice opens its own screen (the presets, each with its purpose and the providers it uses; the providers, each with what its
 standard search returns and how many modes it has, then one provider's modes; the live-data APIs, then one API's Every call, Grounder decides or Never) and every screen has a "← Back" row that
@@ -41,7 +41,7 @@ OPTIMIZED_HEADER = "Grounder optimized"
 AUTO_LABEL = "Grounder picks the provider for your question"
 AUTO_NOTE = "The default. The provider's own results, each uncut and in its own order."
 DEV = "dev"  # Grounder direct by itself: the hub row, and typed as ``/search direct`` (or the other words in DEV_WORDS)
-DEV_WORDS = (DEV, "direct", "grounder-direct", "direct-dev", "grounder-direct-dev")
+DEV_WORDS = (DEV, "direct", "grounder-direct", "direct-dev", "grounder-direct-dev")  # "direct-dev" and "grounder-direct-dev" are the 0.8.0-dev builds' words, still typed
 ADDON = "addon"  # the hub row and typed word (``/search addon [on|off]``) for Grounder direct as an add-on to the search mode
 ADDON_WORDS = (ADDON, "add-on", "direct-addon", "direct-add-on")
 ADDON_NOTES = ("either or both",)
@@ -346,8 +346,8 @@ def _current_pick(saved: dict[str, Any], catalog: Catalog) -> str:
 
 
 def _pick_choices(catalog: Catalog) -> list[dict[str, Any]]:
-    """Page one's rows, under the three modes' headers: Grounder optimized (one row), Grounder preset (a row of presets, each saying what it includes and lighting it),
-    then Grounder direct (the providers, each with its modes)."""
+    """Page one's rows, under the three search modes' headers: Grounder optimized (one row), Grounder preset (a row of presets, each saying what it includes and lighting it),
+    then Grounder pinned (the providers, each with its modes)."""
     choices: list[dict[str, Any]] = [{"header": OPTIMIZED_HEADER}, {"value": AUTO, "label": AUTO_LABEL, "description": AUTO_NOTE},
                                      {"header": PRESETS_HEADER, "row": True}]
     for preset in catalog.presets:
