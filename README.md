@@ -146,6 +146,7 @@ of what Grounder returns, in any of its three search modes (a Grounder direct re
 | `description` | Its summary, or its text, as Grounder returned it, with its white space made one line: no word is cut |
 | `position` | The number the answer cites it by. The results of one answer are numbered on from 1 across its searches and reads, and a page found twice keeps its first number |
 | `date` | When it was published, when Grounder knows |
+| `fetched` | When its text was fetched, apart from when it was published: `during this search`, the day the provider's stored copy was fetched, or `not given` when the provider does not say, so a stored copy is never read as current |
 
 Where each result came from (whose it is, the feature and provider that found it, why it may be served) stays in Grounder's
 records and in its API response; the model does not read it row by row, and the line under the answer names the providers.

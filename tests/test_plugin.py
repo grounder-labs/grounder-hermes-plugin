@@ -759,6 +759,17 @@ def test_a_row_says_where_its_result_came_from_as_the_card_does(plugin, stub, ke
     assert "date" not in rows[1] and "source" not in rows[0] and "source" not in rows[1]
 
 
+def test_a_row_says_when_its_text_was_fetched_and_never_calls_a_stored_copy_live(plugin, stub, keyed):
+    # GRO-939: a provider's cached extract, days old, read as current. Each row says when its text was fetched when the response says.
+    stub.search_body = {"query": "q", "results": [
+        {**RESULT, "url": "https://example.com/live", "fetched": {"at": "2026-11-21T02:00:00Z", "live": True}},
+        {**RESULT, "url": "https://example.com/copy", "fetched": {"at": "2026-11-11T01:18:53Z", "live": False}},
+        {**RESULT, "url": "https://example.com/unknown", "fetched": {"at": None, "live": False}},
+        {**RESULT, "url": "https://example.com/old-api"}]}
+    rows = plugin.GrounderWebSearchProvider().search("q")["data"]["web"]
+    assert [row.get("fetched") for row in rows] == ["during this search", "2026-11-11", "not given", None]
+
+
 def test_an_answer_that_searched_ends_with_the_card_line_once(plugin, stub, keyed):
     stub.search_body = ROUTED
     provider = plugin.GrounderWebSearchProvider()

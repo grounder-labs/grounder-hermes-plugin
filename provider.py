@@ -92,7 +92,7 @@ SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports t
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.8.4"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.8.5"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -228,15 +228,28 @@ def _provider_name(provider: str) -> str:
     return PROVIDER_NAMES.get(provider, provider.capitalize())
 
 
+def _fetched(result: dict[str, Any]) -> str:
+    """When a result's text was fetched, as the row says it (GRO-939): ``during this search``, the day the provider's copy was fetched, or ``not given`` for a
+    stored copy of unknown age; "" when the response carries no ``fetched`` (an older API), so the row says nothing rather than guess."""
+    fetched = result.get("fetched")
+    if not isinstance(fetched, dict):
+        return ""
+    if fetched.get("live") is True:
+        return "during this search"
+    at = fetched.get("at")
+    return at[:10] if isinstance(at, str) and at.strip() else "not given"
+
+
 def _row(result: dict[str, Any], position: int) -> dict[str, Any]:
-    """Hermes's row for one result, with its date when Grounder has one.
+    """Hermes's row for one result, with its date when Grounder has one and when its text was fetched (GRO-939), so a stored copy is not read as live.
 
     A result's provenance (whose it is, the feature and provider that found it, why it may be served) stays in Grounder's records and in the API's
     response, and the line under an answer names the providers; the model reads none of it per result (GRO-698: about 100 characters a result).
     """
     date = str(result.get("published_date") or "")[:10]
+    fetched = _fetched(result)
     return {"title": str(result.get("title") or ""), "url": str(result.get("url") or ""),
-            "description": _description(result), "position": position, **({"date": date} if date else {})}
+            "description": _description(result), "position": position, **({"date": date} if date else {}), **({"fetched": fetched} if fetched else {})}
 
 
 def _listed(value: Any) -> list[Any]:
