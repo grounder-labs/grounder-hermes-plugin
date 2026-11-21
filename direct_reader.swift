@@ -806,14 +806,17 @@ final class Reader: NSObject, WKNavigationDelegate {
 
 // MARK: Sign in to a site in a window
 
-final class SignIn: NSObject, NSWindowDelegate {
+final class SignIn: NSObject, NSWindowDelegate, WKUIDelegate {
     let site: String
+    let userAgent: String
     let window: NSWindow
     let web: WKWebView
     var finished = false
+    var popups: [ObjectIdentifier: (web: WKWebView, window: NSWindow)] = [:]  // windows the site opened (a "Continue with Google" popup), kept until closed
 
     init(site: String, userAgent: String, start: URL) {
         self.site = site
+        self.userAgent = userAgent
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         web = WKWebView(frame: .zero, configuration: config)
@@ -821,6 +824,7 @@ final class SignIn: NSObject, NSWindowDelegate {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 800), styleMask: [.titled, .closable, .resizable, .miniaturizable],
                           backing: .buffered, defer: false)
         super.init()
+        web.uiDelegate = self
         window.title = "Grounder direct: sign in to \(site)"
         window.delegate = self
         window.isReleasedWhenClosed = false
@@ -892,7 +896,39 @@ final class SignIn: NSObject, NSWindowDelegate {
         }
     }
 
+    /// A window the site opens, such as the one "Continue with Google" opens: without this WebKit drops it and the button does nothing. It is made from the
+    /// configuration WebKit passes, so it shares this window's session (its cookies land where Save sign-in reads them) and the page that opened it can hear
+    /// back from it, and it carries the same user agent.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction,
+                 windowFeatures: WKWindowFeatures) -> WKWebView? {
+        let child = WKWebView(frame: .zero, configuration: configuration)
+        child.customUserAgent = userAgent
+        child.uiDelegate = self
+        let width = windowFeatures.width.map { CGFloat($0.doubleValue) } ?? 600
+        let height = windowFeatures.height.map { CGFloat($0.doubleValue) } ?? 700
+        let popup = NSWindow(contentRect: NSRect(x: 0, y: 0, width: max(width, 400), height: max(height, 500)),
+                             styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+        popup.title = "Grounder direct: a window \(site) opened"
+        popup.isReleasedWhenClosed = false
+        popup.contentView = child
+        popup.delegate = self
+        let frame = window.frame
+        popup.setFrameOrigin(NSPoint(x: frame.midX - popup.frame.width / 2, y: frame.midY - popup.frame.height / 2))
+        popups[ObjectIdentifier(child)] = (child, popup)
+        popup.makeKeyAndOrderFront(nil)
+        return child
+    }
+
+    /// The page in a window the site opened closed it (``window.close()``), as Google's does once it has handed the sign-in back.
+    func webViewDidClose(_ webView: WKWebView) {
+        popups[ObjectIdentifier(webView)]?.window.close()
+    }
+
     func windowWillClose(_ notification: Notification) {
+        if let closing = notification.object as? NSWindow, closing !== window {  // a window the site opened: drop it, the sign-in window stays
+            if let key = popups.first(where: { $0.value.window === closing })?.key { popups[key] = nil }
+            return
+        }
         if !finished {
             printLine(["site": site, "canceled": true])
             exit(0)
