@@ -92,7 +92,7 @@ SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports t
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.8.5"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.8.6"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -258,8 +258,8 @@ def _listed(value: Any) -> list[Any]:
 
 
 def _candidates(body: dict[str, Any]) -> list[dict[str, Any]]:
-    """The pages a direct read may pick from: ``direct.candidates`` (addresses before the licensed filter, in the provider's order) when the response carries them, else its results
-    (an older API)."""
+    """The pages a direct read may pick from: ``direct.candidates`` (addresses before the licensed filter, best answer first: Grounder orders them by how well each answers the
+    search, else in the provider's order) when the response carries them, else its results (an older API)."""
     direct = body.get("direct") if isinstance(body.get("direct"), dict) else {}
     found = direct.get("candidates")
     return [c for c in found if isinstance(c, dict)] if isinstance(found, list) else _results(body)
