@@ -1,6 +1,6 @@
 # Grounder for Hermes Agent
 
-Licensed, live sources for Hermes Agent's `web_search` and `web_extract`. With Grounder as the web search backend, each search makes one
+More of the internet for your agent: licensed, live sources for Hermes Agent's `web_search` and `web_extract`. With Grounder as the web search backend, each search makes one
 call to one search provider, such as Exa, Brave, Tavily or Perplexity, and asks the live-data APIs (scores, prices, odds, flights and more) beside it
 as you set each one: every call, never, or when Grounder decides the question needs it. It returns each source's own results.
 
