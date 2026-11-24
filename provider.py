@@ -81,7 +81,7 @@ SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports t
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.9.0"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.9.1"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -153,7 +153,7 @@ SEARCH_SCHEMA = {
         "user_time_zone": {"type": "string", "description": "The user's IANA time zone, only when stated in this chat."},
         "mode": {"type": "string", "enum": list(MODES),
                  "description": "Use grounder-direct when the user asks to read a page. Leave mode out to use the saved choice."},
-        "site": {"type": "string", "description": "The site's host when the user names a page without its address. Put their words in query. " + direct_dev.SEARCH_PRICE},
+        "site": {"type": "string", "description": "Only a host the user's own words write, such as bbc.co.uk, never one inferred from a name (the Oscars is not oscars.org). Put their words in query. " + direct_dev.SEARCH_PRICE},
         "signed_in": {"type": "boolean", "description": "Grounder direct only. Set false when the user asks to read logged out. Saved sign-ins stay on the Mac."},
         "format": {"type": "string", "enum": list(direct_formats.FORMATS),
                    "description": "Summary, full-page or highlights. Send only when the user's words name a format."},

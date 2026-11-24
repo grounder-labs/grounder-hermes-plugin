@@ -339,7 +339,7 @@ def header(page: dict[str, Any]) -> str:
 
 
 TURN_NOTE = ("[Grounder direct is the user's search choice. For a question, use web_search to find and read the source's page. "
-             "Pass URLs the user provides, or use grounder_search with site and query when the user names a page without its address. "
+             "Pass URLs the user provides, or use grounder_search with site and query when the user writes a site's host without a page's address. "
              "Reading a page named by address is free. " + SEARCH_PRICE + "]")
 NO_ADDRESS = "No page address was provided. Give a specific address to read, or search for the page using the question."
 
