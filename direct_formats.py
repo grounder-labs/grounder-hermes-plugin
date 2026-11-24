@@ -126,6 +126,9 @@ _STOP = set("the a an and or of to in on for with about what which who how why w
 
 
 SETTINGS_KEY, FORMAT_KEY = "grounder", "direct_format"  # web.grounder.direct_format in config.yaml, set by /search-direct-format
+# Written beside it by /search-direct-format (GRO-988): a stored full-page without it is an older default, not the user's choice, and reads as summary, as the account's does
+# (``formatInForce``; Harlan, 2026-11-24: "if grounder direct is used, it should by default be in summary mode").
+CHOSEN_KEY = "direct_format_chosen"
 
 
 def saved() -> Optional[str]:
@@ -140,12 +143,16 @@ def saved() -> Optional[str]:
     except Exception:
         return None
     section = web.get(SETTINGS_KEY) if isinstance(web, dict) else None
-    return valid(section.get(FORMAT_KEY)) if isinstance(section, dict) else None
+    kept = valid(section.get(FORMAT_KEY)) if isinstance(section, dict) else None
+    if kept == FULL and not (isinstance(section, dict) and section.get(CHOSEN_KEY) is True):
+        return None
+    return kept
 
 
 def save(fmt: str) -> None:
     from . import direct_dev
     direct_dev.save_setting(FORMAT_KEY, fmt)
+    direct_dev.save_setting(CHOSEN_KEY, True)
     direct_dev.save_to_account({"format": fmt})  # and on the account, with a credential
     forget_cached_searches()
 

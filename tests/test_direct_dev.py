@@ -498,3 +498,17 @@ def test_a_broken_installed_program_falls_back_to_the_build_and_with_neither_the
     monkeypatch.setattr(dd, "_build_helper", lambda: (None, "this Mac has no Xcode command line tools, so the reader cannot be built here"))
     helper, why = dd._helper()
     assert helper is None and "curl -fsSL https://grounder.net/install | sh" in why
+
+
+def test_a_stored_full_page_without_the_users_choice_reads_as_summary(plugin, hermes, monkeypatch):
+    # GRO-988 (Harlan, 2026-11-24: "if grounder direct is used, it should by default be in summary mode"): an older default's full-page is not a choice, as on the account
+    # (formatInForce), so a simple question is never answered with a whole page pasted back; the user's own /search-direct-format full-page still holds.
+    monkeypatch.setattr(plugin.direct_dev, "account_direct_reader", lambda: None)
+    plugin.direct_dev.save_setting(plugin.direct_formats.FORMAT_KEY, "full-page")
+    assert plugin.direct_formats.saved() is None
+    assert plugin.direct_formats.chosen(None, "who was the most popular person at the most recent oscars", plugin.direct_formats.saved()) == "summary"
+    assert plugin.direct_formats.chosen(None, "give me the full page", plugin.direct_formats.saved()) == "full-page"
+    plugin.direct_formats.save("full-page")
+    assert plugin.direct_formats.saved() == "full-page"
+    plugin.direct_dev.save_setting(plugin.direct_formats.FORMAT_KEY, "highlights")
+    assert plugin.direct_formats.saved() == "highlights"
