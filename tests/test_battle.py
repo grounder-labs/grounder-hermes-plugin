@@ -5,14 +5,12 @@
 
 import json
 import sys
-import threading
-import types
 import urllib.parse
 
 import pytest
 
 from conftest import PLUGIN_DIR
-from test_plugin import PAGE_A, PAGE_B, PAGE_C, RESULT, ROUTED, SIGN_IN, _page, _routed, _searches
+from test_plugin import PAGE_A, PAGE_B, PAGE_C, RESULT, ROUTED, _page, _routed, _searches
 
 FAKE_KEY = "sk-ant-api03-" + "A" * 40  # a fake: only the prefix Hermes's guard knows
 
@@ -286,9 +284,9 @@ def test_one_sessions_search_words_never_go_out_with_another_sessions_page_read(
 
 # --- 9, 10, 11: a free search drops what Grounder refuses it; each way of searching has its own words for a 401 --------------------------------
 
-def test_a_free_search_says_what_it_did_not_send_in_the_words_it_was_asked_in(plugin, stub, free):
+def test_a_free_search_ignores_retired_routing_fields(plugin, stub, free):
     out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "routing_settings": {"fallback": False}, "workspace": "team"}))
-    assert out["note"].startswith("No Grounder account is connected, so routing_settings was not sent and this ran as a free search.")
+    assert out["success"] is True
     assert not {"routing_settings", "workspace"} & set(json.loads(_searches(stub)[0]["body"]))
 
 

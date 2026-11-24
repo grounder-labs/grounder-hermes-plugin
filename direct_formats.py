@@ -5,7 +5,7 @@
 
 A ``grounder_search`` call names one with ``format`` (only with ``mode: "grounder-direct"``, or while the mode is on). In chat, the user's own words pick one
 ("full page", "highlights", "summary"): the turn note asks the model to pass it and to answer in it, and a ``web_search`` or ``web_extract`` with no format of its
-own takes it from the user's latest message. Left out, a read is ``full-page``.
+own takes it from the user's latest message. Left out, a read is ``summary``.
 
 The plugin shapes what the read returns and says how to answer: ``full-page`` is the page's whole text; ``highlights`` is the page's passages that match the
 question, picked here by the question's words and kept in page order; ``summary`` is the page's text with the ask to answer in a few sentences (the model writes
@@ -152,8 +152,8 @@ def save(fmt: str) -> None:
 
 def chosen(asked: Optional[str] = None, words: object = None, default: str | None = None) -> str:
     """The format a read comes back in: the call's own, else the one the user's words name, else ``default`` (the account's saved one), else the one /search-direct-format
-    saved on this machine, else full-page."""
-    return valid(asked) or from_words(words) or valid(default) or saved() or FULL
+    saved on this machine, else summary."""
+    return valid(asked) or from_words(words) or valid(default) or saved() or SUMMARY
 
 
 def from_words(text: object) -> Optional[str]:

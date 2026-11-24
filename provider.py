@@ -24,16 +24,8 @@ hooks). Both work on what is already on this machine and send nothing. A
 ``web_search`` whose query holds a page's address reads that page for the rest of
 the query, and the page comes back whole.
 
-Grounder has three search modes: Grounder optimized (Grounder picks the provider for the question: the default), Grounder preset (the user
-chose Fast, Cheap, Live, Deep, Code or Balanced, and Grounder picks the best provider for it) and Grounder pinned (the user chose one
-provider, and optionally its mode: that provider is the only search provider called). A fourth, Grounder direct, calls no search provider: the pages the user names are read from their own sites, on the user's Mac (``direct_dev``), by itself or as an add-on to the three. Each live-data API has its own setting, in every mode: Every call, Never or
-Grounder decides (the default: it is asked only when the question's features call for it), asked beside the mode's one provider call. The choice lives on the user's Grounder account
-(``GET`` and ``PUT /v1/search/settings``: ``read_account`` and ``save_account``), shared with the Routing page on grounder.net, so a change made in either place is what the other shows.
-A search made with a key or a sign-in sends none of it: Grounder runs a search that sends no mode, profile or provider of its own as the saved setting and bills it as that mode. What the
-model passes to ``grounder_search`` is that search's own, with one exception: the user's choice wins over the model's (``_under_saved_choice``). While the user has chosen a preset or a provider,
-the model's ``profile``, ``requested_provider``, ``providers``, ``routing_settings.exclusive`` and ``always`` are not sent (the search runs and is billed as the user's choice), and a live-data API
-the user set to Every call or Never keeps that setting; what only narrows a search (caps, a provider set to Off, ``fallback``, a live-data API the user has not set) is sent.
-The line under an answer names the mode of the searches it used (``_card_line``), from the response's ``routing.mode``.
+Grounder provider returns the results from each topic's source. Grounder direct finds the pages to read from that source.
+A page named by address is a free read. The line under each answer uses the response's mode and topics.
 
 The plugin selects itself the first time it loads in a profile (``__init__.py``), by
 setting ``web.search_backend: grounder`` and ``web.extract_backend: grounder`` for each the user has set no backend for.
@@ -41,13 +33,12 @@ A call uses the Grounder search key in ``GROUNDER_API_KEY`` when one is set, and
 for the ``oauth:`` client in ``plugin.yaml`` (``hermes auth add grounder:grounder``):
 Hermes signs in, stores and refreshes that grant and attaches its token to the
 request, so this plugin never holds a token. With neither, a search is one of Grounder's free searches: it carries no
-credential and has no saved setting, and it sends no profile or routing settings the model asked for, which Grounder refuses a caller
-with no account. A free search that reaches Grounder's limit says where to sign up and add credit, with the links the API gave (a 402, or a 429 or 503 with those links): never a bare HTTP status.
-With a wallet set (``GROUNDER_X402_PRIVATE_KEY``) a free search that Grounder answers 402 is paid for once with x402 and sent again, with the options a free search leaves out (``_pay``, ``payment.py``);
+credential. The local choice applies when there is no connected account. A free search that reaches Grounder's limit says where to sign up and add credit, with the links the API gave (a 402, or a 429 or 503 with those links): never a bare HTTP status.
+With a wallet set (``GROUNDER_X402_PRIVATE_KEY``) a free search that Grounder answers 402 is paid for once with x402 and sent again (``_pay``, ``payment.py``);
 what is paid, and what is never paid, is ``payment.choose``. No request the plugin makes follows
 a redirect (``_open``), and no address that carries a key or is not public is sent (``_refusal``).
 
-``/search`` (``commands.py``) reads the account's setting when it opens and writes every choice to it (``save_account``); this plugin keeps none of it in Hermes's config.
+``/search`` saves the search choice and format on the Grounder account when connected, otherwise locally. The resolver is local.
 """
 
 from __future__ import annotations
@@ -85,14 +76,12 @@ logger = logging.getLogger(__name__)
 
 ORIGIN = "https://api.grounder.net"
 SEARCH_URL = f"{ORIGIN}/v1/search"
-FEATURES_URL = f"{ORIGIN}/v1/features"
-PROVIDERS_URL = f"{ORIGIN}/v1/providers"  # public: the search providers and the live-data APIs, which /search offers
-PROFILES_URL = f"{ORIGIN}/v1/search-profiles"  # public: the presets, which /search offers
+TOPICS_URL = f"{ORIGIN}/v1/topics"
 SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports the sites it has a saved sign-in for (names, this Mac, when saved), with the key or the sign-in
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.8.6"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.9.0"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -100,8 +89,10 @@ CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when ther
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
 MAX_RESULTS = 100  # most results one search asks Grounder for: its top_k range, and the 100 Hermes clamps a model's limit to
 MAX_QUERY_CHARS = 2000  # Grounder's limit on a query
-MODES = ("optimized", "preset", "direct")  # Grounder's three search modes (a response's ``routing.mode``; ``direct`` is Grounder pinned's wire id)
-MAX_PAGES = 10  # Grounder's limit on the pages one call reads; Hermes asks for at most 5
+MODES = ("grounder-provider", "grounder-direct")
+PROVIDER_MODE = MODES[0]
+DIRECT_MODE = direct_formats.DIRECT_MODE
+MAX_PAGES = 5
 REMEMBERED_PAGES = 500  # how many pages the plugin remembers the web_search of, in memory only
 REMEMBERED_TURNS = 200  # how many searches and unfinished turns it remembers for the line under an answer, in memory only
 # Two notes the model reads once an answer, on the first of the turn's results Grounder served (GRO-698): every search of a turn repeating them cost
@@ -141,53 +132,36 @@ CITED = re.compile(r"\[(\d{1,3}(?:\s*[,–-]\s*\d{1,3})*)\]")
 # Code, which is never a citation: a fenced block (to its closing fence, or the end of the text) and an inline span (`items[2]`).
 CODE = re.compile(r"(?s)(?:\x60{3}|~~~).*?(?:\x60{3}|~~~|\Z)|(\x60+)(?!\x60)(?:(?!\n\n).)+?(?<!\x60)\1(?!\x60)")  # \x60 is the backtick, spelled so no line reads as a shell snippet to `hermes plugins validate`
 SEARCH_TOOL = "grounder_search"
-LIST_PROVIDERS_TOOL = "grounder_list_providers"
+LIST_TOPICS_TOOL = "grounder_list_topics"
 TOOLSET = "grounder"
-# The options of Grounder's MCP search tool, in its words, for what Hermes's web_search cannot say: it takes a query and a limit.
 SEARCH_SCHEMA = {
     "name": SEARCH_TOOL,
-    "description": "Search the web or read pages through Grounder with more control than web_search: recent results only, named sites, "
-                   "the features the answer needs, pages to read, a named provider or this search's routing settings. "
-                   "Use Grounder (this tool, web_search or web_extract) for every web lookup, including reading a page the user links or a site they name "
-                   "(work out that site's exact page yourself): not a browser, a terminal command such as curl, or any other tool. "
-                   "With mode grounder-direct it searches nothing and reads only the pages named, straight from their sites, as the user's own Safari would ask "
-                   "for them, using no search provider credits and no Grounder credits. For a plain search use web_search. A call counts as one search.",
+    "description": (
+        "Better web routing. Use for questions that need current or verifiable information on one of Grounder's topics. "
+        "Grounder provider returns the topic's source results. Grounder direct finds its page and reads it. "
+        "Use urls when the user gives a page address, or site and query when they name a site without a page address. "
+        "Reading a page named by address is free. " + direct_dev.SEARCH_PRICE
+    ),
     "parameters": {"type": "object", "required": ["query"], "properties": {
-        "query": {"type": "string", "description": "The search query."},
+        "query": {"type": "string", "description": "The question, as the user asked it."},
         "top_k": {"type": "integer", "description": "How many results (1-100). Default 10."},
-        "days": {"type": "integer", "description": "Only results published within this many days."},
-        "domains": {"type": "array", "items": {"type": "string"}, "description": 'Restrict to these domains, e.g. ["bbc.com"].'},
-        "features": {"type": "array", "items": {"type": "string"},
-                     "description": f'The features the answer needs ({LIST_PROVIDERS_TOOL} lists them), e.g. ["news"] or ["stock-quote"]. Left out, Grounder works them out from the query.'},
-        "urls": {"type": "array", "items": {"type": "string"},
-                 "description": "Pages to read (http(s) addresses): links the user gave, or a result whose page you want read in full. Put what to look for in query."},
+        "days": {"type": "integer", "description": "Only results published within this many days, where the topic supports it."},
+        "urls": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": MAX_PAGES,
+                 "description": "Addresses of pages the user asks to read with Grounder direct."},
         "include_text": {"type": "boolean", "description": "Include each result's text. Default true."},
-        "requested_provider": {"type": "string", "description": f"Provider the user explicitly asked for (Grounder pinned), by id ({LIST_PROVIDERS_TOOL} lists them). Not used while the user's own /search choice is a preset or a provider."},
-        "providers": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 1, "description": "The one provider to call (Grounder pinned): an id as for requested_provider."},
-        "routing_settings": {"type": "object", "description": "This search's routing settings over the account's saved ones; not saved. Pass only what differs, "
-                                                              'when the user or the task calls for it, e.g. {"providers": {"exa": {"use": "always"}}}. What you pass applies to this search alone: '
-                                                              "the user's own setting (their /search choice, saved on their Grounder account) is not changed, and it wins where it has a choice: a preset or provider the user chose is kept over "
-                                                              "a profile, requested_provider, providers, exclusive or an always here, and a live-data API the user set to Every call or Never is kept. What only narrows a search is used. "
-                                                              "Needs the user to be signed in to Grounder."},
-        "profile": {"type": "string", "description": f"A search preset by id (Grounder preset), which changes how this search runs ({LIST_PROVIDERS_TOOL} lists them under search_modes); `auto` is none. "
-                                                      "Left out, the search runs as the user's own setting (their /search choice: Grounder optimized, a preset or a provider); the user's preset or provider wins over this. Needs the user to be signed in to Grounder."},
-        "user_location": {"type": "string", "description": 'Where the user is, only if the user said so in this chat, e.g. "Austin, Texas". Never guess it.'},
-        "user_time_zone": {"type": "string", "description": "The user's time zone, only if the user said so in this chat, as an IANA name, e.g. \"America/Chicago\". Never guess it."},
-        "mode": {"type": "string", "enum": [direct_formats.DIRECT_MODE],
-                 "description": "grounder-direct: no search; read only the pages in urls (or addresses in query), each straight from its own site. Needed for format, unless the user's /search mode is already Grounder direct."},
-        "site": {"type": "string", "description": "The site (a host such as bbc.co.uk) the user named when they named a page or article on it without its address; put their words in query. "
-                                                  "Never ask the user for the link, and never read a front page or the site's own search page to look for it: pass site and the page is found and read."},
-        "signed_in": {"type": "boolean", "description": "grounder-direct only: false reads the pages logged out, with no saved sign-in (when the user asks for that). "
-                                                         "Default true: signed in where the user saved a sign-in, which is optional."},
+        "user_location": {"type": "string", "description": "Where the user is, only when stated in this chat."},
+        "user_time_zone": {"type": "string", "description": "The user's IANA time zone, only when stated in this chat."},
+        "mode": {"type": "string", "enum": list(MODES),
+                 "description": "Use grounder-direct when the user asks to read a page. Leave mode out to use the saved choice."},
+        "site": {"type": "string", "description": "The site's host when the user names a page without its address. Put their words in query. " + direct_dev.SEARCH_PRICE},
+        "signed_in": {"type": "boolean", "description": "Grounder direct only. Set false when the user asks to read logged out. Saved sign-ins stay on the Mac."},
         "format": {"type": "string", "enum": list(direct_formats.FORMATS),
-                   "description": "How a grounder-direct read comes back and how to answer: full-page (the page's whole text), highlights (its passages that match the question) or "
-                                  "summary (answer in a few sentences). Send it only when the user's own words in this conversation name one (never chosen by you); left out, the format the user saved is used."},
+                   "description": "Summary, full-page or highlights. Send only when the user's words name a format."},
     }},
 }
-LIST_PROVIDERS_SCHEMA = {
-    "name": LIST_PROVIDERS_TOOL,
-    "description": "List the features a Grounder search can use: what each returns, the inputs it honors, and the providers (with modes) and live-data APIs that deliver it, "
-                   "and the presets a search can run in.",
+LIST_TOPICS_SCHEMA = {
+    "name": LIST_TOPICS_TOOL,
+    "description": "List Grounder's topics and their sources, servers, example questions and ways to search. This is not a search.",
     "parameters": {"type": "object", "properties": {}},
 }
 # Where a provider's or live source's id is not its name capitalized; the rest of Grounder's lists are.
@@ -200,7 +174,7 @@ PROVIDER_NAMES = {"you": "You.com", "xai": "xAI", "newsapi": "NewsAPI.ai", "tiny
 # lane, a first call and the one fallback behind it. A long research run takes 130 s (one you choose, as a saved or named provider: Grounder never picks one itself) and a deep
 # fallback 45 s behind it: 175 s in all. A deep run and its deep fallback are 90 s, Valyu's 15 s search and its fallback 19 s, Tako's 6 s search and its fallback about 10 s.
 # The Grounder service's own tests fail when its longest lane outgrows this figure.
-TIMEOUT_S = 185
+TIMEOUT_S = 40
 LIST_TIMEOUT_S = 8  # one of Grounder's public lists
 KEYS_URL = "https://grounder.net/account/keys"
 SETTINGS_KEY = "grounder"  # the section of config.yaml's web: that holds the usage-context setting
@@ -248,7 +222,9 @@ def _row(result: dict[str, Any], position: int) -> dict[str, Any]:
     """
     date = str(result.get("published_date") or "")[:10]
     fetched = _fetched(result)
+    provenance = result.get("provenance") if isinstance(result.get("provenance"), dict) else {}
     return {"title": str(result.get("title") or ""), "url": str(result.get("url") or ""),
+            **{key: provenance[key] for key in ("topic", "source") if provenance.get(key)},
             "description": _description(result), "position": position, **({"date": date} if date else {}), **({"fetched": fetched} if fetched else {})}
 
 
@@ -258,11 +234,9 @@ def _listed(value: Any) -> list[Any]:
 
 
 def _candidates(body: dict[str, Any]) -> list[dict[str, Any]]:
-    """The pages a direct read may pick from: ``direct.candidates`` (addresses before the licensed filter, best answer first: Grounder orders them by how well each answers the
-    search, else in the provider's order) when the response carries them, else its results (an older API)."""
+    """Use only addresses the server selected for the Mac reader. Feed rows are results, not pages to read."""
     direct = body.get("direct") if isinstance(body.get("direct"), dict) else {}
-    found = direct.get("candidates")
-    return [c for c in found if isinstance(c, dict)] if isinstance(found, list) else _results(body)
+    return [row for row in _listed(direct.get("candidates")) if isinstance(row, dict)]
 
 
 def _results(body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -275,39 +249,19 @@ def _results(body: dict[str, Any]) -> list[dict[str, Any]]:
 _clock = time.monotonic
 
 
-def _mode_name(body: dict[str, Any], sent: Optional[dict[str, Any]]) -> str:
-    """The mode a search ran in as the line under an answer names it: ``Grounder optimized``, ``Grounder preset (Fast)`` or ``Grounder direct``, or "" when
-    nothing says. The response's own ``routing.mode`` (or a top-level ``mode``) when it is one of Grounder's three, else the ``mode`` of the request that was sent, if it sent one
-    (a search sends none: Grounder names the mode it ran, the saved setting's or the one the model's own options made). A preset carries the id of the preset that ran,
-    capitalised: ``routing.profile``, else the ``profile`` that was sent. Every field may be absent."""
-    sent = sent or {}
+def _summary(body: dict[str, Any], sources: int, sent: dict[str, Any] | None = None) -> dict[str, Any]:
+    """What the line under an answer needs of one search."""
     routing = body.get("routing") if isinstance(body.get("routing"), dict) else {}
-    mode = next((value for value in (routing.get("mode"), body.get("mode"), sent.get("mode")) if isinstance(value, str) and value in MODES), "")
-    if not mode:
-        return ""
-    named = next((value.strip() for value in (routing.get("profile"), sent.get("profile")) if isinstance(value, str) and value.strip() not in ("", "auto")), "")
-    return f"Grounder {'pinned' if mode == 'direct' else mode}" + (f" ({named.capitalize()})" if mode == "preset" and named else "")  # the API's direct is shown as pinned
-
-
-def _summary(body: dict[str, Any], sources: int, sent: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """What the line under an answer needs of one search: its mode, who answered, how long it took and when it ran. Who answered is ``routing.provider`` (Grounder 0.9.0)
-    when the response names one, then each live-data API whose call returned results beside it (GRO-918: a line that said "via You.com" over five ESPN scores read as
-    wrong to the model that saw them), else the providers whose calls returned results.
-
-    ``sources`` is how many results the plugin got, which says whether it found any; the line counts the ones the model was shown (``after_tool``).
-    ``sent`` is the request that was sent, which names the mode when the response does not (``_mode_name``).
-    """
-    routing = body.get("routing") if isinstance(body.get("routing"), dict) else {}
-    calls = [*_listed(routing.get("calls")), *_listed(routing.get("live_calls"))]
-    answered = [str(c.get("provider")) for c in calls if isinstance(c, dict) and c.get("status") == "ok" and c.get("result_count")]
+    mode = routing.get("mode")
+    if mode not in MODES:
+        mode = (sent or {}).get("mode")
+    way = "Grounder direct" if mode == DIRECT_MODE else "Grounder provider"
+    topics = [topic for topic in _listed(body.get("topics")) if isinstance(topic, dict)]
+    via = list(dict.fromkeys(str(topic["source"]) for topic in topics if topic.get("source") and topic.get("reached") != "none" and topic.get("status", "ok") == "ok"))
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     latency = usage.get("latency_ms")
     ms = latency if isinstance(latency, int) and not isinstance(latency, bool) else 0
-    named = routing.get("provider")
-    live = [str(c.get("provider")) for c in _listed(routing.get("live_calls")) if isinstance(c, dict) and c.get("status") == "ok" and c.get("result_count")]
-    who = [named.strip(), *live] if isinstance(named, str) and named.strip() else answered
-    via = [_provider_name(p) for p in dict.fromkeys(who)]
-    return {"mode": _mode_name(body, sent), "via": via, "sources": sources, "ms": ms,
+    return {"mode": way, "via": via, "sources": sources, "ms": ms,
             "from": _clock() - ms / 1000, "fresh": True}
 
 
@@ -539,52 +493,6 @@ def sharing_usage() -> bool:
 SETTINGS_TIMEOUT_S = LIST_TIMEOUT_S  # one read or write of the saved setting
 
 
-def _word(value: Any) -> str:
-    """``value`` when it is an id (a preset, a provider or one of its modes), else ``""``."""
-    return value.strip() if isinstance(value, str) and _ID.match(value.strip()) else ""
-
-
-def _local(answer: dict[str, Any]) -> dict[str, Any]:
-    """The account's saved setting (the answer of ``GET`` or ``PUT /v1/search/settings``) in the form ``/search`` works with: ``preset`` (a preset id), ``server`` (``provider:<id>``) and
-    ``server_mode`` (one of that provider's modes), each ``""`` when unset, which is Let Grounder pick when the first two are; ``fallback``, whether a saved provider that finds nothing lets
-    Grounder pick one other; and ``off`` and ``always``, the ids of the live-data APIs saved as Never and as Every call (one saved as Grounder decides is in neither). A field of another shape reads as unset."""
-    search = answer.get("search") if isinstance(answer.get("search"), dict) else {}
-    mode = search.get("mode")
-    preset = _word(search.get("profile")) if mode == "preset" else ""
-    provider = _word(search.get("requested_provider")) if mode == "direct" else ""
-    live = answer.get("specialized") if isinstance(answer.get("specialized"), dict) else {}
-
-    def named(use: str) -> list[str]:
-        return [ident for ident, entry in live.items() if _word(ident) and isinstance(entry, dict) and entry.get("use") == use]
-
-    return {"preset": preset, "server": f"provider:{provider}" if provider else "", "server_mode": _word(search.get("provider_mode")) if provider else "",
-            "fallback": bool(provider) and search.get("fallback") is True, "off": named("off"), "always": named("always")}
-
-
-def _use(saved: dict[str, Any], ident: str) -> str:
-    """A live-data API's setting in ``saved``: ``off`` (Never) wins over ``always`` (Every call); neither is ``auto`` (Grounder decides)."""
-    return "off" if ident in saved["off"] else "always" if ident in saved["always"] else "auto"
-
-
-def _put_body(old: dict[str, Any], new: dict[str, Any], pick: bool) -> dict[str, Any]:
-    """What one ``PUT /v1/search/settings`` must say to take the setting from ``old`` to ``new`` (both as ``_local`` has them): ``search`` whenever the user picked a mode (``pick``), and
-    ``specialized`` with only the live-data APIs whose setting differs, one that left both lists going back to Grounder decides. A direct pick sends ``fallback`` off, so what the provider
-    finds is what the user gets even when that is nothing; the same provider already saved with its fallback on keeps it."""
-    body: dict[str, Any] = {}
-    if pick:
-        if new["preset"]:
-            body["search"] = {"mode": "preset", "profile": new["preset"]}
-        elif new["server"].startswith("provider:"):
-            body["search"] = {"mode": "direct", "requested_provider": new["server"].partition(":")[2], **({"provider_mode": new["server_mode"]} if new["server_mode"] else {}),
-                              "fallback": bool(old["fallback"]) and old["server"] == new["server"]}
-        else:
-            body["search"] = {"mode": "optimized"}
-    changed = {ident: {"use": _use(new, ident)} for ident in dict.fromkeys([*old["off"], *old["always"], *new["off"], *new["always"]]) if _use(new, ident) != _use(old, ident)}
-    if changed:
-        body["specialized"] = changed
-    return body
-
-
 def _settings_error(status: int, body: Any, via: str) -> str:
     """Why a read or write of the saved setting failed, in words for the user: Grounder's own message for a 400 (it names what it refused), else ``_error_message``'s."""
     detail = _error_parts(body)[1]
@@ -673,25 +581,6 @@ def _can_sync_sign_ins() -> bool:
 direct_dev.credential_probe = _can_sync_sign_ins
 
 
-def read_account() -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """The account's saved search setting as ``_local`` has it, as it is now and never kept: ``(setting, None)`` or ``(None, reason)``. Raises ``ProviderNotSignedIn`` with neither a key nor a sign-in."""
-    answer, error = _settings_call("GET")
-    return (_local(answer), None) if answer is not None else (None, error)
-
-
-def save_account(current: dict[str, Any], **changes: Any) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """Write ``changes`` to the account's saved search setting in one ``PUT``: ``(the setting as Grounder answered it, None)`` or ``(None, reason)``, with nothing changed on a failure.
-    ``current`` is the setting as last read or answered (``_local``'s form) and ``changes`` are its keys, where ``None`` or an empty list clears one. Picking a preset or a provider
-    (``preset``, ``server``, ``server_mode``) always writes the mode, so a pick the account already shows is still made; live-data APIs (``off``, ``always``) write only those that differ, and a
-    change that differs in nothing sends nothing. Raises ``ProviderNotSignedIn`` with neither a key nor a sign-in."""
-    new = {**current, **{key: value or ([] if key in ("off", "always") else "") for key, value in changes.items()}}
-    body = _put_body(current, new, bool({"preset", "server", "server_mode"} & set(changes)))
-    if not body:
-        return current, None
-    answer, error = _settings_call("PUT", body)
-    return (_local(answer), None) if answer is not None else (None, error)
-
-
 SITE_NAME = re.compile(r"^[a-z0-9-]+(?:\.[a-z0-9-]+)+$")
 
 
@@ -716,7 +605,11 @@ def account_direct() -> dict[str, Any] | None:
     try:
         answer, _why = _settings_call("GET")
         block = answer.get("direct") if answer else None
-        value = block if isinstance(block, dict) else None
+        choice = answer.get("search") if answer else None
+        mode = choice.get("mode") if isinstance(choice, dict) else None
+        value = dict(block) if isinstance(block, dict) else None
+        if mode in MODES:
+            value = {**(value or {}), "use": direct_dev.ONLY if mode == DIRECT_MODE else direct_dev.OFF}
     except ProviderNotSignedIn:
         value = None
     _direct_cache.update(at=now, value=value)
@@ -724,12 +617,18 @@ def account_direct() -> dict[str, Any] | None:
 
 
 def save_direct(change: dict[str, Any]) -> bool | None:
-    """Save ``change`` (``use`` and/or ``format``) in the account's ``direct`` block with one ``PUT /v1/search/settings``: True when saved, False when Grounder did not take it (the
-    reason is kept in ``direct_dev.account_save_error`` and logged), None with no credential. The cached read is dropped either way, so the next one is Grounder's answer."""
+    """Write the search choice as search.mode and page settings as direct.format or direct.user_agent."""
+    body: dict[str, Any] = {}
+    if "use" in change:
+        mode = DIRECT_MODE if change["use"] == direct_dev.ONLY else PROVIDER_MODE
+        body["search"] = {"mode": mode}
+    direct = {key: change[key] for key in ("format", "user_agent") if key in change}
+    if direct:
+        body["direct"] = direct
     _direct_cache.update(at=0.0, value=None)
     direct_dev.account_save_error = ""
     try:
-        answer, why = _settings_call("PUT", {"direct": change})
+        answer, why = _settings_call("PUT", body)
     except ProviderNotSignedIn:
         return None
     if answer is None:
@@ -743,78 +642,13 @@ direct_dev.account_direct_writer = save_direct
 
 
 def direct_state() -> str:
-    """How Grounder direct is set for a search: the account's ``direct.use`` when it has one, else this Mac's setting (``direct_dev.state`` follows the account itself)."""
+    """How Grounder direct is set for a search: the account's saved search mode when it has one, else this Mac's setting (``direct_dev.state`` follows the account itself)."""
     return direct_dev.state()
 
 
 def direct_format() -> str | None:
     """The format saved for a Grounder direct read: the account's, else this machine's, else None."""
     return direct_formats.saved()
-
-
-MODE_FIELDS = ("mode", "provider_mode", "profile", "requested_provider", "providers")  # what makes a search another Grounder mode than the one the user saved
-
-
-def _always(entry: Any) -> bool:
-    """Whether a provider entry of a search's ``routing_settings`` is set to ``always``, itself or in one of its modes."""
-    return isinstance(entry, dict) and (entry.get("use") == "always" or (isinstance(entry.get("modes"), dict) and "always" in entry["modes"].values()))
-
-
-def _carries_choice(payload: dict[str, Any]) -> bool:
-    """Whether a search request carries something the user's saved choice could override: a field that picks its mode, an ``exclusive`` or ``always``, or a live-data API's setting."""
-    if any(name in payload for name in MODE_FIELDS):
-        return True
-    routing = payload.get("routing_settings")
-    if not isinstance(routing, dict):
-        return False
-    providers = routing.get("providers")
-    return routing.get("exclusive") is True or bool(routing.get("specialized")) or (isinstance(providers, dict) and any(_always(entry) for entry in providers.values()))
-
-
-def _under_saved_choice(payload: dict[str, Any], saved: Optional[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
-    """``payload`` with what the model passed taken out where the user's saved choice (``saved``, ``_local``'s form) wins: ``(request, the names left out)``.
-
-    While the user has chosen a preset or a provider, the model's ``profile``, ``requested_provider``, ``providers``, ``mode`` and ``provider_mode``, its ``routing_settings.exclusive`` and
-    any provider or mode it sets to ``always`` are left out, so the search runs and is billed as the user's choice; a user who chose none (Let Grounder pick) has nothing for the model to
-    override, and a setting that could not be read counts as a choice. A live-data API the user set to Every call or Never keeps that setting over the model's. What only narrows a search (caps,
-    a provider or mode set to Off, ``fallback``, a live-data API the user left on Grounder decides) is kept."""
-    out = dict(payload)
-    names: list[str] = []
-    chosen = saved is None or bool(saved["preset"] or saved["server"])
-    if chosen:
-        names += [name for name in MODE_FIELDS if out.pop(name, None) is not None]
-    routing = out.get("routing_settings")
-    if isinstance(routing, dict):
-        routing = dict(routing)
-        if chosen:
-            if routing.pop("exclusive", None) is not None:
-                names.append("routing_settings.exclusive")
-            providers = routing.get("providers")
-            if isinstance(providers, dict) and any(_always(entry) for entry in providers.values()):
-                kept: dict[str, Any] = {}
-                for ident, entry in providers.items():
-                    if _always(entry):
-                        names.append(f"routing_settings.providers.{ident} (always)")
-                        entry = {key: value for key, value in entry.items() if key not in ("use", "modes")} | (
-                            {"use": entry["use"]} if entry.get("use") not in (None, "always") else {}) | (
-                            {"modes": modes} if (modes := {mode: use for mode, use in (entry.get("modes") or {}).items() if use != "always"}) else {})
-                    if entry:
-                        kept[ident] = entry
-                routing["providers"] = kept
-                if not kept:
-                    routing.pop("providers")
-        live = routing.get("specialized")
-        if saved is not None and isinstance(live, dict):
-            kept_live = {ident: entry for ident, entry in live.items() if _use(saved, str(ident)) == "auto"}
-            names += [f"routing_settings.specialized.{ident}" for ident in live if ident not in kept_live]
-            routing["specialized"] = kept_live
-            if not kept_live:
-                routing.pop("specialized")
-        if routing:
-            out["routing_settings"] = routing
-        else:
-            out.pop("routing_settings", None)
-    return out, names
 
 
 ACT_CODES = ("daily_limit_reached", "capacity_reached", "cap_reached")  # a search refused for the user's own allowance, which only the user can change
@@ -892,12 +726,6 @@ def _error_message(status: int, body: Any, via: str, declined: str = "") -> str:
     if 300 <= status < 400:
         return f"Grounder answered HTTP {status}, a redirect, which this plugin does not follow."
     failed = _failed_calls(details) if status == 503 and error.get("code") == "no_provider_available" else []
-    if len(failed) == 1:
-        # One provider called and none behind it: a search `/search` set to one provider (Grounder direct, its fallback off), which fails for as long as that provider
-        # does. "Every provider failed" read as Grounder being down, and a model guessed at a broken release (GRO-917). The cause and the way out lead the message:
-        # Hermes keeps the first 300 characters of a failed backend's reason beside the results it serves in its place.
-        return (f"Grounder's search failed: {failed[0]}, and no other provider was tried. If `/search` is set to one provider, pick another with `/search`, "
-                "or run `/search optimized` so Grounder picks one that is up.")
     if failed:
         return f"Grounder's search failed: {'; '.join(failed)}. Search again in a moment."
     return f"Grounder returned HTTP {status}" + (f": {detail}" if detail else "")
@@ -1031,7 +859,6 @@ def _context() -> dict[str, Any]:
     return {"session_ref": _token(conversation), **({"prompt_ref": _token(conversation, turn)} if turn else {}), **({"agent": {"model": model}} if model else {})}
 
 
-FREE_REFUSES = ("profile", "routing_settings")  # what Grounder refuses a caller with no account (400): they change a search on an account's own settings
 
 
 class _Lost(Exception):
@@ -1070,12 +897,16 @@ def _pay(payload: dict[str, Any], raw: bytes, offered: dict[str, str], sent_out:
                     f"Nothing more will be paid for this search. ({error})") from None
     if status == 200:
         try:
-            readable = isinstance(json.loads(answer), dict)
+            parsed = json.loads(answer)
+            readable = isinstance(parsed, dict)
         except ValueError:
             readable = False
         if not readable:  # Grounder settled and the results did not arrive whole: the payment may be gone and there is nothing to show for it
             raise _Lost("A payment was signed and sent, and Grounder's answer could not be read. It may have been taken: check the wallet before searching again. "
                         "Nothing more will be paid for this search.")
+        usage = parsed.get("usage")
+        if parsed.get("no_topic") or (isinstance(usage, dict) and usage.get("cost_usd") == 0):
+            return status, answer, None, ""
         return status, answer, payment.receipt(seen, entry), ""
     if status == 402:
         why = payment.reason(seen)
@@ -1084,37 +915,15 @@ def _pay(payload: dict[str, Any], raw: bytes, offered: dict[str, str], sent_out:
     return status, answer, None, ""
 
 
-def _send(payload: dict[str, Any], dropped: Optional[list[str]] = None, sent_out: Optional[list[dict[str, Any]]] = None,
-          overridden: Optional[list[str]] = None, paid_out: Optional[list[dict[str, Any]]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """One POST to Grounder: ``(body, None)``, or ``(None, error)`` when it failed. Never raises, and never retries: a second POST is a second search.
-
-    The one exception is a payment (``_pay``): a free search that Grounder answers 402, from a user who set a wallet (``GROUNDER_X402_PRIVATE_KEY``), is sent once more with a signed
-    payment, and ``paid_out`` gets what was paid. That is the same search, paid for once, and it is never sent a third time.
-
-    A search with a key or a sign-in sends the request it is given and nothing of the user's saved setting (``/search``, kept on their account): a request that sends no ``mode``,
-    ``profile``, ``requested_provider``, ``providers`` or ``routing_settings.exclusive`` of its own runs as that setting, and is billed as the mode it names; one that sends its own
-    (what the model passed to ``grounder_search``) runs as the mode it names, for that search alone, unless the user has chosen a preset or a provider: that choice wins, and what the model passed
-    against it is left out (``_under_saved_choice``) and its names added to ``overridden``, so the result can say so. A user with neither a key nor a grant searches free: a free search has no
-    saved setting, and sends none of ``FREE_REFUSES`` either, which the model may have chosen: the names it asked for are added to ``dropped``, so the result can say so.
-    An error the user must act on comes back as an ``_Act``. ``sent_out`` gets the request itself, the last entry being the one Grounder answered.
-    """
+def _send(payload: dict[str, Any], sent_out: Optional[list[dict[str, Any]]] = None,
+          paid_out: Optional[list[dict[str, Any]]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Send one search, retrying once with the wallet only when Grounder requests payment."""
     key = _key()
     if key and not _key_fits(key):
         return None, _act(BAD_KEY)
     context = _context()
     if context:
         payload = {**payload, "context": {**payload.get("context", {}), **context}}
-    if _carries_choice(payload):
-        try:
-            saved, why = read_account()
-        except ProviderNotSignedIn:
-            saved, why = None, "free"  # a free search has no saved choice; the free path leaves out what it refuses
-        if why != "free":
-            if saved is None:
-                logger.warning("Grounder saved setting unreadable, so the user's choice is kept over the model's: %s", why)
-            payload, names = _under_saved_choice(payload, saved)
-            if overridden is not None:
-                overridden.extend(names)
     via = "key" if key else "sign-in"
     declined = ""
     try:
@@ -1129,20 +938,15 @@ def _send(payload: dict[str, Any], dropped: Optional[list[str]] = None, sent_out
                 status, raw = _post_signed_in(payload)
             except ProviderNotSignedIn:
                 via = "free"
-                if dropped is not None:
-                    dropped.extend(name for name in FREE_REFUSES if name in payload)
-                free_request = {name: value for name, value in payload.items() if name not in FREE_REFUSES}
                 if sent_out is not None:
-                    sent_out.append(free_request)
+                    sent_out.append(payload)
                 offered: dict[str, str] = {}
-                status, raw = _post(free_request, headers_out=offered)
+                status, raw = _post(payload, headers_out=offered)
                 if status == 402 and payment.configured():
                     status, raw, receipt, declined = _pay(payload, raw, offered, sent_out)
                     if receipt is not None:
                         if paid_out is not None:
                             paid_out.append(receipt)
-                        if dropped is not None:
-                            dropped.clear()  # the paid search carried what the free one leaves out
                         logger.info("Grounder search paid: %s, transaction %s", receipt["amount"], receipt.get("transaction", "not named"))
     except _Lost as lost:
         return None, _act(str(lost))
@@ -1193,7 +997,7 @@ def _dev_addresses(text: str) -> list[str]:
     found = [_trim_address(a) for a in ADDRESS.findall(text or "")]
     if not any(found):
         found = [f"https://{_trim_address(a)}" for a in _BARE_ADDRESS.findall(text or "")]
-    return [a for a in dict.fromkeys(found) if a][:MAX_PAGES]
+    return [a for a in dict.fromkeys(found) if a]
 
 
 SECRET_REFUSED = ("Blocked: an address in this call carries what looks like an API key or token, and secrets must not be sent in addresses. "
@@ -1403,12 +1207,10 @@ def _page_shown(url: str, shown: tuple[str, str]) -> dict[str, Any]:
 def _options(args: dict[str, Any], query: str) -> dict[str, Any]:
     """``grounder_search``'s arguments as a search request, the way Grounder's MCP search maps the same arguments."""
     payload: dict[str, Any] = {"query": query}
-    for name in ("top_k", "include_text", "requested_provider", "providers", "features", "urls", "routing_settings", "profile"):
+    for name in ("top_k", "include_text"):
         if args.get(name) not in (None, "", [], {}):
             payload[name] = args[name]
     filters: dict[str, Any] = {}
-    if args.get("domains"):
-        filters["domains"] = {"values": args["domains"], "mode": "include"}
     if isinstance(args.get("days"), int) and args["days"] > 0:
         filters["recency"] = {"mode": "rolling", "days": args["days"]}
     if filters:
@@ -1417,28 +1219,6 @@ def _options(args: dict[str, Any], query: str) -> dict[str, Any]:
     if stated:
         payload["context"] = stated
     return payload
-
-
-def _feature(feature: dict[str, Any]) -> dict[str, Any]:
-    """One feature as Grounder's MCP ``list_providers`` lays it out: the providers with their modes, and the live-data APIs."""
-    providers: dict[str, list[str]] = {}
-    for offering in feature.get("offerings") or []:
-        modes = providers.setdefault(str(offering.get("provider")), [])
-        if offering.get("mode"):
-            modes.append(str(offering["mode"]))
-    return {"feature": feature.get("id"), "description": feature.get("description"), "returns": feature.get("returns"),
-            "inputs": feature.get("inputs"), "providers": providers, "apis": feature.get("specialized") or []}
-
-
-def search_modes() -> list[dict[str, str]]:
-    """The presets Grounder lists now, as ``[{"id", "name", "description"}]``; empty when the list cannot be read, which leaves the rest of an answer as it was."""
-    try:
-        status, raw = _get(PROFILES_URL)
-        rows = json.loads(raw).get("profiles") if status == 200 else None
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError, AttributeError):
-        return []
-    return [{"id": str(row["id"]), "name": str(row.get("name") or row["id"]), "description": str(row.get("description") or "")}
-            for row in rows if isinstance(row, dict) and row.get("id")] if isinstance(rows, list) else []
 
 
 class GrounderWebSearchProvider(WebSearchProvider):
@@ -1492,79 +1272,53 @@ class GrounderWebSearchProvider(WebSearchProvider):
         return True
 
     def search(self, query: str, limit: int = 5) -> dict[str, Any]:
-        """Search Grounder for up to ``limit`` results (1 to ``MAX_RESULTS``), or read the pages a query names (``_read_part``). Under Grounder direct, only read the
-        pages the query or the user's latest message names, straight from their sites (``_dev_search``)."""
-        addresses = [address for address in dict.fromkeys(_trim_address(found) for found in ADDRESS.findall(query)) if address]
-        # Every address in the query is checked before any is read (or the account's setting is asked): one that carries a key, or is not public, ends the call and nothing is sent.
-        why = next((reason for address in addresses if (reason := _refusal(address))), "")
-        if why:
-            return _notice(why, "refused")
-        state = direct_state()  # the account's saved setting, else this Mac's
-        if state == direct_dev.ONLY or (state == direct_dev.ADDON and _dev_addresses(query)):  # by itself; or the add-on, for a query that names pages
-            return self._dev_search(query)
-        if addresses:
-            return self._read_part(query, addresses[:MAX_PAGES])
-        # No text_max_chars, passage or rerank option: each result's text is what the provider returned. Rows are cut only to the limit Hermes asked for.
-        payload = {"query": query[:MAX_QUERY_CHARS],
-                   "top_k": max(1, min(int(limit), MAX_RESULTS)),
-                   **({"direct": "mac"} if state == direct_dev.ADDON else {})}  # this plugin reads the pages itself, on the user's Mac: Grounder reads none
-        sent: list[dict[str, Any]] = []
-        paid: list[dict[str, Any]] = []
-        body, error = _send(payload, sent_out=sent, paid_out=paid)
-        if body is None:
-            return _notice(error) if isinstance(error, _Act) else _fail(error or "Grounder returned no answer")
-        rows = [_row(r, i + 1) for i, r in enumerate(_results(body)[:max(1, int(limit))])]
-        self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows), sent[-1] if sent else None))
-        # The count only: a query is the user's words, and a log line outlives the search.
-        logger.info("Grounder search: %d results", len(rows))
-        if state == direct_dev.ADDON:  # the add-on with no page named: the top page (or three sites) read directly, then the search's own rows
-            asks = _ASKS.get(_session(), "")
-            read = self._addon_reads(_candidates(body), direct_formats.chosen(None, asks, direct_format()), query[:MAX_QUERY_CHARS],
-                                     direct_formats.signed_out_words(asks) or direct_formats.signed_out_words(query))
-            rows = [*read, *({**row, "position": len(read) + i + 1} for i, row in enumerate(rows))]
-        return {"success": True, "data": {"web": rows, **({PAYMENT_KEY: paid[-1]} if paid else {})}}
+        """The user's selected search, or a free read when the query names pages by address."""
+        return self._search({"query": query, "top_k": max(1, min(int(limit), MAX_RESULTS))})
 
     def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
-        """Read ``urls`` in one search, so it counts once: an entry per URL in their order, with an ``error`` on each page not read.
-
-        Each page comes back as Grounder returned it: no ``text_max_chars`` is sent and nothing is cut here (Hermes applies a model's ``char_limit`` to the whole page
-        itself). Hermes's ``format`` and other ``kwargs`` change nothing. An address that
-        carries a key or is not public is not sent (Hermes refuses most before this point): its entry says so, and the others are read.
-        Under Grounder direct, each page is read straight from its site instead (``_dev_extract``).
-        """
-        if direct_state() != direct_dev.OFF:  # Grounder direct, by itself or as the add-on: every page straight from its site
-            return self._dev_extract(urls)
+        """Read named pages free, on the Mac when selected or through Grounder's hosted reader."""
         asked = [str(url) for url in urls]
-        pages = list(dict.fromkeys(asked))[:MAX_PAGES]
-        if not pages:
-            return []
+        pages = list(dict.fromkeys(asked))
+        if len(pages) > MAX_PAGES:
+            return _notice_pages(asked, f"Grounder direct reads at most {MAX_PAGES} pages a call.")
+        if direct_state() == direct_dev.ONLY:
+            return self._dev_extract(asked)
         refused = {page: reason for page in pages if (reason := _refusal(page))}
         pages = [page for page in pages if page not in refused]
         if not pages:
             return [_page_error(url, refused[url]) for url in asked]
-        chat = _chat(_session())
-        body, error = _send({"query": self._question(pages), "urls": pages, "top_k": len(pages), "features": ["page-text"]})
+        agent = direct_dev.user_agent()
+        if not agent:
+            return _notice_pages(asked, "Grounder direct needs your Safari user agent to read these pages.")
+        question = self._question(pages)
+        fmt = direct_formats.chosen(None, _ASKS.get(_session(), ""), direct_format())
+        body, error = _send({"query": question, "urls": pages, "mode": DIRECT_MODE, "user_agent": agent, "format": fmt})
         if body is None:
-            failed = _notice_pages(asked, error) if isinstance(error, _Act) else [_page_error(url, error or "Grounder returned no answer") for url in asked]
-            return [_page_error(url, refused[url]) if url in refused else entry for url, entry in zip(asked, failed)]
+            if isinstance(error, _Act):
+                return _notice_pages(asked, error)
+            return [_page_error(url, refused.get(url) or error or "Grounder returned no answer") for url in asked]
         found = _pages_found(pages, _results(body))
-        # The count only: an address says what the user is reading, and a log line outlives the search.
         logger.info("Grounder extract: %d of %d pages read", len(found), len(pages))
+        chat = _chat(_session())
         with self._lock:
             shown = {page: self._shown[(chat, _page_key(page))] for page in pages if page not in found and (chat, _page_key(page)) in self._shown}
             for page in [*found, *shown]:
                 self._read[(chat, _page_key(page))] = True
             _bounded(self._read, REMEMBERED_PAGES)
         why = _unread(body)
-        return [_page_error(url, refused[url]) if url in refused else
-                _page_shown(url, shown[url]) if url in shown else _page_row(url, found.get(url), why.get(_page_key(url), "")) for url in asked]
+        return [
+            _page_shown(url, shown[url]) if url in shown
+            else _page_error(url, refused[url]) if url in refused
+            else _page_row(url, found.get(url), why.get(_page_key(url), ""))
+            for url in asked
+        ]
 
-    def _dev_search(self, query: str, fmt: Optional[str] = None, question: str = "", signed_out: bool = False) -> dict[str, Any]:
+    def _dev_search(self, query: str, fmt: Optional[str] = None, question: str = "", signed_out: bool = False, pages: Optional[list[str]] = None) -> dict[str, Any]:
         """Grounder direct's ``web_search``: no search at all. It reads the addresses in the query, else those in the user's latest message, each straight from its
         site (``direct_dev.read``), one row a page with the page's text. With no address it reads nothing and says so. Every outcome is a successful result with a notice
         mark, so Hermes serves none of it from its keyless ring and the hooks claim none of it for Grounder."""
         asks = _ASKS.get(_session(), "")
-        addresses = _dev_addresses(query) or _dev_addresses(asks)
+        addresses = pages if pages is not None else (_dev_addresses(query) or _dev_addresses(asks))
         if not addresses:
             return _notice(direct_dev.NO_ADDRESS, "refused")
         fmt = direct_formats.chosen(fmt, asks, direct_format())
@@ -1579,38 +1333,36 @@ class GrounderWebSearchProvider(WebSearchProvider):
             rows.append({"title": str(page.get("title") or url), "url": str(page.get("url") or url), "description": text, "position": len(rows) + 1})
         return {"success": True, "data": {"web": rows, NOTICE_KEY: "direct"}}
 
-    def _addon_reads(self, results: list[dict[str, Any]], fmt: str, question: str, signed_out: bool, site: str = "") -> list[dict[str, Any]]:
-        """The add-on's reads for a search that named no page: the top candidate's page (``full-page``, ``summary``) or the top three from different sites (``highlights``),
-        each read straight from its site on this Mac and shaped in ``fmt``. ``results`` are the candidates in the order Grounder returned them (``_candidates``), skipping any whose
-        address must not leave this machine (``_refusal``). With ``site``, only candidates on that site (or a subdomain) count and highlights takes up to three of its pages.
-        A page that is not read says why and the next candidate on the same site is tried, three tries a site at most; a site whose pages were all refused gets one row saying what each said."""
-        want = 3 if fmt == direct_formats.HIGHLIGHTS else 1
-        rows: list[dict[str, Any]] = []
-        failed: dict[str, list[tuple[str, str]]] = {}
-        done: set[str] = set()
+    def _read_candidates(self, results: list[dict[str, Any]], fmt: str, question: str, signed_out: bool, site: str = "") -> list[dict[str, Any]]:
+        """Read the chosen pages, trying a later address only for the same topic and site."""
+        groups: dict[tuple[str, str], list[str]] = {}
+        first_site: dict[str, str] = {}
         for result in results:
-            if len(rows) >= want:
-                break
-            url = str(result.get("url") or "").strip()
+            url = str(result.get("url") or "")
             if not url or _refusal(url):
                 continue
-            host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
+            host = (urlsplit(url).hostname or "").lower()
             if site and not (host == site or host.endswith("." + site)):
                 continue
-            key = site or direct_dev.site_of(url)[0] or host  # one site is its registrable domain: news.bbc.co.uk and www.bbc.co.uk are bbc.co.uk
-            if key in done or len(failed.get(key, [])) >= MAX_READ_TRIES:
+            topic = str(result.get("topic") or "")
+            source = site or direct_dev.site_of(url)[0] or host
+            if fmt != direct_formats.HIGHLIGHTS and first_site.setdefault(topic, source) != source:
                 continue
-            page = direct_dev.read(url, signed_out)
-            if page.get("problem"):
-                failed.setdefault(key, []).append((url, direct_dev.not_read(url, page["problem"])))
-                continue
-            if not site:
-                done.add(key)
-            text = direct_formats.shape(direct_dev.header(page), str(page.get("text") or ""), fmt, question, str(page.get("url") or url))
-            rows.append({"title": str(page.get("title") or url), "url": str(page.get("url") or url), "description": text, "position": len(rows) + 1})
-        for key, tries in failed.items():
-            if key not in done and not (site and rows):
-                rows.append({"title": tries[0][0], "url": tries[0][0], "description": "\n\n".join(text for _url, text in tries), "position": len(rows) + 1})
+            groups.setdefault((topic, source), []).append(url)
+        rows = []
+        for (topic, _), urls in groups.items():
+            for url in list(dict.fromkeys(urls))[:MAX_READ_TRIES]:
+                page = direct_dev.read(url, signed_out)
+                problem = page.get("problem")
+                if problem:
+                    text = direct_dev.not_read(url, problem)
+                else:
+                    header = direct_dev.header({**page, "found_by_search": True})
+                    text = direct_formats.shape(header, str(page.get("text") or ""), fmt, question, str(page.get("url") or url))
+                if not problem or page.get("reason") in ("site_check", "busy") or "site check" in str(problem).lower():
+                    break
+            rows.append({"title": str(page.get("title") or url), "url": str(page.get("url") or url),
+                         "description": text, **({"topic": topic} if topic else {})})
         return rows
 
     def _dev_extract(self, urls: list[str]) -> list[dict[str, Any]]:
@@ -1637,7 +1389,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
             out.append(done[url])
         return out
 
-    def _read_part(self, query: str, pages: list[str]) -> dict[str, Any]:
+    def _read_part(self, query: str, pages: list[str], fmt: str) -> dict[str, Any]:
         """A ``web_search`` whose query holds pages' addresses: read those pages for the query's other words, in ``web_search``'s shape (GRO-691).
 
         Hermes's ``web_extract`` takes only addresses, and answers a repeated read from its own cache, so a model that needed another part of a page
@@ -1646,11 +1398,12 @@ class GrounderWebSearchProvider(WebSearchProvider):
         """
         chat = _chat(_session())
         question = " ".join(ADDRESS.sub(" ", query).split())[:MAX_QUERY_CHARS] or self._question(pages)
-        sent: list[dict[str, Any]] = []
-        paid: list[dict[str, Any]] = []
-        body, error = _send({"query": question, "urls": pages, "top_k": len(pages), "features": ["page-text"]}, sent_out=sent, paid_out=paid)
+        agent = direct_dev.user_agent()
+        if not agent:
+            return _notice("Grounder direct needs your Safari user agent to read these pages.", "refused")
+        body, error = _send({"query": question, "urls": pages, "mode": DIRECT_MODE, "format": fmt, "user_agent": agent})
         if body is None:
-            return _notice(error) if isinstance(error, _Act) else _fail(error or "Grounder returned no answer")
+            return _notice(error) if isinstance(error, _Act) else _notice(error or "Grounder returned no answer", "refused")
         found = _pages_found(pages, _results(body))
         logger.info("Grounder read by search: %d of %d pages read", len(found), len(pages))
         with self._lock:
@@ -1662,15 +1415,16 @@ class GrounderWebSearchProvider(WebSearchProvider):
             why = _unread(body)
             reasons = {why.get(_page_key(page), "") for page in pages}
             if len(pages) == 1 or len(reasons) == 1:
-                return _fail(UNREAD.get(reasons.pop(), NOT_READ) if len(pages) == 1 else UNREAD.get(reasons.pop(), NOT_READ).replace("this page", "these pages"))
-            return _fail("Grounder could not read these pages, or their sites do not allow it.")
+                message = UNREAD.get(reasons.pop(), NOT_READ)
+                return _notice(message if len(pages) == 1 else message.replace("this page", "these pages"), "refused")
+            return _notice("Grounder could not read these pages, or their sites do not allow it.", "refused")
         rows = []
         for page in pages:
             if page in found or page in shown:
                 entry = _page_row(page, found[page]) if page in found else _page_shown(page, shown[page])
                 rows.append({"title": entry["title"], "url": page, "description": entry["content"], "position": len(rows) + 1})
-        self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows), sent[-1] if sent else None), found_by=False)
-        return {"success": True, "data": {"web": rows, **({PAYMENT_KEY: paid[-1]} if paid else {})}}
+        self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows), {'mode': DIRECT_MODE}), found_by=False)
+        return {"success": True, "data": {"web": rows}}
 
     def after_tool(self, tool_name: str = "", args: Any = None, result: Any = None, session_id: str = "", turn_id: str = "", conversation_id: str = "",
                    **_: Any) -> Optional[str]:
@@ -1773,93 +1527,93 @@ class GrounderWebSearchProvider(WebSearchProvider):
         return f"{response_text.rstrip()}\n\n" + "\n\n".join(tail) if tail else None
 
     def search_tool(self, args: dict[str, Any], **_: Any) -> str:
-        """The ``grounder_search`` tool: one search with every option Grounder's MCP search takes, answered in ``web_search``'s shape."""
+        answer = self._search(args)
+        data = answer.get("data") or {}
+        if data.get(NOTICE_KEY) in ("refused", "act"):
+            answer = _fail(data["web"][0]["description"])
+        return json.dumps(answer, indent=2, ensure_ascii=False)
+
+    def _search(self, args: dict[str, Any]) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()[:MAX_QUERY_CHARS]
         if not query:
-            return json.dumps(_fail("grounder_search needs a query"))
-        asked = args.get("urls")
-        state = direct_state()  # the account's saved setting, else this Mac's
-        direct = (state == direct_dev.ONLY or str(args.get("mode") or "").strip().lower() == direct_formats.DIRECT_MODE
-                  or (state == direct_dev.ADDON and bool(asked or _dev_addresses(query))))  # the add-on reads the pages a call names; a call that names none searches, then reads
-        addon = state == direct_dev.ADDON and not direct
-        fmt = direct_formats.valid(args.get("format"))
-        if args.get("format") not in (None, "") and fmt is None:
-            return json.dumps(_fail(f"format must be one of {', '.join(direct_formats.FORMATS)}"))
-        if fmt and not direct and not addon:
-            return json.dumps(_fail(f"format is for grounder-direct reads: pass mode \"{direct_formats.DIRECT_MODE}\" with it"))
-        named = [asked] if isinstance(asked, str) else [str(a) for a in asked] if isinstance(asked, list) else []
+            return _fail("Grounder search needs a query.")
+        mode = str(args.get("mode") or "").strip()
+        if mode and mode not in MODES:
+            return _fail(f"mode must be one of {', '.join(MODES)}.")
         site = _site_arg(args.get("site"))
-        pages = [*named, *_dev_addresses(query)]  # a page address, a front page included, is read as given
-        reading = state != direct_dev.OFF or str(args.get("mode") or "").strip().lower() == direct_formats.DIRECT_MODE
-        if site and reading and not pages:  # a page named without its link: find it on the site with a search, then read it directly
-            return self._site_read(args, query, site, fmt)
-        if direct:  # no search under Grounder direct: only the pages named, read straight from their sites
-            signed_out = args.get("signed_in") is False
-            return json.dumps(self._dev_search(" ".join([query, *named]), fmt, question=query, signed_out=signed_out), indent=2, ensure_ascii=False)
-        why = next((reason for address in ([asked] if isinstance(asked, str) else asked if isinstance(asked, list) else []) if (reason := _refusal(str(address)))), "")
+        explicit = args.get("urls")
+        pages = list(dict.fromkeys(str(url) for url in explicit)) if isinstance(explicit, list) else []
+        addresses = _dev_addresses(query)
+        why = next((reason for url in dict.fromkeys([*pages, *addresses]) if (reason := _refusal(url))), "")
         if why:
-            return json.dumps(_fail(why))
-        dropped: list[str] = []
-        overridden: list[str] = []
-        sent: list[dict[str, Any]] = []
-        paid: list[dict[str, Any]] = []
-        options = _options(args, query)
-        if addon:
-            options["direct"] = "mac"  # this plugin reads the pages itself, on the user's Mac: Grounder reads none
-        body, error = _send(options, dropped, sent_out=sent, overridden=overridden, paid_out=paid)
-        if body is None:
-            return json.dumps(_fail(error or "Grounder returned no answer"))
-        rows = [_row(r, i + 1) for i, r in enumerate(_results(body))]
-        self._remember(query, rows, _summary(body, len(rows), sent[-1] if sent else None))
-        logger.info("Grounder search: %d results", len(rows))
-        if addon:  # no page named: the top page (or three sites) read directly in the saved format, then the search's own rows
-            asks = _ASKS.get(_session(), "")
-            read = self._addon_reads(_candidates(body), direct_formats.chosen(fmt, asks, direct_format()), query, args.get("signed_in") is False or direct_formats.signed_out_words(asks))
-            rows = [*read, *({**row, "position": len(read) + i + 1} for i, row in enumerate(rows))]
-        features = {"features": body["features"]} if body.get("features") else {}
-        note = {"note": f"No Grounder account is connected, so {', '.join(dropped)} {'was' if len(dropped) == 1 else 'were'} not sent and this ran as a free search. "
-                        f"Sign in with `{SIGN_IN}`, or set a search key in `{KEY_ENV}`, to use {'it' if len(dropped) == 1 else 'them'}."} if dropped else {}
-        if overridden:
-            note = {"note": f"The user's own Grounder search choice (/search) ran this search, so {', '.join(overridden)} {'was' if len(overridden) == 1 else 'were'} not used."}
-        return json.dumps({"success": True, "data": {"web": rows, **({PAYMENT_KEY: paid[-1]} if paid else {})}, **features, **note}, indent=2, ensure_ascii=False)
-
-    def _site_read(self, args: dict[str, Any], query: str, site: str, fmt: str | None) -> str:
-        """``grounder_search`` with ``site`` and no page address, while Grounder direct reads: one search in the account's mode narrowed to the site
-        (``filters.domains``, ``direct: "mac"``), then the first result on that site read directly in the saved format (up to three for highlights). With none on the site, it says so
-        and lists what the search returned."""
-        options = _options({k: v for k, v in args.items() if k not in ("urls", "domains", "site")}, query)
-        options["filters"] = {**options.get("filters", {}), "domains": {"values": [site], "mode": "include"}}
-        options["direct"] = "mac"
-        sent: list[dict[str, Any]] = []
-        paid: list[dict[str, Any]] = []
-        body, error = _send(options, sent_out=sent, paid_out=paid)
-        if body is None:
-            return json.dumps(_fail(error or "Grounder returned no answer"))
-        found = [_row(r, i + 1) for i, r in enumerate(_results(body))]
-        self._remember(query, found, _summary(body, len(found), sent[-1] if sent else None))
+            return _notice(why, "refused")
+        if not pages and mode != PROVIDER_MODE:
+            pages = addresses
+        if len(pages) > MAX_PAGES:
+            return _notice(f"Grounder direct reads at most {MAX_PAGES} pages a call.", "refused")
+        if mode == PROVIDER_MODE and (pages or site):
+            return _notice("Use mode grounder-direct to read pages by address or search a named site.", "refused")
+        if args.get("site") and not site:
+            return _fail("site must be a host such as bbc.co.uk.")
+        asked_format = args.get("format")
+        if asked_format and not direct_formats.valid(asked_format):
+            return _fail(f"format must be one of {', '.join(direct_formats.FORMATS)}.")
+        state = direct_state()
         asks = _ASKS.get(_session(), "")
-        read = self._addon_reads(_candidates(body), direct_formats.chosen(fmt, asks, direct_format()), query,
-                                 args.get("signed_in") is False or direct_formats.signed_out_words(asks), site)
-        if not read:
-            listed = ", ".join(row["url"] for row in found if row["url"]) or "nothing"
-            read = [{"title": site, "url": f"https://{site}", "position": 1,
-                     "description": f"Grounder found no page on {site} for this search, so nothing was read there. The search returned: {listed}."}]
-        rows = [*read, *({**row, "position": len(read) + i + 1} for i, row in enumerate(found))]
-        return json.dumps({"success": True, "data": {"web": rows, **({PAYMENT_KEY: paid[-1]} if paid else {})}}, indent=2, ensure_ascii=False)
+        local = state == direct_dev.ONLY
+        reading = mode == DIRECT_MODE or (not mode and (local or bool(pages) or bool(site)))
+        fmt = direct_formats.chosen(asked_format, asks or query, direct_format()) if reading else ""
+        signed_out = args.get("signed_in") is False or direct_formats.signed_out_words(asks)
+        if pages:
+            return self._dev_search(query, fmt, signed_out=signed_out, pages=pages) if local else self._read_part(query, pages, fmt)
+        payload = _options(args, query)
+        payload["mode"] = DIRECT_MODE if reading else PROVIDER_MODE
+        if reading:
+            payload["format"] = fmt
+            if site:
+                payload["site"] = site
+            if args.get("signed_in") is not None:
+                payload["signed_in"] = args["signed_in"]
+            if local:
+                payload["reader"] = "mac"
+            elif agent := direct_dev.user_agent():
+                payload["user_agent"] = agent
+            else:
+                return _notice("Grounder direct needs your Safari user agent to read pages.", "refused")
+        paid: list[dict[str, Any]] = []
+        body, error = _send(payload, paid_out=paid)
+        if body is None:
+            return _notice(error) if isinstance(error, _Act) else _fail(error or "Grounder returned no answer")
+        if body.get("no_topic"):
+            return _notice("No topic fits this question, so no source was asked and nothing was charged. grounder_list_topics names the topics Grounder covers.", "no_topic")
+        topics = [topic for topic in _listed(body.get("topics")) if isinstance(topic, dict)]
+        results = _results(body)
+        if not reading and isinstance(payload.get("top_k"), int):
+            results = results[:payload["top_k"]]
+        rows = [_row(row, i + 1) for i, row in enumerate(results)]
+        if local and reading:
+            found = self._read_candidates(_candidates(body), fmt, query, signed_out, site)
+            combined = [*found, *rows]
+            order = {str(topic.get("id")): i for i, topic in enumerate(topics)}
+            rows = sorted(combined, key=lambda row: order.get(str(row.get("topic")), len(order)))
+            for i, row in enumerate(rows, 1):
+                row["position"] = i
+        self._remember(query, rows, _summary(body, len(rows), payload))
+        logger.info("Grounder search: %d results", len(rows))
+        direct = body.get("direct") if isinstance(body.get("direct"), dict) else {}
+        notes = [str(topic["note"]) for topic in topics if topic.get("note")]
+        if direct.get("note"):
+            notes.append(str(direct["note"]))
+        if reading and not rows and not notes:
+            notes.append("Grounder found no page it could read. It made no other search.")
+        return {"success": True, "data": {"web": rows, **({"topics": topics} if topics else {}),
+                **({"note": " ".join(notes)} if notes else {}), **({PAYMENT_KEY: paid[-1]} if paid else {})}}
 
-    def list_providers_tool(self, args: dict[str, Any], **_: Any) -> str:
-        """The ``grounder_list_providers`` tool: what Grounder's MCP ``list_providers`` says, from the public feature list. Sends no credential and is not a search."""
-        request = urllib.request.Request(FEATURES_URL, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
-        try:
-            with _open(request, TIMEOUT_S) as response:
-                body = json.loads(response.read())
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
-            return json.dumps(_fail(f"Could not reach Grounder: {error}"))
-        data: dict[str, Any] = {"features": [_feature(f) for f in body.get("features") or [] if isinstance(f, dict)]}
-        modes = search_modes()
-        if modes:
-            data["search_modes"] = modes
-        return json.dumps({"success": True, "data": data}, ensure_ascii=False)
+    def list_topics_tool(self, args: dict[str, Any], **_: Any) -> str:
+        """Read the same public topic catalog as both MCP addresses."""
+        body, error = fetch_list(TOPICS_URL)
+        return json.dumps({"success": True, "data": body} if body is not None
+                          else _fail(error or "Could not read Grounder's topics"), ensure_ascii=False)
 
     def _remember(self, query: str, rows: list[dict[str, Any]], summary: dict[str, Any], found_by: bool = True) -> None:
         """Note the query that found each of a search's pages, for the extract that may read them next, and the search's summary.
@@ -1894,7 +1648,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         """The entry ``hermes tools`` shows. It asks for no key, since signing in needs none; the tag names both ways in."""
         return {
             "name": "Grounder", "badge": "account",
-            "tag": "Licensed, live sources: over 40 providers, one provider call per search and each live-data API asked every call, never or when Grounder decides, "
-                   f"each returning its own results, and page reading. Free searches need no account; for more, a search key in `{KEY_ENV}`, or sign in with `{SIGN_IN}`, or a wallet that pays for each search.",
+            "tag": "Grounder searches the source for your topic or reads its page. "
+                   f"Free searches need no account. For more, use a search key in `{KEY_ENV}`, sign in with `{SIGN_IN}`, or pay per search with a wallet.",
             "env_vars": [],
         }

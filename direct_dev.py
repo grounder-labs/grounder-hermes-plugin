@@ -3,8 +3,7 @@
 
 """Grounder direct: go straight to the address the user gives, from this Mac, asking for it the way their Safari does.
 
-Grounder direct is a mode of its own (``/search direct``: no search, only the addresses given) or goes with any other mode (``/search direct with-search``,
-or Yes to the question /search asks after a mode). It is saved on this machine only (``web.grounder.direct`` in config.yaml), never on the Grounder account.
+Grounder direct reads the source’s page for a search, or the page named by address. The saved account choice takes precedence over the setting on this Mac.
 
 Each read starts a fresh, empty session. Where the user saved a sign-in for the page's site (``/search-login <site>``, which opens the site's own sign-in page
 in a window on this Mac, or ``python3 direct_dev.py paste <site>`` in a terminal, for a Cookie header), that site's cookies are set in it first, so the site sees them
@@ -62,7 +61,8 @@ _lock = threading.Lock()
 _last_read: dict[str, float] = {}
 
 
-ONLY, ADDON, OFF = "only", "addon", "off"
+ONLY, OFF = "only", "off"
+SEARCH_PRICE = "A Grounder direct search is one search, at the one price, even if its page could not be read."
 
 
 # Set by provider.py: ``account_direct_reader()`` is the ``direct`` block of the account's saved setting (``use``, ``format``) or None with no credential or no block, and
@@ -71,20 +71,17 @@ account_direct_reader: Callable[[], dict[str, Any] | None] = lambda: None
 account_direct_writer: Callable[[dict[str, Any]], bool | None] = lambda change: None  # True saved, False Grounder did not take it, None no credential
 account_save_error = ""  # why the last account save was not taken (set by provider.py)
 _last_save: dict[str, Any] = {"on_account": None}  # the last save's outcome: True (on the account), False (the account refused it), None (no credential: this machine only)
-USE_WORDS = {"only": "only", "addon": "add-on", "off": "off"}
+USE_WORDS = {"off": "off", "only": "only"}
 
 
 def account_use() -> str | None:
-    """The account's ``direct.use`` as ONLY, ADDON or OFF, or None when the account has none."""
+    """The effective account choice, or None when no account setting can be read."""
     use = (account_direct_reader() or {}).get("use")
-    if not (isinstance(use, str) and use.strip()):
-        return None
-    word = use.strip().lower().replace("_", "-")
-    return ONLY if word == "only" else ADDON if word in ("add-on", "addon", "with-search") else OFF
+    return None if use is None else ONLY if use == ONLY else OFF
 
 
 def save_to_account(change: dict[str, Any]) -> None:
-    """Save ``change`` on the account (``direct.use`` or ``direct.format``) and keep what came of it for the words under the reply (``saved_note``)."""
+    """Save ``change`` on the account (``search.mode`` or page settings) and keep what came of it for the words under the reply (``saved_note``)."""
     _last_save["on_account"] = account_direct_writer(change)
 
 
@@ -101,9 +98,7 @@ def saved_note(key: str = DIRECT_KEY) -> str:
 
 
 def state() -> str:
-    """How Grounder direct is set on this Mac: ``only`` (the mode by itself: no search, only the addresses given), ``addon`` (on top of the search mode: searches run
-    as set, and every page and named site is read straight from its site) or ``off``. ``web.grounder.direct`` holds it (``only``, ``with-search`` or ``off``); without it,
-    the dev builds' ``web.grounder.direct_dev`` (true is ``only``, ``"addon"`` the add-on). The account's saved ``direct.use`` wins over both when there is one."""
+    """Read the account choice first, then the local choice."""
     from_account = account_use()
     if from_account is not None:
         return from_account
@@ -117,11 +112,11 @@ def state() -> str:
     section = section if isinstance(section, dict) else {}
     if isinstance(section.get(DIRECT_KEY), str):
         word = section[DIRECT_KEY].strip().lower().replace("_", "-")
-        return ONLY if word == ONLY else ADDON if word in ("with-search", "add-on", "addon") else OFF
+        return ONLY if word == ONLY else OFF
     value = section.get(DEV_KEY)
     if value is True or str(value).lower() == ONLY:
         return ONLY
-    return ADDON if str(value).lower().replace("-", "") == ADDON else OFF
+    return OFF
 
 
 def is_on() -> bool:
@@ -129,14 +124,8 @@ def is_on() -> bool:
     return state() == ONLY
 
 
-def addon_on() -> bool:
-    """Whether Grounder direct is on as an add-on to the search mode."""
-    return state() == ADDON
-
-
 def reads_pages() -> bool:
-    """Whether pages are read straight from their sites: by itself or as the add-on."""
-    return state() != OFF
+    return state() == ONLY
 
 
 def save_setting(key: str, value: Any) -> None:
@@ -152,9 +141,10 @@ def save_setting(key: str, value: Any) -> None:
 
 
 def set_state(value: str) -> None:
-    """Save the setting on this machine and, with a credential, on the account (``direct.use``) too."""
-    save_setting(DIRECT_KEY, ONLY if value == ONLY else "with-search" if value == ADDON else OFF)
-    save_to_account({"use": USE_WORDS["only" if value == ONLY else "addon" if value == ADDON else "off"]})
+    """Save the setting on this machine and, with a credential, on the account (``search.mode``) too."""
+    use = USE_WORDS[value]
+    save_setting(DIRECT_KEY, use)
+    save_to_account({"use": use})
     from . import direct_formats
     direct_formats.forget_cached_searches()
     if value != OFF:  # reading straight from sites from now on: no page Grounder's reader cached earlier is served in its place
@@ -342,53 +332,27 @@ def header(page: dict[str, Any]) -> str:
         moved += ", logged out because the saved sign-in for it could not be used (/search-login can save it again)"
     elif page.get("signed_out_asked"):
         moved += ", logged out as the user asked"
+    charge = ("Found by a Grounder direct search. Reading the page on this Mac used no Grounder credits. " + SEARCH_PRICE
+              if page.get("found_by_search") else "No search provider was called, and no search provider or Grounder credits were used.")
     return (f"[{NAME}: read directly from {host}{moved} on this Mac with Safari's user agent (Safari {safari_version()}), {session}, "
-            f"HTTP {page.get('status')}, {page.get('ms')} ms{cut}. No search provider was called, and no search provider or Grounder credits were used.]")
+            f"HTTP {page.get('status')}, {page.get('ms')} ms{cut}. {charge}]")
 
 
-# Added to each user message while the mode is on (``turn_context``): the model turns a site the user names into that site's exact address and sends it through
-# Grounder. No site is listed here; the address is the model's to work out from the message.
-TURN_NOTE = (f"[{NAME} is the user's search mode: Grounder goes only to an exact web address and reads that page straight from its site, with no search. "
-             "When the user names a site by its name rather than its address (any site, publication, forum, wiki or service), work out that site's exact address "
-             "from their message yourself: the most specific page on that site that answers it, such as the site's own page for the topic, section, article or "
-             "profile, or the site's own search page with their words in it, else its home page. Write it the way the site serves it in a browser: the "
-             "site's real domain, https, and www. when the site uses it. Then call web_search with that full https address in the query, or web_extract with it. "
-             "Use Grounder's web_search and web_extract for this, not a browser, a terminal or any other tool. If the user names no site and gives no address, "
-             "ask which site to go to.]")
-
-NO_ADDRESS = (f"{NAME} searches nothing: it goes only to an exact address, and this call had none, so nothing was read. If the user named a site, work out "
-              "that site's exact address from their message (the most specific page on it that answers them, such as its page for the topic or its own search "
-              "page with their words) and call web_search again with that full https address in the query. If they named no site, ask them which site to go to.")
-
-
-ADDON_NOTE = ("[Grounder direct is on together with the user's Grounder search mode (their /search choice). Decide for this question which to use. "
-              "If the user names a site by its name (any site, publication, forum, wiki or service) or gives an address, use Grounder direct: work out that "
-              "site's exact address from their message yourself (the most specific page on it that answers them, such as its page for the topic, section, article or profile, or its own "
-              "search page with their words, else its home page; written the way the site serves it in a browser: its real domain, https, and www. when the "
-              "site uses it) and read it with web_search (the full https address in the query) or web_extract; Grounder "
-              "reads it straight from the site. If they name no site, search with web_search as usual: Grounder searches in their mode. If the question is "
-              "better answered by both, such as what a named site says plus wider context, or a claim on that site checked against other sources, do both and "
-              "combine them in one answer, saying which parts came from the site itself and which from the search. Use Grounder's tools for all of it, not a "
-              "browser, a terminal or any other tool.]")
-
+TURN_NOTE = ("[Grounder direct is the user's search choice. For a question, use web_search to find and read the source's page. "
+             "Pass URLs the user provides, or use grounder_search with site and query when the user names a page without its address. "
+             "Reading a page named by address is free. " + SEARCH_PRICE + "]")
+NO_ADDRESS = "No page address was provided. Give a specific address to read, or search for the page using the question."
 
 def turn_note(user_message: Any = None, **_: Any) -> Optional[dict[str, str]]:
-    """``pre_llm_call`` hook: while Grounder direct is on, by itself (``TURN_NOTE``) or as the add-on (``ADDON_NOTE``), add its note to the user's message, and,
-    when their words pick a format (``direct_formats``), the ask to pass it and answer in it. Off, it adds nothing."""
-    now = state()
-    if now == OFF:
+    if not reads_pages():
         return None
     from . import direct_formats
-    note = TURN_NOTE if now == ONLY else ADDON_NOTE
-    out = (" The user asked to read logged out: pages are read with no saved sign-in (grounder_search takes signed_in false for this; web_search and "
-           "web_extract do it on their own for this message)." if direct_formats.signed_out_words(user_message) else
-           " Signing in is optional: a page is read logged out unless the user saved a sign-in for its site, and logged out anyway if that sign-in cannot be used.")
-    return {"context": note[:-1] + direct_formats.turn_words(direct_formats.from_words(user_message)) + out + "]"}
+    signed_out = " The user asked to read logged out. Pass signed_in false to grounder_search." if direct_formats.signed_out_words(user_message) else ""
+    return {"context": TURN_NOTE[:-1] + direct_formats.turn_words(direct_formats.from_words(user_message)) + signed_out + "]"}
 
 
 def not_read(url: str, problem: str) -> str:
-    return (f"{NAME} did not read {url}: {problem}. It goes only to the address given and tries nothing else, so tell the user that, "
-            "and that they can give another address or pick another mode with /search.")
+    return f"{NAME} did not read {url}: {problem}. Tell the user what happened and ask before making another search."
 
 
 # Saved sign-ins. The reader holds the values; this side only names sites, opens the sign-in window and lists or forgets what the keychain holds.

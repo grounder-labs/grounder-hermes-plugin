@@ -13,14 +13,7 @@ import os
 
 import pytest
 import yaml
-from test_commands import (  # noqa: F401  (fixtures)
-    Host,
-    _labels,
-    _saved,
-    _values,
-    lists,
-    signed_in,
-)
+from test_commands import Host
 
 PAGE = "https://www.reddit.com/r/MechanicalKeyboards/"
 
@@ -41,58 +34,6 @@ def dev_on(plugin, tmp_path):
     return tmp_path
 
 
-@pytest.fixture
-def reads(plugin, monkeypatch):
-    """Every direct read, faked: a Reddit community reads; anything with ``blocked`` in it is a site's check."""
-    done = []
-
-    def read(url, signed_out=False):
-        done.append(url)
-        if "blocked" in url:
-            return {"url": url, "status": 403, "text": "You've been blocked by network security.", "problem": "the site showed a check instead of the page (HTTP 403)"}
-        return {"url": url, "status": 200, "title": "r/MechanicalKeyboards", "text": "posts", "chars": 5, "ms": 10, "user_agent": "Safari"}
-
-    monkeypatch.setattr(plugin.direct_dev, "read", read)
-    monkeypatch.setattr(plugin.direct_dev, "safari_version", lambda: "27.2")
-    return done
-
-
-def test_the_hub_offers_grounder_direct_as_the_fourth_choice_after_the_three_search_modes(plugin, signed_in, tmp_path):
-    host = Host(["done"])
-    plugin.commands.search_command(host, "")
-    assert _values(host.asked[0][1])[:4] == ["auto", "presets", "providers", "dev"]
-    assert _labels(host.asked[0][1])[:4] == ["Grounder optimized (current)", "Grounder presets", "Grounder pinned", "Grounder direct"]
-
-
-def test_picking_it_turns_it_on_here_and_on_the_account_when_there_is_one(plugin, signed_in, tmp_path, monkeypatch):
-    monkeypatch.setattr(plugin.direct_dev, "safari_version", lambda: "27.2")
-    host = Host(["dev"])
-    reply = plugin.commands.search_command(host, "")
-    assert reply.startswith("✓ Search switched: Grounder direct\n")
-    assert "Goes to: only the address you give" in reply and "your Safari 27.2" in reply and "keeps Grounder optimized" in reply
-    assert _dev(tmp_path) is True
-    puts = [json.loads(r["body"]) for r in signed_in.stub.requests if r["path"] == "/v1/search/settings" and r["method"] == "PUT"]
-    assert puts == [{"direct": {"use": "only"}}] and signed_in.stub.saved_direct["use"] == "only"  # saved on the account too, and nothing else of it written
-    again = Host(["done"])
-    plugin.commands.search_command(again, "")
-    assert _labels(again.asked[0][1])[:4] == ["Grounder optimized", "Grounder presets", "Grounder pinned", "Grounder direct (current)"]
-
-
-def test_typed_direct_turns_it_on_and_another_pick_turns_it_off(plugin, signed_in, tmp_path):
-    assert plugin.commands.search_command(Host(), "dev").startswith("✓ Search switched: Grounder direct")
-    assert plugin.commands.search_command(Host(), "dev").startswith("✓ Search unchanged: Grounder direct")
-    reply = plugin.commands.search_command(Host(), "fast")
-    assert reply.startswith("✓ Search switched: Grounder preset") and _dev(tmp_path) is False
-    assert _saved(signed_in.stub, "preset") == "fast"
-
-
-def test_a_search_with_no_address_reads_nothing_and_says_so(plugin, stub, hermes, dev_on, reads):
-    result = plugin.GrounderWebSearchProvider().search("best budget mechanical keyboard reddit", limit=5)
-    assert result["success"] is True and result["data"]["grounder_notice"] == "refused"
-    assert "work out that site's exact address" in result["data"]["web"][0]["description"]
-    assert reads == [] and not stub.requests
-
-
 def test_a_search_reads_only_the_address_it_names_straight_from_the_site(plugin, stub, hermes, dev_on, reads):
     result = plugin.GrounderWebSearchProvider().search(f"what is new on {PAGE}", limit=5)
     (row,) = result["data"]["web"]
@@ -111,7 +52,7 @@ def test_a_page_that_is_not_read_says_why_and_nothing_is_tried_in_its_place(plug
     assert reads == [PAGE, "https://www.reddit.com/search/?q=blocked"] and not stub.requests
     assert rows[0]["url"] == PAGE + "#grounder-direct" and "error" not in rows[0]  # marked, so Hermes caches no read
     assert "error" not in rows[1] and rows[1]["url"] == plugin.provider.GROUNDER_SITE  # filed away from the page, so Hermes caches no failure as its text
-    assert "did not read https://www.reddit.com/search/?q=blocked" in rows[1]["content"] and "tries nothing else" in rows[1]["content"]
+    assert "did not read https://www.reddit.com/search/?q=blocked" in rows[1]["content"] and "ask before making another search" in rows[1]["content"]
 
 
 def test_an_address_that_must_not_leave_the_machine_is_not_read(plugin, stub, hermes, dev_on, reads):
@@ -139,15 +80,6 @@ def test_live_reads_a_reddit_community_and_stops_at_reddits_search_block(plugin,
     assert not stub.requests
 
 
-def test_while_on_each_message_asks_the_model_to_turn_a_named_site_into_its_exact_address(plugin, hermes, tmp_path):
-    host = Host()
-    plugin.register(host)
-    assert host.hooks["pre_llm_call"] is plugin.before_llm
-    assert plugin.direct_dev.turn_note(user_message="what does wikipedia say") is None  # off: nothing added
-    plugin.direct_dev.set_on(True)
-    note = plugin.direct_dev.turn_note(user_message="what does wikipedia say")["context"]
-    assert "work out that site's exact address" in note and "web_search" in note
-    assert "wikipedia" not in note.lower() and "reddit" not in note.lower()  # no site is listed: the model infers it
 
 
 # Formats, /search-direct-format, and Grounder direct together with a search mode (owned by the /search session).
@@ -171,10 +103,8 @@ def test_format_words_in_chat_pick_the_format(plugin):
     assert f("a summary, not the full page") == "summary"  # the earliest wins
 
 
-def test_grounder_search_takes_a_format_only_with_grounder_direct(plugin, stub, hermes, article):
+def test_grounder_search_takes_a_valid_format_for_direct_reads(plugin, stub, hermes, dev_on, article):
     provider = plugin.GrounderWebSearchProvider()
-    refused = json.loads(provider.search_tool({"query": "switches", "urls": [PAGE], "format": "summary"}))
-    assert refused["success"] is False and "grounder-direct" in refused["error"] and not stub.requests
     bad = json.loads(provider.search_tool({"query": "switches", "urls": [PAGE], "mode": "grounder-direct", "format": "poem"}))
     assert bad["success"] is False and "format must be one of" in bad["error"]
     for fmt in ("full-page", "highlights", "summary"):
@@ -183,7 +113,7 @@ def test_grounder_search_takes_a_format_only_with_grounder_direct(plugin, stub, 
     assert not stub.requests  # grounder-direct named in the call reads directly even with the mode off
 
 
-def test_highlights_are_the_passages_that_match_the_question_in_page_order(plugin, stub, hermes, article):
+def test_highlights_are_the_passages_that_match_the_question_in_page_order(plugin, stub, hermes, dev_on, article):
     text = json.loads(plugin.GrounderWebSearchProvider().search_tool(
         {"query": "hot-swappable switches", "urls": [PAGE], "mode": "grounder-direct", "format": "highlights"}))["data"]["web"][0]["description"]
     assert "Hot-swappable mechanical keyboards" in text and "Mechanical keyboards use an individual switch" in text
@@ -191,8 +121,8 @@ def test_highlights_are_the_passages_that_match_the_question_in_page_order(plugi
     assert text.index("individual switch") < text.index("Hot-swappable")
 
 
-def test_full_page_is_the_whole_text_and_is_the_default(plugin, stub, hermes, dev_on, article):
-    row = plugin.GrounderWebSearchProvider().search(f"read {PAGE}", limit=5)["data"]["web"][0]
+def test_full_page_is_the_whole_text(plugin, stub, hermes, dev_on, article):
+    row = plugin.GrounderWebSearchProvider().search(f"read full page {PAGE}", limit=5)["data"]["web"][0]
     assert "Format: full-page" in row["description"] and "typewriter" in row["description"]
     assert "no search provider or Grounder credits were used" in row["description"]
 
@@ -207,16 +137,16 @@ def test_the_users_words_pick_the_format_of_a_web_extract(plugin, stub, hermes, 
 def test_the_turn_note_asks_for_the_format_the_user_named(plugin, hermes, dev_on):
     note = plugin.direct_dev.turn_note(user_message="highlights from the wikipedia page on switches")["context"]
     assert 'format "highlights"' in note and 'mode "grounder-direct"' in note
-    assert "format" not in plugin.direct_dev.turn_note(user_message="what does wikipedia say")["context"].split("ask which site to go to.")[1]
+    assert "format full-page" not in plugin.direct_dev.turn_note(user_message="what does wikipedia say")["context"]
 
 
 def test_search_format_saves_the_default_format_and_chat_words_win_over_it(plugin, stub, hermes, dev_on, article, monkeypatch):
     reply = plugin.commands.search_format_command(Host(), "highlights")
-    assert reply.startswith("✓ Format switched: highlights") and plugin.direct_formats.saved() == "highlights"
-    assert plugin.commands.search_format_command(Host(), "poem").startswith("`poem` is not a format")
-    assert plugin.commands.search_format_command(Host(["summary"]), "").startswith("✓ Format switched: summary")
-    row = plugin.GrounderWebSearchProvider().search(f"read {PAGE}", limit=5)["data"]["web"][0]
-    assert "Format: summary" in row["description"] and _dev(plugin_home(plugin)) is True  # saving the format kept the mode
+    assert reply.startswith("Page format: Highlights") and plugin.direct_formats.saved() == "highlights"
+    assert plugin.commands.search_format_command(Host(), "poem") == "Use /search-direct-format full-page, highlights or summary."
+    assert plugin.commands.search_format_command(Host(["summary"]), "").startswith("Page format: Summary")
+    row = plugin.GrounderWebSearchProvider().search(f"read full page {PAGE}", limit=5)["data"]["web"][0]
+    assert "Format: full-page" in row["description"] and _dev(plugin_home(plugin)) is True  # saving the format kept the mode
     monkeypatch.setattr(plugin.provider, "_session", lambda: "s")
     plugin.provider.note_message(session_id="s", user_message=f"full page of {PAGE}")
     assert "Format: full-page" in plugin.GrounderWebSearchProvider().extract([PAGE])[0]["content"]
@@ -227,50 +157,12 @@ def plugin_home(plugin):
     return Path(os.environ["HERMES_HOME"])
 
 
-def test_direct_with_a_search_mode_reads_named_pages_directly_and_leaves_other_searches_to_the_mode(plugin, signed_in, stub, tmp_path, reads):
-    reply = plugin.commands.search_command(Host(), "direct with-search")
-    assert reply.startswith("✓ Search switched: Grounder direct + Grounder optimized") and _dev(tmp_path) == "addon"
-    provider = plugin.GrounderWebSearchProvider()
-    provider.extract([PAGE])
-    provider.search(f"what is new on {PAGE}", limit=5)
-    assert reads == [PAGE, PAGE]  # pages and addressed queries go straight to the site
-    before = len([r for r in stub.requests if r["path"] == "/v1/search"])
-    provider.search("best budget mechanical keyboard", limit=5)  # a question with no site runs in the account's mode
-    assert len([r for r in stub.requests if r["path"] == "/v1/search"]) == before + 1
-    note = plugin.direct_dev.turn_note(user_message="what does reddit say")["context"]
-    assert "together with the user's Grounder search mode" in note and "do both and combine them" in note
 
 
-def test_the_hub_lists_four_modes_and_asks_about_grounder_direct_after_a_search_mode(plugin, signed_in, tmp_path):
-    host = Host(["auto", "direct-yes"])
-    reply = plugin.commands.search_command(host, "")
-    (q1, hub), (q2, yes_no) = host.asked
-    assert _values(hub)[:4] == ["auto", "presets", "providers", "dev"] and "addon" not in _values(hub)
-    assert q2 == "Also read sites you name directly, as you?" and _labels(yes_no) == ["Yes", "No (current)"]
-    assert reply.startswith("✓ Search switched: Grounder direct + Grounder optimized") and _dev(tmp_path) == "addon"
-    again = Host(["done"])
-    plugin.commands.search_command(again, "")
-    assert again.asked[0][1][0]["description"] == "+ Grounder direct"
-    no = Host(["presets", "preset:fast", "direct-no"])
-    reply = plugin.commands.search_command(no, "")
-    assert reply.startswith("✓ Search switched: Grounder preset") and "Grounder direct +" not in reply and _dev(tmp_path) is False
 
 
-def test_a_typed_mode_keeps_grounder_direct_with_it(plugin, signed_in, tmp_path):
-    plugin.commands.search_command(Host(), "direct with-search")
-    reply = plugin.commands.search_command(Host(), "fast")
-    assert reply.startswith("✓ Search switched: Grounder direct + Grounder preset") and _dev(tmp_path) == "addon"
-    plugin.commands.search_command(Host(), "direct")
-    assert _dev(tmp_path) is True
-    plugin.commands.search_command(Host(), "direct with-search")
-    assert _dev(tmp_path) == "addon"
-    assert plugin.commands.search_command(Host(), "direct off").startswith("✓ Search switched: Grounder preset") and _dev(tmp_path) is False
 
 
-def test_grounder_direct_works_with_no_sign_in(plugin, signed_in, tmp_path, monkeypatch):
-    monkeypatch.setattr(plugin.direct_dev, "sites", lambda: [])
-    reply = plugin.commands.search_command(Host(), "direct")
-    assert "Sign-ins (optional): none needed; every site is read logged out" in " ".join(reply.split())
 
 
 def test_a_page_that_does_not_load_is_read_once_at_the_sites_other_host(plugin, monkeypatch):
@@ -292,7 +184,7 @@ def test_a_page_that_does_not_load_is_read_once_at_the_sites_other_host(plugin, 
     assert plugin.direct_dev.read("https://www.example.com/").get("problem") and blocked == ["https://www.example.com/"]  # a site's own answer stands
 
 
-def test_highlights_are_exact_quotes_listed_once_each(plugin, stub, hermes, monkeypatch):
+def test_highlights_are_exact_quotes_listed_once_each(plugin, stub, hermes, dev_on, monkeypatch):
     page = ("Menu\nTrending today\nI never had a pet cat growing up, and now I have three.\nHotel staff on Reddit: what shocks guests?\nHotel staff on Reddit: what shocks guests?\n"
             "Advertisement: Amex founded Small Business Saturday to celebrate local shops.\nAmex founded Small Business Saturday to celebrate local shops.\n")
     monkeypatch.setattr(plugin.direct_dev, "read", lambda url, signed_out=False: {"url": url, "status": 200, "title": "r/popular", "text": page, "chars": len(page), "ms": 5})
@@ -303,7 +195,7 @@ def test_highlights_are_exact_quotes_listed_once_each(plugin, stub, hermes, monk
     assert text.count('"Hotel staff on Reddit: what shocks guests?"') == 1 and '"I never had a pet cat growing up, and now I have three."' in text
 
 
-def test_summary_is_an_ai_summary_from_the_users_model(plugin, stub, hermes, article):
+def test_summary_is_an_ai_summary_from_the_users_model(plugin, stub, hermes, dev_on, article):
     asked = []
 
     class Llm:
@@ -344,23 +236,10 @@ def test_a_changed_format_or_mode_drops_hermess_cached_grounder_searches(plugin,
     plugin.direct_formats.save("summary")
     assert list(memo._store) == [("exa", "q", 10)]
     memo._store[("grounder", "q", 10)] = (0, {})
-    plugin.direct_dev.set_state(plugin.direct_dev.ADDON)
+    plugin.direct_dev.set_state(plugin.direct_dev.OFF)
     assert list(memo._store) == [("exa", "q", 10)]
 
 
-def test_settings_holds_the_resolver_and_saves_it_on_this_machine(plugin, signed_in, tmp_path):
-    host = Host(["settings", "resolver", "grounder"])
-    reply = plugin.commands.search_command(host, "")
-    assert [q for q, _ in host.asked] == ["How should Grounder search?", "Grounder direct settings", "How should Grounder direct look sites up?"]
-    assert _labels(host.asked[2][1])[:2] == ["Your own resolver (current)", "Grounder's resolver"]
-    assert reply.startswith("✓ Resolver switched: Grounder's resolver") and plugin.direct_dev.resolver() == "grounder"
-    assert "Grounder sees which sites are read, not what is on them" in " ".join(reply.split())
-    assert plugin.direct_dev.reader_env()  # reads now carry the resolver to the reader
-    assert plugin.commands.search_command(Host(), "resolver system").startswith("✓ Resolver switched: Your own resolver")
-    assert plugin.direct_dev.resolver() == "system" and plugin.direct_dev.reader_env() == {}
-    assert plugin.commands.search_command(Host(), "resolver bogus").startswith("Use `/search resolver system`")
-    back = Host(["settings", "back", "done"])
-    assert plugin.commands.search_command(back, "") == "Nothing changed."
 
 
 def test_a_read_through_grounders_resolver_says_so(plugin, monkeypatch):
@@ -415,7 +294,7 @@ def test_the_user_can_ask_for_a_logged_out_read(plugin, stub, hermes, dev_on, mo
     plugin.GrounderWebSearchProvider().extract([PAGE])
     assert asked == [True, True, False]
     assert "The user asked to read logged out" in plugin.direct_dev.turn_note(user_message="read it not logged in")["context"]
-    assert "Signing in is optional" in plugin.direct_dev.turn_note(user_message="read reddit")["context"]
+    assert "Pass signed_in false" not in plugin.direct_dev.turn_note(user_message="read reddit")["context"]
 
 
 def test_a_logged_out_read_tells_the_reader_to_use_no_sign_in(plugin, monkeypatch):
@@ -434,15 +313,6 @@ def test_a_logged_out_read_tells_the_reader_to_use_no_sign_in(plugin, monkeypatc
 
 # Saved sign-ins (0.8.0-dev.2): the reader holds the values in the login keychain; Hermes only names sites.
 
-def test_the_older_search_direct_signin_form_opens_the_window_without_an_account_and_never_takes_a_value_in_chat(plugin, monkeypatch):
-    opened = []
-    monkeypatch.setattr(plugin.direct_dev, "sign_in", lambda raw, wait=False: opened.append(raw) or f"opened {raw}")
-    monkeypatch.setattr(plugin.commands, "_catalog", lambda: (_ for _ in ()).throw(AssertionError("no account or catalog is needed")))
-    assert plugin.commands.search_command(Host(), "dev signin reddit.com") == "opened reddit.com" and opened == ["reddit.com"]
-    pasted = plugin.commands.search_command(Host(), "dev paste reddit.com")
-    assert "in a terminal, not here" in pasted and "direct_dev.py paste reddit.com" in pasted
-    assert "Usage: `/search-logout <site>`" in plugin.commands.search_command(Host(), "dev signout")
-    assert "Usage: `/search-login <site>`" in plugin.commands.search_command(Host(), "direct signin")
 
 
 def test_a_site_is_a_bare_name_or_an_https_address(plugin):

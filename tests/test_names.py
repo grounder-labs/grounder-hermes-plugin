@@ -95,11 +95,9 @@ def _all_text(value):
 
 def test_what_the_plugin_renders_says_Grounder(plugin):
     provider = plugin.GrounderWebSearchProvider()
-    texts = [*_all_text(plugin.provider.SEARCH_SCHEMA), *_all_text(plugin.provider.LIST_PROVIDERS_SCHEMA), provider.get_setup_schema()["tag"],
+    texts = [*_all_text(plugin.provider.SEARCH_SCHEMA), *_all_text(plugin.provider.LIST_TOPICS_SCHEMA), provider.get_setup_schema()["tag"],
              *plugin.provider.UNREAD.values(), plugin.provider.NOT_READ, plugin.provider.SHOWN_NOTE,
-             plugin.provider.CITE_REQUEST, plugin.provider.CITE_REQUEST_LISTED, plugin.commands.sign_in_first("servers"), plugin.commands.sign_in_first("modes"),
-             plugin.commands.OPTIMIZED_HEADER, plugin.commands.PRESETS_HEADER, plugin.commands.PROVIDERS_HEADER, plugin.commands.AUTO_LABEL, plugin.commands.AUTO_NOTE,
-             plugin.commands.PRESET_NOTE, plugin.commands.PIN_NOTE]
+             plugin.provider.CITE_REQUEST, plugin.provider.CITE_REQUEST_LISTED, *plugin.commands.SEARCH_CHOICES]
     links = {"signup_url": "https://grounder.net/account", "billing_url": "https://grounder.net/account/billing"}
     for status, via, body in ((401, "key", {}), (401, "sign-in", {}), (429, "free", {"error": {"details": links}}), (503, "free", {"error": {"details": links}}),
                               (402, "free", {"error": {"details": links}}), (402, "free", {}), (402, "key", {}), (429, "key", {"error": {"message": "slow down"}}), (500, "sign-in", {})):

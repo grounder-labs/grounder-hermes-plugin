@@ -187,15 +187,23 @@ def test_the_offer_in_the_body_is_enough_when_the_header_is_missing(plugin, stub
     assert len(_searches(stub)) == 2
 
 
-def test_a_paid_search_keeps_the_profile_and_routing_choices_the_free_one_leaves_out(plugin, stub, free, wallet):
-    # A free search sends neither (Grounder refuses a caller with no account them); a paid search may carry both, so the paid one does.
+def test_a_paid_retry_sends_the_same_current_search_fields(plugin, stub, free, wallet):
+    # Both requests strip retired provider settings. Only the retry carries a signature.
     stub.search_script = [refused(), paid()]
     out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "profile": "fast", "routing_settings": {"fallback": False}, "top_k": 3}))
     first, second = (json.loads(r["body"]) for r in _searches(stub))
-    assert not {"profile", "routing_settings"} & set(first)
-    assert second["profile"] == "fast" and second["routing_settings"] == {"fallback": False} and second["top_k"] == 3 and signature_of(_searches(stub)[1])
-    assert out["success"] is True and "note" not in out  # nothing was dropped, so there is nothing to say was
+    assert first == second == {"query": "q", "top_k": 3, "mode": "grounder-provider"}
+    assert signature_of(_searches(stub)[0]) is None and signature_of(_searches(stub)[1])
+    assert out["success"] is True and "note" not in out
     assert out["data"][plugin.provider.PAYMENT_KEY]["transaction"] == TRANSACTION
+
+
+def test_a_paid_retry_with_no_topic_has_no_settlement_receipt(plugin, stub, free, wallet):
+    stub.search_script = [refused(), (200, {"no_topic": True, "results": [], "usage": {"cost_usd": 0}}, {})]
+    result = plugin.GrounderWebSearchProvider().search("A question without a topic")
+    assert result["data"][plugin.provider.NOTICE_KEY] == "no_topic"
+    assert plugin.provider.PAYMENT_KEY not in result["data"]
+    assert len(_searches(stub)) == 2 and signature_of(_searches(stub)[1])
 
 
 def test_a_page_read_is_paid_for_the_same_way(plugin, stub, free, wallet):
@@ -281,7 +289,7 @@ def test_an_offer_the_plugin_does_not_pay_is_not_paid_and_says_why(plugin, stub,
     assert result["data"][plugin.provider.NOTICE_KEY] == "act" and plugin.provider.PAYMENT_KEY not in result["data"]
     assert words in said and "nothing was paid" in said and "HTTP 402" not in said
     assert "Sign up at https://grounder.net/account" in said  # the account is still the way past it
-    assert f"A wallet can pay for each search instead" not in said  # one is set, so it is not offered
+    assert "A wallet can pay for each search instead" not in said  # one is set, so it is not offered
     assert len(_searches(stub)) == 1 and signature_of(_searches(stub)[0]) is None
 
 

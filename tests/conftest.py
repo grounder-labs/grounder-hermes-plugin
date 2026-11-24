@@ -145,6 +145,7 @@ class Stub:
         self.search_script = []  # (status, body) or (status, body, headers) answers to the next searches, in order, before search_status and search_body apply
         self.reply_headers = {}  # the headers of the answer being given: a script entry's third item (a 402's PAYMENT-REQUIRED, a paid 200's PAYMENT-RESPONSE)
         self.features_body = {"features": []}
+        self.topics_body = {"status": "decided", "topics": []}
         self.providers_body = {"providers": [], "live_data_apis": []}
         self.list_status = 200  # what /v1/providers and /v1/search-profiles answer
         self.profiles_body = {"profiles": []}
@@ -173,9 +174,9 @@ class Stub:
             given = change["direct"]
             if not isinstance(given, dict) or any(k not in ("use", "format", "user_agent") for k in given):
                 return "direct must be {use?, format?, user_agent?}"
-            if given.get("use") not in (None, "off", "only", "add-on") or given.get("format") not in (None, "full-page", "highlights", "summary"):
-                return "direct.use must be off, only or add-on; direct.format full-page, highlights or summary"
-            self.saved_direct = {**(self.saved_direct or {"use": "off", "format": "full-page"}), **given}
+            if given.get("use") not in (None, "off", "only") or given.get("format") not in (None, "full-page", "highlights", "summary"):
+                return "direct.use must be off or only; direct.format full-page, highlights or summary"
+            self.saved_direct = {**(self.saved_direct or {"use": "off", "format": "summary"}), **given}
         if "search" in change:
             given = change["search"]
             if not isinstance(given, dict):
@@ -184,32 +185,14 @@ class Stub:
             if unknown is not None:
                 return f"Unknown setting: search.{unknown}"
             mode = given.get("mode")
-            if mode not in ("optimized", "preset", "direct"):
-                return "search.mode must be one of optimized, preset, direct"
-            allowed = {"optimized": (), "preset": ("profile",), "direct": ("requested_provider", "provider_mode", "fallback")}[mode]
-            stray = next((key for key in SEARCH_KEYS[1:] if key not in allowed and given.get(key) is not None), None)
-            if stray is not None:
-                return f"search.{stray} does not go with mode {mode}."
-            search = dict(SETTINGS["answer"]["search"])
-            if mode == "preset":
-                presets = [row["id"] for row in self.profiles_body.get("profiles", [])]
-                if given.get("profile") not in presets:
-                    return f"search.profile must be one of {', '.join(presets)}"
-                search.update(mode="preset", profile=given["profile"])
-            if mode == "direct":
-                owners = {row["provider"]: row for row in self.providers_body.get("providers", [])}
-                provider = given.get("requested_provider")
-                if provider not in owners:
-                    return "search.requested_provider must be one of Grounder's providers (GET /v1/providers lists them)."
-                modes = [o["mode"] for o in owners[provider].get("offerings", []) if o.get("mode")]
-                picked = given.get("provider_mode")
-                if picked not in (None, "default") and picked not in modes:
-                    return f"search.provider_mode: no mode {picked}; {owners[provider].get('display_name', provider)}'s modes are {', '.join(modes) or 'none'}"
-                if given.get("fallback") not in (None, True, False):
-                    return "search.fallback must be true or false"
-                if provider in self.off_providers:
-                    return f"{owners[provider].get('display_name', provider)} is your search provider and is turned off: turn it on, or choose another provider for your searches first."
-                search.update(mode="direct", requested_provider=provider, provider_mode=None if picked in (None, "default") else picked, fallback=given.get("fallback") is True)
+            if mode not in ("grounder-provider", "grounder-direct", "optimized"):
+                return "search.mode must be grounder-provider or grounder-direct"
+            if mode != "optimized":
+                use = "only" if mode == "grounder-direct" else "off"
+                if change.get("direct", {}).get("use", use) != use:
+                    return "search.mode and direct.use disagree"
+                self.saved_direct = {**(self.saved_direct or {"format": "summary"}), "use": use}
+                search = {**SETTINGS["answer"]["search"], "mode": mode}
         known = {api["id"] for api in self.providers_body.get("live_data_apis", [])} | set(self.saved_live)
         for ident, entry in (change.get("specialized") or {}).items():
             if ident not in known:
@@ -244,6 +227,8 @@ class Stub:
                 self.reply_headers = answer_headers[0] if answer_headers else {}
                 return status, payload
             return self.search_status, self.search_body
+        if path == "/v1/topics":
+            return self.list_status, self.topics_body
         if path == "/v1/features":
             return 200, self.features_body
         if path in ("/v1/providers", "/v1/search-profiles"):
@@ -318,7 +303,7 @@ def stub():
             self.wfile.write(data)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     state.origin = f"http://127.0.0.1:{server.server_port}"
     yield state
@@ -347,6 +332,7 @@ def plugin(stub, tmp_path, monkeypatch):
     # The account's saved ``direct`` block is read once in 30 seconds before a search; a test that does not mean to test it starts with it read and absent, so no search carries an
     # extra request. ``test_direct_addon.py`` clears this to play an account that has one.
     module.provider._direct_cache.update(at=time.monotonic() + 1e9, value=None)
+    monkeypatch.setattr(module.direct_dev, "user_agent", lambda: "Test Safari/17.0")
     # ``register`` asks the import system whether this Hermes bundles its own Grounder provider (``_bundled``, ``find_spec("plugins.web.grounder")``), and the answer is
     # the machine's: a Hermes checkout on ``PYTHONPATH``, or run from in, holds one, and then every test that registers the commands finds none. 0.6.1's run
     # of this suite failed 6 such tests once in four, by where it was started from. Every test starts with no bundled provider; one that needs the other answer says so.
@@ -392,3 +378,19 @@ def free(hermes):
 def in_chat(monkeypatch):
     """The session the tests' hooks name (``session_id="s"``) is the one the tool calls run in, as in Hermes."""
     monkeypatch.setenv("HERMES_SESSION_ID", "s")
+
+
+@pytest.fixture
+def reads(plugin, monkeypatch):
+    """Every direct read, faked: a Reddit community reads; anything with ``blocked`` in it is a site's check."""
+    done = []
+
+    def read(url, signed_out=False):
+        done.append(url)
+        if "blocked" in url:
+            return {"url": url, "status": 403, "text": "You've been blocked by network security.", "problem": "the site showed a check instead of the page (HTTP 403)"}
+        return {"url": url, "status": 200, "title": "r/MechanicalKeyboards", "text": "posts", "chars": 5, "ms": 10, "user_agent": "Safari"}
+
+    monkeypatch.setattr(plugin.direct_dev, "read", read)
+    monkeypatch.setattr(plugin.direct_dev, "safari_version", lambda: "27.2")
+    return done

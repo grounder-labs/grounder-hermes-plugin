@@ -9,11 +9,8 @@ time it runs in a profile, selects it where the user has chosen no backend (``_s
 ``plugin.yaml`` declares, and Hermes stores, refreshes and attaches the grant, so
 this plugin keeps no credential of its own. Two hooks say on each result that Grounder served it, ask the
 model to cite a read Grounder served and end an answer that searched with the line Grounder's card shows. Two tools
-carry what Hermes's ``web_search`` cannot: every option of Grounder's MCP search, and its feature list.
-Grounder has three search modes, and ``/search``, the plugin's one command, chooses which a signed-in search uses (``commands``), saving the choice on the user's Grounder account, where grounder.net's Routing page shows the same one: Grounder optimized (Grounder picks the provider for the
-question; the default), a Grounder preset (Fast, Cheap, Live, Deep, Code or Balanced) or Grounder pinned (the user picks the provider, and optionally its mode). Every search mode returns
-the provider's own results: this plugin cuts and reranks nothing of them. A fourth, Grounder direct, calls no search provider: it reads the pages the user names, from their own sites, on the user's Mac (``direct_dev``), by itself or as an add-on to any of the three. ``/search`` is registered only while Grounder is the profile's web search backend (``_grounder_is_backend``, read at load: a switch in ``hermes tools`` takes effect at the
-next start), and a Hermes that bundles its own Grounder provider has the command, so there ``register`` adds none (``_commands_taken``).
+carry what Hermes's ``web_search`` cannot: every option of Grounder's MCP search, and the topic catalog.
+Use /search to choose Grounder provider or Grounder direct. The choice is shared with the account Routing page.
 """
 
 from __future__ import annotations
@@ -26,7 +23,7 @@ from hermes_cli.config import is_managed, load_config, save_config, save_env_val
 
 from . import direct_dev, direct_formats
 from .commands import register_commands
-from .provider import LIST_PROVIDERS_SCHEMA, SEARCH_SCHEMA, TOOLSET, CLIENT_ENV, CLIENT_ID, KEY_ENV, GrounderWebSearchProvider, note_message, note_model, note_turn, sharing_usage
+from .provider import LIST_TOPICS_SCHEMA, SEARCH_SCHEMA, TOOLSET, CLIENT_ENV, CLIENT_ID, KEY_ENV, GrounderWebSearchProvider, note_message, note_model, note_turn, sharing_usage
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +137,7 @@ def register(ctx) -> None:
     ctx.register_hook("transform_tool_result", provider.after_tool)
     ctx.register_hook("transform_llm_output", provider.after_answer)
     try:
-        for schema, handler in ((SEARCH_SCHEMA, provider.search_tool), (LIST_PROVIDERS_SCHEMA, provider.list_providers_tool)):
+        for schema, handler in ((SEARCH_SCHEMA, provider.search_tool), (LIST_TOPICS_SCHEMA, provider.list_topics_tool)):
             ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, handler=handler)
     except Exception as error:  # a Hermes that refuses a tool must not take web search down with it
         logger.warning("Could not add Grounder's search tools: %s", error)
@@ -156,4 +153,4 @@ def register(ctx) -> None:
     if sharing_usage():  # the model behind each answer is learned only while share_usage_context is on
         ctx.register_hook("post_api_request", note_model)
     ctx.register_hook("pre_llm_call", before_llm)
-    direct_formats.use_host(ctx)  # the summary format's AI summary runs on the user's active model (ctx.llm)
+    direct_formats.use_host(ctx)
