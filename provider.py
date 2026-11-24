@@ -81,7 +81,7 @@ SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports t
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.9.2"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.9.3"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -118,8 +118,9 @@ CITE_REQUEST = ("Cite every result your answer uses by its position in square br
 SERVED_KEY = "served_by"
 # For a host that names no turn the plugin cannot tell which answer a result serves, so the model writes the list itself. The first sentence is word for
 # word what Grounder's MCP server ends every search's notes with (CITE_REMINDER in routes/mcp.ts).
-CITE_REQUEST_LISTED = ("Cite every result your answer uses, each with its link, in this answer and in every later one in this chat, not only the first. "
-                       "End the answer with a Sources list: one line per result used, with its title and its link.")
+CITE_REQUEST_LISTED = ('Cite every result your answer uses by its "Cite as" line (its title, whose it is and its site, its date, then its link), in this answer and in every later one in this chat, not only the first. '
+                       "End the answer with a Sources list: one line per result used, in that form: its title in quotes, its source, its date when it has one, "
+                       "then its link. Never a bare link or a bare title.")
 # A page read that failed, for a page a search returned: the model gets what that search showed of it (GRO-694). In test-b a bare error sent the model
 # to fetch the page itself, and Hermes wrote itself a skill to do so whenever Grounder erred (GRO-688).
 SHOWN_NOTE = "Grounder could not read this page in full. This is what its search showed of it."
@@ -353,6 +354,16 @@ def _link(url: str) -> str:
     return "".join("".join(f"%{byte:02X}" for byte in char.encode()) if char in ' <>"`\\{}|^' or unicodedata.category(char) in (*_UNSEEN, "Zs") else char for char in url)
 
 
+def _citation(source: dict[str, Any], link: str) -> str:
+    """One source cited in full: its title in quotes, whose it is (the source's name, else its site), its date when it has one, then its link (GRO-985)."""
+    title = _plain(source.get("title") or "").rstrip(". ")
+    named = f"\"{title[:1].upper()}{title[1:]}.\" " if title else ""
+    host = (urlsplit(str(source.get("url") or "")).hostname or "").removeprefix("www.")
+    by = _plain(str(source.get("source") or "")) or host
+    date = str(source.get("date") or "")[:10]
+    return f"{named}{by}{f', {date}' if date else ''} — {link}"
+
+
 def _sources_list(text: str, sources: dict[str, dict[str, Any]]) -> str:
     """The Sources list under an answer: each result it cites by number, with its title and link. None when it wrote its own or cites none.
 
@@ -363,8 +374,9 @@ def _sources_list(text: str, sources: dict[str, dict[str, Any]]) -> str:
         return ""
     cited = _cited(text)
     used = sorted((source for source in sources.values() if source["n"] in cited), key=lambda source: source["n"])
-    # One plain bullet each, in the order of their numbers (Harlan, 2026-11-11, GRO-731: "a bullet point for each unnumbered").
-    lines = [f"- {_plain(source['title']) or link} — {link}" for source in used if (link := _link(source["url"]))]
+    # One plain bullet each, in the order of their numbers (Harlan, 2026-11-11, GRO-731: "a bullet point for each unnumbered"), cited in full rather than as a bare title and link
+    # (Harlan, 2026-11-24, GRO-985: "site this in a profiessional way, not the hyperlink"): "Title." its source, its date. its link.
+    lines = [f"- {_citation(source, link)}" for source in used if (link := _link(source["url"]))]
     return "Sources:\n" + "\n".join(lines) if lines else ""
 
 
@@ -1481,7 +1493,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
                 for entry in served:
                     key = _page_key(str(entry["url"]))
                     if key not in sources:
-                        sources[key] = {"n": len(sources) + 1, "title": " ".join(str(entry.get("title") or "").split()), "url": str(entry["url"])}
+                        sources[key] = {"n": len(sources) + 1, "title": " ".join(str(entry.get("title") or "").split()), "url": str(entry["url"]),
+                                        "source": str(entry.get("source") or ""), "date": str(entry.get("date") or "")}
                     entry["position"] = sources[key]["n"]
             notes = not named or turn not in self._noted
             if named and notes:

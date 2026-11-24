@@ -971,11 +971,11 @@ def test_the_plugin_writes_the_sources_list_of_what_the_answer_cites_then_the_ca
     provider.after_tool("web_search", {"query": "q"}, json.dumps(provider.search("q")), session_id="s", turn_id="t")
     answer = provider.after_answer("Wind is cheap [3], and cheaper still [1, 3].\n", session_id="s", turn_id="t")
     assert answer == ("Wind is cheap [3], and cheaper still [1, 3].\n\nSources:\n"
-                      f"- Title a — {PAGE_A}\n- Title c — {PAGE_C}\n\n"
+                      f"- \"Title a.\" example.com — {PAGE_A}\n- \"Title c.\" example.com — {PAGE_C}\n\n"
                       "Searched with Grounder provider · via developer.mozilla.org, espn.com +1 · 3 sources · 1.4 s")
     # A range counts each number in it, and a number no result has is left alone.
     provider.after_tool("web_search", {"query": "q"}, json.dumps(provider.search("q")), session_id="s", turn_id="t2")
-    assert "- Title b" in provider.after_answer("See [2-3] and [9].", session_id="s", turn_id="t2")
+    assert "- \"Title b." in provider.after_answer("See [2-3] and [9].", session_id="s", turn_id="t2")
 
 
 def test_no_list_is_added_to_an_answer_that_wrote_its_own_or_cites_none(plugin, stub, keyed, in_chat):
@@ -991,7 +991,7 @@ def test_no_list_is_added_to_an_answer_that_wrote_its_own_or_cites_none(plugin, 
     provider.extract([PAGE_A])
     page = json.dumps({"results": [{"url": PAGE_A, "title": "T", "content": "x", "error": None}]})
     provider.after_tool("web_extract", {}, page, session_id="s", turn_id="t4")
-    assert provider.after_answer("Read [1].", session_id="s", turn_id="t4") == f"Read [1].\n\nSources:\n- T — {PAGE_A}\n\nGrounder extracted example.com"
+    assert provider.after_answer("Read [1].", session_id="s", turn_id="t4") == f"Read [1].\n\nSources:\n- \"T.\" example.com — {PAGE_A}\n\nGrounder extracted example.com"
 
 
 def test_a_host_that_names_no_turn_keeps_the_searchs_positions_and_the_model_writes_the_list(plugin, stub, keyed):
@@ -1016,7 +1016,7 @@ def test_a_search_that_names_a_page_reads_it_for_the_rest_of_the_query(plugin, s
                                                            "position": 1}]}}
     noted = json.loads(provider.after_tool("web_search", {"query": f"{PAGE_A}, books section list"}, json.dumps(result), session_id="s", turn_id="t"))
     assert noted["data"]["web"][0]["position"] == 1 and noted["cite_sources"] == plugin.provider.CITE_REQUEST
-    assert provider.after_answer("Two [1].", session_id="s", turn_id="t").startswith("Two [1].\n\nSources:\n- Jamie Oliver — ")
+    assert provider.after_answer("Two [1].", session_id="s", turn_id="t").startswith("Two [1].\n\nSources:\n- \"Jamie Oliver.\" example.com — ")
 
 
 def test_a_search_of_addresses_alone_reads_them_against_the_search_that_found_them(plugin, stub, keyed):
