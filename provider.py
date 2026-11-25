@@ -81,7 +81,7 @@ SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports t
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.9.4"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.9.5"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -215,6 +215,14 @@ def _fetched(result: dict[str, Any]) -> str:
     return at[:10] if isinstance(at, str) and at.strip() else "not given"
 
 
+def _credit(licence: Any) -> str:
+    """The credit line a topic's source asks for (GRO-972), as the row says it: the line itself, and the licence's name when it has one; "" when the topic carries none (an older API's answer, or a source that asks for nothing)."""
+    if not isinstance(licence, dict) or not isinstance(licence.get("credit"), str) or not licence["credit"].strip():
+        return ""
+    credit, name = licence["credit"].strip(), licence.get("name")
+    return f"{credit} ({name.strip()})" if isinstance(name, str) and name.strip() and name.strip() not in credit else credit
+
+
 def _row(result: dict[str, Any], position: int) -> dict[str, Any]:
     """Hermes's row for one result, with its date when Grounder has one and when its text was fetched (GRO-939), so a stored copy is not read as live.
 
@@ -224,8 +232,10 @@ def _row(result: dict[str, Any], position: int) -> dict[str, Any]:
     date = str(result.get("published_date") or "")[:10]
     fetched = _fetched(result)
     provenance = result.get("provenance") if isinstance(result.get("provenance"), dict) else {}
+    credit = _credit(provenance.get("licence"))
     return {"title": str(result.get("title") or ""), "url": str(result.get("url") or ""),
             **{key: provenance[key] for key in ("topic", "source") if provenance.get(key)},
+            **({"licence": credit} if credit else {}),
             "description": _description(result), "position": position, **({"date": date} if date else {}), **({"fetched": fetched} if fetched else {})}
 
 
@@ -1345,8 +1355,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
             rows.append({"title": str(page.get("title") or url), "url": str(page.get("url") or url), "description": text, "position": len(rows) + 1})
         return {"success": True, "data": {"web": rows, NOTICE_KEY: "direct"}}
 
-    def _read_candidates(self, results: list[dict[str, Any]], fmt: str, question: str, signed_out: bool, site: str = "") -> list[dict[str, Any]]:
-        """Read the chosen pages, trying a later address only for the same topic and site."""
+    def _read_candidates(self, results: list[dict[str, Any]], fmt: str, question: str, signed_out: bool, site: str = "", credits: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        """Read the chosen pages, trying a later address only for the same topic and site. `credits` is each topic's credit line (GRO-972), which a page read here carries as a result does."""
         groups: dict[tuple[str, str], list[str]] = {}
         first_site: dict[str, str] = {}
         for result in results:
@@ -1374,7 +1384,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
                 if not problem or page.get("reason") in ("site_check", "busy") or "site check" in str(problem).lower():
                     break
             rows.append({"title": str(page.get("title") or url), "url": str(page.get("url") or url),
-                         "description": text, **({"topic": topic} if topic else {})})
+                         "description": text, **({"topic": topic} if topic else {}), **({"licence": (credits or {})[topic]} if (credits or {}).get(topic) else {})})
         return rows
 
     def _dev_extract(self, urls: list[str]) -> list[dict[str, Any]]:
@@ -1605,7 +1615,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
             results = results[:payload["top_k"]]
         rows = [_row(row, i + 1) for i, row in enumerate(results)]
         if local and reading:
-            found = self._read_candidates(_candidates(body), fmt, query, signed_out, site)
+            credits = {str(topic.get("id")): credit for topic in topics if (credit := _credit(topic.get("licence")))}
+            found = self._read_candidates(_candidates(body), fmt, query, signed_out, site, credits)
             combined = [*found, *rows]
             order = {str(topic.get("id")): i for i, topic in enumerate(topics)}
             rows = sorted(combined, key=lambda row: order.get(str(row.get("topic")), len(order)))

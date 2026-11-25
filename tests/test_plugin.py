@@ -774,6 +774,19 @@ def test_a_row_says_when_its_text_was_fetched_and_never_calls_a_stored_copy_live
     assert [row.get("fetched") for row in rows] == ["during this search", "2026-11-11", "not given", None]
 
 
+def test_a_row_carries_the_credit_its_source_asks_for_and_says_nothing_when_it_asks_none(plugin, stub, keyed):
+    # GRO-972: a CC BY-SA or credit-requested source's terms ask for a credit line; a row of its topic carries it, with the licence's name when there is one.
+    stub.search_body = {"query": "q", "results": [
+        {**RESULT, "url": "https://en.wikivoyage.org/wiki/Lisbon", "provenance": {"provider": "exa", "topic": "travel", "source": "en.wikivoyage.org",
+            "licence": {"credit": "Source: Wikivoyage contributors (en.wikivoyage.org), CC BY-SA 4.0", "name": "CC BY-SA 4.0"}}},
+        {**RESULT, "url": "https://www.irs.gov/a", "provenance": {"provider": "exa", "topic": "taxes", "licence": {"credit": "Source: Internal Revenue Service (irs.gov)"}}},
+        {**RESULT, "url": "https://example.com/none", "provenance": {"provider": "exa", "topic": "history", "licence": "not an object"}},
+        RESULT]}
+    rows = plugin.GrounderWebSearchProvider().search("q")["data"]["web"]
+    assert [row.get("licence") for row in rows] == [
+        "Source: Wikivoyage contributors (en.wikivoyage.org), CC BY-SA 4.0", "Source: Internal Revenue Service (irs.gov)", None, None]
+
+
 def test_an_answer_that_searched_ends_with_the_card_line_once(plugin, stub, keyed):
     stub.search_body = ROUTED
     provider = plugin.GrounderWebSearchProvider()
