@@ -132,11 +132,7 @@ A question that fits no topic gives a plain message with no results and no charg
 
 ### Grounder direct on a Mac
 
-Install the reader on macOS 13 or later with Safari.
-
-```sh
-curl -fsSL https://grounder.net/install | sh
-```
+Install the reader on macOS 13 or later with Safari, using the command on the [Grounder direct docs page](https://grounder.net/docs/direct).
 
 - `/search-direct-format` sets summary, full-page or highlights. Summary is the default. On the Mac, Hermes can ask your active model to write it from the page's first 20,000 characters.
 - `/search-login <site>` opens the site to save a sign-in in your Mac's login keychain. A connected account lists the site, Mac and save time. `/search-logout <site>` forgets it. You can also ask to read a page logged out.

@@ -466,7 +466,7 @@ def test_signing_out_cleans_the_site_the_same_way(plugin, monkeypatch, tmp_path)
     assert all(args[-1] == "reddit.com" for args in ran) and len(ran) == 2  # both keychain services, the cleaned site
 
 
-# 0.8.0: the installed grounder-direct is the reader when it runs; the swiftc build is the fallback, and with neither the problem names the one-line install.
+# 0.8.0: the installed grounder-direct is the reader when it runs; the swiftc build is the fallback, and with neither the problem names the install page.
 
 def _fake_program(path, says):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -497,7 +497,7 @@ def test_a_broken_installed_program_falls_back_to_the_build_and_with_neither_the
     assert dd._helper() == (built, "")
     monkeypatch.setattr(dd, "_build_helper", lambda: (None, "this Mac has no Xcode command line tools, so the reader cannot be built here"))
     helper, why = dd._helper()
-    assert helper is None and "curl -fsSL https://grounder.net/install | sh" in why
+    assert helper is None and "https://grounder.net/docs/direct" in why
 
 
 def test_a_stored_full_page_without_the_users_choice_reads_as_summary(plugin, hermes, monkeypatch):

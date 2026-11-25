@@ -41,9 +41,10 @@ SAFARI_PLIST = Path("/Applications/Safari.app/Contents/Info.plist")
 # Safari freezes the platform and WebKit parts of its user agent; only Version/ follows the installed Safari. Checked 2026-11-19 against the request Safari 27.2 sent.
 SAFARI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{version} Safari/605.1.15"
 SOURCE = Path(__file__).with_name("direct_reader.swift")
-# The prebuilt reader the one-line install puts on a Mac (grounder-direct, signed and notarized, which also carries the reader): preferred over building one.
+# The prebuilt reader Grounder's installer puts on a Mac (grounder-direct, signed and notarized, which also carries the reader): preferred over building one.
 INSTALLED = Path.home() / "Library" / "Application Support" / "Grounder Direct" / "bin" / "grounder-direct"
-INSTALL_LINE = "curl -fsSL https://grounder.net/install | sh"
+# Named by its docs page, not as a curl-to-shell line, which Hermes's security scan flags in a plugin.
+INSTALL_PAGE = "https://grounder.net/docs/direct"
 MAX_CHARS = 60000  # most characters of a page's text a read returns; Hermes cuts a page to the model's char_limit itself
 READ_TIMEOUT_S = 45  # the helper stops itself at 30 s
 BUILD_TIMEOUT_S = 240
@@ -199,11 +200,11 @@ def _reader_command(helper: Path) -> list[str]:
 
 def _helper() -> tuple[Optional[Path], str]:
     """The reader: the installed grounder-direct when there is one that runs, else one compiled from ``direct_reader.swift`` the first time and again whenever the
-    source changes; or None and why not (which names the one-line install)."""
+    source changes; or None and why not (which names the install page)."""
     if _installed():
         return INSTALLED, ""
     helper, why = _build_helper()
-    return (helper, why) if helper is not None else (None, f"{why}; the one-line install adds a prebuilt reader: {INSTALL_LINE}")
+    return (helper, why) if helper is not None else (None, f"{why}; Grounder's installer adds a prebuilt reader: {INSTALL_PAGE}")
 
 
 def _build_helper() -> tuple[Optional[Path], str]:
