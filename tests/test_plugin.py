@@ -797,6 +797,12 @@ def test_an_answer_that_searched_ends_with_the_card_line_once(plugin, stub, keye
     provider.after_tool("web_search", {"query": "q"}, shown, session_id="s", turn_id="t")
     assert provider.after_answer("The answer.\n", session_id="s", turn_id="t") == "The answer.\n\nSearched with Grounder provider · via developer.mozilla.org, espn.com +1 · 1 source · 1.4 s"
     assert provider.after_answer("Again.", session_id="s", turn_id="t") is None
+    # The answer comes back byte for byte with the tail after it, whatever it ends in: Hermes's CLI prints only what follows the text it streamed (GRO-727).
+    for ending in ("", " ", "\n", "\n\n", "\n\n\n"):
+        provider.after_tool("web_search", {"query": "q"}, shown, session_id="s", turn_id="t9")
+        out = provider.after_answer("The answer." + ending, session_id="s", turn_id="t9")
+        assert out.startswith("The answer." + ending) and out[len("The answer." + ending):].lstrip("\n").startswith("Searched with Grounder")
+        assert out.count("\n\n\n") == (1 if ending == "\n\n\n" else 0)
 
 
 def test_a_result_grounder_served_says_so_with_the_mode_who_answered_and_how_many_are_shown(plugin, stub, keyed):

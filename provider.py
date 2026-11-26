@@ -80,7 +80,7 @@ SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports t
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.10.2"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.10.3"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -1510,7 +1510,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
     def after_answer(self, response_text: str = "", session_id: str = "", turn_id: str = "", **_: Any) -> Optional[str]:
         """Hermes's ``transform_llm_output``: end an answer with the Sources list of what it cites and, when it searched, Grounder's card line.
         The list names the results the answer cites that this turn's own searches and reads returned, and none from an earlier turn: a turn that searched
-        nothing has no list, and its answer cites nothing by number. Appends only, so Hermes keeps streaming the answer."""
+        nothing has no list, and its answer cites nothing by number. Appends only, so Hermes keeps streaming the answer and shows the tail after it (GRO-730)."""
         with self._lock:
             searches = self._turns.pop((session_id, turn_id), None)
             sources = self._sources.pop((session_id, turn_id), None) or {}
@@ -1519,7 +1519,10 @@ class GrounderWebSearchProvider(WebSearchProvider):
         with self._lock:
             fetched = self._fetched.pop((session_id, turn_id), None)
         tail = [part for part in (_sources_list(response_text, sources), _card_line(searches) if searches else "", _fetched_line(fetched) if fetched else "") if part]
-        return f"{response_text.rstrip()}\n\n" + "\n\n".join(tail) if tail else None
+        # The answer goes back byte for byte with the tail after it: Hermes's CLI prints only the part after the text it already streamed, and a reply that no longer
+        # starts with that text (a trailing newline cut off) is printed again whole under a "response transformed" heading, outside the box (GRO-727).
+        gap = "\n" * max(0, 2 - (len(response_text) - len(response_text.rstrip("\n"))))
+        return f"{response_text}{gap}" + "\n\n".join(tail) if tail else None
 
     def search_tool(self, args: dict[str, Any], **_: Any) -> str:
         answer = self._search(args)
