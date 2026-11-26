@@ -26,6 +26,9 @@ Connect your account to search past the free limits and to choose how Grounder s
 ([`/search`](#choose-how-grounder-searches-search)). Connect it with a search key or by
 signing in; when both are set, the key is used.
 
+The first search after install says once which way it ran: free with no account, on your account (a key or a sign-in), or paid by a wallet. Hermes's
+config keeps `web.grounder.first_use_shown` so it is not said again.
+
 ### With a search key
 
 Make a key on your account's [Search keys](https://grounder.net/account/keys) page (a search-only key is enough), then:

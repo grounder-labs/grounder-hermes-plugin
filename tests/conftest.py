@@ -87,7 +87,12 @@ def _install_hermes_stand_ins():
         path = home() / "config.yaml"
         saved = (yaml.safe_load(path.read_text()) or {}) if merge_existing and path.exists() else {}
         for section, values in partial.items():
-            saved.setdefault(section, {}).update(values)
+            target = saved.setdefault(section, {})
+            for name, value in values.items():  # Hermes deep-merges with merge_existing
+                if isinstance(value, dict) and isinstance(target.get(name), dict):
+                    target[name].update(value)
+                else:
+                    target[name] = value
         path.write_text(yaml.safe_dump(saved))
 
     def save_env_value(name, value):
@@ -132,6 +137,9 @@ SETTINGS = json.loads((Path(__file__).parent / "api_shapes.json").read_text())["
 SEARCH_KEYS = ("mode", "profile", "requested_provider", "provider_mode", "fallback")
 SETTINGS_SHAPE = ('Body must be {"search"?: {"mode": "optimized" | "preset" | "direct", …}, "specialized"?: {"<live-data API>": {"use": "auto" | "always" | "off"}}}: '
                   "a search credential sets these two and nothing else on the account.")
+
+
+FIRST_USE = []  # the plugin's real ``_first_use_line``, kept by the ``plugin`` fixture
 
 
 class Stub:
@@ -341,6 +349,10 @@ def plugin(stub, tmp_path, monkeypatch):
         return real(request, timeout)
 
     monkeypatch.setattr(module.provider, "_open", to_stub)
+    # The install's one-time line on who pays for searches would be in the first answer of every test: a test that does not mean to test it hears nothing.
+    # ``test_first_use.py`` calls ``FIRST_USE`` (the real one) through ``first_use``.
+    FIRST_USE.append(module.provider._first_use_line)
+    monkeypatch.setattr(module.provider, "_first_use_line", lambda via, paid: "")
     return module
 
 
@@ -385,3 +397,10 @@ def reads(plugin, monkeypatch):
     monkeypatch.setattr(plugin.direct_dev, "read", read)
     monkeypatch.setattr(plugin.direct_dev, "safari_version", lambda: "27.2")
     return done
+
+
+@pytest.fixture
+def first_use(plugin, monkeypatch):
+    """The plugin's real one-time line, back in place."""
+    monkeypatch.setattr(plugin.provider, "_first_use_line", FIRST_USE[-1])
+    return plugin

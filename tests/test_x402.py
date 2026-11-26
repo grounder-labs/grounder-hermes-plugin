@@ -508,3 +508,12 @@ def test_the_signature_is_byte_for_byte_the_one_the_x402_python_sdk_makes(plugin
         theirs = ExactEvmScheme(EthAccountSigner(wallet.account)).create_payment_payload(
             PaymentRequirements(scheme="exact", network="eip155:8453", asset=USDC, amount="9220", pay_to=PAY_TO, max_timeout_seconds=60, extra={"name": "USD Coin", "version": "2"}))
     assert ours["payload"] == theirs
+
+
+def test_the_first_search_a_wallet_paid_says_so_once(first_use, stub, free, wallet):
+    stub.search_script = [refused(offer(entry(amount="10000"))), paid()]
+    provider = first_use.GrounderWebSearchProvider()
+    note = provider.search("q")["data"]["note"]
+    assert "paid for by your wallet" in note and "hermes auth add grounder:grounder" in note and wallet.key not in note
+    stub.search_script = [refused(offer(entry(amount="10000"))), paid()]
+    assert "note" not in provider.search("q")["data"]

@@ -80,7 +80,7 @@ SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports t
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.10.1"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.10.2"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -888,8 +888,9 @@ def _pay(payload: dict[str, Any], raw: bytes, offered: dict[str, str], sent_out:
 
 
 def _send(payload: dict[str, Any], sent_out: Optional[list[dict[str, Any]]] = None,
-          paid_out: Optional[list[dict[str, Any]]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """Send one search, retrying once with the wallet only when Grounder requests payment."""
+          paid_out: Optional[list[dict[str, Any]]] = None,
+          via_out: Optional[list[str]] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Send one search, retrying once with the wallet only when Grounder requests payment. ``via_out`` gets how it was sent: ``key``, ``sign-in`` or ``free``."""
     key = _key()
     if key and not _key_fits(key):
         return None, _act(BAD_KEY)
@@ -943,7 +944,28 @@ def _send(payload: dict[str, Any], sent_out: Optional[list[dict[str, Any]]] = No
             return None, message
         link = str(_error_parts(body)[2].get("signup_url") or "") if via == "free" else ""
         return None, _act(message, link if link.startswith("https://") else "")
+    if via_out is not None:
+        via_out.append(via)
     return body, None
+
+
+def _first_use_line(via: str, paid: bool) -> str:
+    """What the first answered search of an install says about who pays for searches, once: free with no account, on the account (a search key or a sign-in), or
+    paid by the wallet. ``web.grounder.first_use_shown`` in Hermes's config keeps it to once (the plugin writes no file of its own, GRO-595); an empty string after
+    that, and where the config cannot be written, which would repeat it on every search."""
+    from hermes_cli.config import is_managed, load_config, save_config
+    web = load_config().get("web")
+    mine = web.get("grounder") if isinstance(web, dict) else None
+    if is_managed() or (isinstance(mine, dict) and mine.get("first_use_shown")):
+        return ""
+    state = "wallet" if paid else {"key": "key", "sign-in": "account"}.get(via, "free")
+    save_config({"web": {"grounder": {"first_use_shown": True}}}, merge_existing=True)
+    return {
+        "free": f"Searches are free with no account. To search on an account, sign in with `{SIGN_IN}`, or set a search key in `{KEY_ENV}`.",
+        "account": "Searches run on your Grounder account, signed in through Hermes.",
+        "key": f"Searches run on your Grounder account through the search key in `{KEY_ENV}`.",
+        "wallet": f"This search was paid for by your wallet (`{payment.KEY_ENV}`). To search on an account instead, sign in with `{SIGN_IN}`.",
+    }[state]
 
 
 def _trim_address(address: str) -> str:
@@ -1554,7 +1576,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
             else:
                 return _notice("Grounder direct needs your Safari user agent to read pages.", "refused")
         paid: list[dict[str, Any]] = []
-        body, error = _send(payload, paid_out=paid)
+        sent_via: list[str] = []
+        body, error = _send(payload, paid_out=paid, via_out=sent_via)
         if body is None:
             return _notice(error) if isinstance(error, _Act) else _fail(error or "Grounder returned no answer")
         if body.get("no_topic"):
@@ -1580,6 +1603,8 @@ class GrounderWebSearchProvider(WebSearchProvider):
             notes.append(str(direct["note"]))
         if reading and not rows and not notes:
             notes.append("Grounder found no page it could read. It made no other search.")
+        if first := _first_use_line(sent_via[-1] if sent_via else "free", bool(paid)):
+            notes.append(first)
         return {"success": True, "data": {"web": rows, **({"topics": topics} if topics else {}),
                 **({"note": " ".join(notes)} if notes else {}), **({PAYMENT_KEY: paid[-1]} if paid else {})}}
 
