@@ -4,7 +4,7 @@ Start Hermes Agent or run `/reload-mcp` followed by `/reload-skills` in an open 
 
 You can search free without an account. To connect an account, run `hermes auth add grounder:grounder` or set a key with `hermes config set GROUNDER_API_KEY <your-key>`. Make a key on the account page. [Grounder search keys.](https://grounder.net/account/keys)
 
-Use `/search provider` to search through a source Grounder chose for the question or `/search direct` to find and read the source's page on a Mac. The reader for macOS with Safari installs as https://grounder.net/docs/direct shows. A page named by address is read free. A Grounder direct search is one search, at the one price, even if its page could not be read.
+Use `/search provider` to search through sources Grounder chose for the question or `/search direct` to find and read the source's page on a Mac. The reader for macOS with Safari installs as https://grounder.net/docs/direct shows. A page named by address is read free. A Grounder direct search is one search, at the one price, even if its page could not be read.
 
 `/search` (`/hermes search` on Slack) also sets the page format and resolver. Use `/search-login <site>` and `/search-logout <site>` to manage sign-ins stored on the Mac. [Grounder direct documentation.](https://grounder.net/docs/direct)
 

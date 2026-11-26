@@ -1,6 +1,6 @@
 # Grounder for Hermes Agent
 
-Better web routing for Hermes Agent's `web_search` and `web_extract`. A search goes to a source Grounder chose by hand for your question. Grounder provider returns that source's results. Grounder direct finds the source's page and reads it on your Mac with Safari. Reading a page named by address is free.
+Better web routing for Hermes Agent's `web_search` and `web_extract`. A search goes to sources Grounder chose by hand for your question. Grounder provider returns those sources' results. Grounder direct finds the source's page and reads it on your Mac with Safari. Reading a page named by address is free.
 
 A Grounder direct search is one search, at the one price, even if its page could not be read. [See pricing.](https://grounder.net/pricing)
 

@@ -1,9 +1,9 @@
 name: grounder
-version: 0.10.0
+version: 0.10.1
 requires_hermes: ">=0.22.3"
 license: Apache-2.0
 description: >-
-  Better web routing for Hermes Agent. Grounder provider returns the results of a source Grounder chose by hand for your question.
+  Better web routing for Hermes Agent. Grounder provider returns the results of sources Grounder chose by hand for your question.
   Grounder direct finds the source's page and reads it on your Mac with Safari. Reading a page named by address is free.
   A Grounder direct search is one search, at the one price, even if its page could not be read.
   Use /search (on Slack, /hermes search) to choose how to search, set the page format or pick a resolver. The search choice and format are saved on

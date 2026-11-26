@@ -24,7 +24,7 @@ hooks). Both work on what is already on this machine and send nothing. A
 ``web_search`` whose query holds a page's address reads that page for the rest of
 the query, and the page comes back whole.
 
-Grounder provider returns the results of the source that answered. Grounder direct finds the pages to read from that source.
+Grounder provider returns the results of the sources that answered. Grounder direct finds the pages to read from those sources.
 A page named by address is a free read. The line under each answer uses the response's mode and sources.
 
 The plugin selects itself the first time it loads in a profile (``__init__.py``), by
@@ -80,7 +80,7 @@ SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports t
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.10.0"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.10.1"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -137,7 +137,7 @@ SEARCH_SCHEMA = {
     "name": SEARCH_TOOL,
     "description": (
         "Better web routing. Use for questions that need current or verifiable information that Grounder has a source for. "
-        "Grounder provider returns the answering source's results. Grounder direct finds its page and reads it. "
+        "Grounder provider returns the answering sources' results. Grounder direct finds their pages and reads them. "
         "Use urls when the user gives a page address, or site and query when they name a site without a page address. "
         "Reading a page named by address is free. " + direct_dev.SEARCH_PRICE
     ),
@@ -1616,7 +1616,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         """The entry ``hermes tools`` shows. It asks for no key, since signing in needs none; the tag names both ways in."""
         return {
             "name": "Grounder", "badge": "account",
-            "tag": "Grounder searches a source it chose by hand for your question or reads its page. "
+            "tag": "Grounder searches sources it chose by hand for your question or reads their pages. "
                    f"Free searches need no account. For more, use a search key in `{KEY_ENV}`, sign in with `{SIGN_IN}`, or pay per search with a wallet.",
             "env_vars": [],
         }
