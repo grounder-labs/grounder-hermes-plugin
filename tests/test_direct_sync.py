@@ -77,13 +77,22 @@ def test_an_account_that_does_not_answer_changes_nothing(plugin, mac):
     assert mac["forgot"] == [] and plugin.direct_dev.last_sync() is None
 
 
-def test_listed_is_none_when_security_fails(plugin, monkeypatch):
+def test_listed_reads_the_sign_ins_store_and_never_the_keychain(plugin, monkeypatch, tmp_path):
     import subprocess
     dd = plugin.direct_dev
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 36, "", "locked"))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("listing started a program")))
+    monkeypatch.setattr(dd, "STORE", tmp_path / "sign-ins")
+    assert dd.listed() == [] and dd.sites() == []  # nothing was ever saved
+    dd.STORE.mkdir()
+    (dd.STORE / "reddit.com.sealed").write_bytes(b"x")
+    (dd.STORE / "bbc.co.uk.sealed").write_bytes(b"x")
+    (dd.STORE / "notes.txt").write_bytes(b"x")
+    (dd.STORE / "a.com.sealed.partial").write_bytes(b"x")
+    found = dd.listed()
+    assert [site for site, _ in found] == ["bbc.co.uk", "reddit.com"]
+    assert all(dd.saved_at(note) for _, note in found)  # the account's list gets a time for each
+    monkeypatch.setattr(dd, "STORE", tmp_path / "sign-ins" / "reddit.com.sealed")  # a file where the directory should be
     assert dd.listed() is None and dd.sites() == []
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(subprocess.TimeoutExpired("security", 3)))
-    assert dd.listed(3) is None
 
 
 @pytest.mark.parametrize("raw,ok", [("reddit.com", True), ("bbc.co.uk", True), ("old.reddit.com", False), ("Reddit.com", False), ("reddit.com/", False), ("../etc.passwd", False),

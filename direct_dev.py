@@ -171,8 +171,21 @@ def user_agent() -> str:
 
 
 def _home() -> Path:
-    """Hermes's home: the launcher always sets ``HERMES_HOME`` (no published API names it)."""
-    return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    """The active profile's Hermes home (``hermes_constants.get_hermes_home``, which follows a profile switched after launch); the launch profile's ``HERMES_HOME``
+    only where that module cannot be imported."""
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home())
+    except Exception:
+        return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+
+
+def minimal_env(*also: str) -> dict[str, str]:
+    """The environment every program this plugin starts gets: HOME and PATH (and the named ``also`` variables, when set), never the Hermes process's own, which holds
+    the user's provider keys. The reader, the sign-in window and the version check run code the pinned source's sha does not cover (the prebuilt grounder-direct)."""
+    found = {"HOME": os.environ.get("HOME") or str(Path.home()), "PATH": os.environ.get("PATH") or "/usr/bin:/bin:/usr/sbin:/sbin"}
+    found.update({name: os.environ[name] for name in also if os.environ.get(name)})
+    return found
 
 
 _installed_ok: dict[str, bool] = {}
@@ -185,7 +198,7 @@ def _installed() -> bool:
         ok = False
         if INSTALLED.is_file() and os.access(INSTALLED, os.X_OK):
             try:
-                done = subprocess.run([key, "version"], capture_output=True, text=True, timeout=10)
+                done = subprocess.run([key, "version"], capture_output=True, text=True, timeout=10, env=minimal_env())
                 ok = done.returncode == 0 and done.stdout.startswith("grounder-direct ")
             except (OSError, subprocess.TimeoutExpired):
                 ok = False
@@ -216,7 +229,7 @@ def _build_helper() -> tuple[Optional[Path], str]:
     if built.exists():
         return built, ""
     try:  # a Mac without the command line tools has only a stub xcrun, which opens an install dialog: ask first
-        tools = subprocess.run(["xcode-select", "-p"], capture_output=True, text=True, timeout=30)
+        tools = subprocess.run(["xcode-select", "-p"], capture_output=True, text=True, timeout=30, env=minimal_env("DEVELOPER_DIR"))
     except (OSError, subprocess.TimeoutExpired):
         tools = None
     if tools is not None and tools.returncode != 0:
@@ -224,7 +237,8 @@ def _build_helper() -> tuple[Optional[Path], str]:
     built.parent.mkdir(parents=True, exist_ok=True)
     partial = built.with_suffix(".partial")
     try:
-        done = subprocess.run(["xcrun", "swiftc", "-O", "-o", str(partial), str(SOURCE)], capture_output=True, text=True, timeout=BUILD_TIMEOUT_S)
+        done = subprocess.run(["xcrun", "swiftc", "-O", "-o", str(partial), str(SOURCE)], capture_output=True, text=True, timeout=BUILD_TIMEOUT_S,
+                              env=minimal_env("DEVELOPER_DIR", "TMPDIR", "SDKROOT"))
     except (OSError, subprocess.TimeoutExpired) as error:
         return None, f"could not build the reader with Xcode's swiftc ({error})"
     if done.returncode != 0:
@@ -287,7 +301,7 @@ def _read_at(url: str, signed_out: bool = False) -> dict[str, Any]:
         started = time.monotonic()
         try:
             done = subprocess.run([*_reader_command(helper), url, agent, str(MAX_CHARS)], capture_output=True, text=True, timeout=READ_TIMEOUT_S,
-                                  env={**os.environ, **reader_env(), **({"GROUNDER_DIRECT_SIGNED_OUT": "1"} if signed_out else {})})  # the resolver chosen; no sign-in when asked
+                                  env={**minimal_env(), **reader_env(), **({"GROUNDER_DIRECT_SIGNED_OUT": "1"} if signed_out else {})})  # the resolver chosen; no sign-in when asked
         except subprocess.TimeoutExpired:
             done = None
         _last_read[host] = time.monotonic()
@@ -402,7 +416,7 @@ def sign_in(raw: str, wait: bool = False) -> str:
     if helper is None:
         return why
     command = [*_reader_command(helper), "--signin", site, agent, start]
-    env = {**os.environ, **reader_env()}  # the window looks the site up through the same resolver reads use
+    env = {**minimal_env(), **reader_env()}  # the window looks the site up through the same resolver reads use
     if not wait:
         window = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
         threading.Thread(target=lambda: (window.wait(), sync_soon(True)), daemon=True).start()  # once the window closes, the account hears of what was saved
@@ -423,8 +437,8 @@ def paste(raw: str, header: Optional[str] = None) -> str:
     if helper is None:
         return why
     if header is None:
-        return _saved(subprocess.run([*_reader_command(helper), "--paste", site], stdout=subprocess.PIPE, text=True), site)
-    return _saved(subprocess.run([*_reader_command(helper), "--paste", site], input=header, capture_output=True, text=True), site)
+        return _saved(subprocess.run([*_reader_command(helper), "--paste", site], stdout=subprocess.PIPE, text=True, env=minimal_env()), site)
+    return _saved(subprocess.run([*_reader_command(helper), "--paste", site], input=header, capture_output=True, text=True, env=minimal_env()), site)
 
 
 def _saved(done: subprocess.CompletedProcess, site: str) -> str:
@@ -445,7 +459,7 @@ def sign_out(raw: str) -> str:
         return why
     gone, failed = False, []
     for service in (SERVICE, LEGACY_SERVICE):
-        done = subprocess.run([SECURITY, "delete-generic-password", "-s", service, "-a", site], capture_output=True, text=True)
+        done = subprocess.run([SECURITY, "delete-generic-password", "-s", service, "-a", site], capture_output=True, text=True, env=minimal_env())
         if done.returncode == 0:
             gone = True
         elif done.returncode != 44:
@@ -460,24 +474,24 @@ def sign_out(raw: str) -> str:
 
 
 def listed(timeout: float = 30) -> Optional[list[tuple[str, str]]]:
-    """Each site with a saved sign-in, and when and how it was saved (the keychain item's comment). Names only: no value is read. ``None`` when the keychain
-    could not be listed (locked, ``security`` failed or timed out): that is not an empty list, and nothing may treat it as one."""
+    """Each site with a saved sign-in, and when it was saved, read from Grounder's own ``sign-ins`` store (one ``<site>.sealed`` file each), never from the keychain:
+    the plugin does not list other apps' keychain items, not even their names. Nothing is read from a file. ``None`` when the directory could not be read: that is
+    not an empty list (a missing directory is: nothing was ever saved), and nothing may treat it as one. ``timeout`` is kept for callers; a directory listing needs none."""
     try:
-        done = subprocess.run([SECURITY, "dump-keychain"], capture_output=True, text=True, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if done.returncode != 0:
+        names = sorted(STORE.iterdir()) if STORE.exists() else []
+    except OSError:
         return None
     found = []
-    for item in done.stdout.split("keychain: ")[1:]:
-        if f'"svce"<blob>="{SERVICE}"' not in item and f'"svce"<blob>="{LEGACY_SERVICE}"' not in item:
+    for entry in names:
+        site = entry.name[: -len(".sealed")] if entry.name.endswith(".sealed") else ""
+        if not site or not entry.is_file():
             continue
-        account = re.search(r'"acct"<blob>="([^"]*)"', item)
-        note = re.search(r'"icmt"<blob>="([^"]*)"', item)
-        if account:
-            found.append((account.group(1), note.group(1) if note else ""))
-    return sorted(dict(found).items())
-
+        try:
+            when = datetime.fromtimestamp(entry.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except OSError:
+            continue
+        found.append((site, f"saved {when} by this Mac"))
+    return found
 
 
 def sites() -> list[tuple[str, str]]:
@@ -560,7 +574,7 @@ def device_name() -> str:
     """The name the account shows for this Mac: its computer name, else its host name, trimmed and cut to 60 characters."""
     for command in (["/usr/sbin/scutil", "--get", "ComputerName"], ["/bin/hostname", "-s"]):
         try:
-            done = subprocess.run(command, capture_output=True, text=True, timeout=5)
+            done = subprocess.run(command, capture_output=True, text=True, timeout=5, env=minimal_env())
         except (OSError, subprocess.TimeoutExpired):
             continue
         name = done.stdout.strip()
@@ -570,7 +584,7 @@ def device_name() -> str:
 
 
 def saved_at(note: str) -> Optional[str]:
-    """When a sign-in was saved, from its keychain comment (``saved <time> by <how>, N cookies``), or None."""
+    """When a sign-in was saved, from its note (``saved <time> by <how>``), or None."""
     found = SAVED_NOTE.match(note or "")
     if not found:
         return None

@@ -137,7 +137,7 @@ A question that fits no topic gives a plain message with no results and no charg
 Install the reader on macOS 13 or later with Safari, using the command on the [Grounder direct docs page](https://grounder.net/docs/direct).
 
 - `/search-direct-format` sets summary, full-page or highlights. Summary is the default. On the Mac, Hermes can ask your active model to write it from the page's first 20,000 characters.
-- `/search-login <site>` opens the site to save a sign-in in your Mac's login keychain. A connected account lists the site, Mac and save time. `/search-logout <site>` forgets it. You can also ask to read a page logged out.
+- `/search-login <site>` opens the site to save a sign-in in your Mac's login keychain. A connected account lists the site, Mac and save time. `/search-logout <site>` forgets it. You can also ask to read a page logged out. The reader and the sign-in window run with only `HOME` and `PATH` (and the resolver you chose), never Hermes's environment or your provider keys; the saved sites are listed from Grounder's own sign-ins folder, not the keychain.
 - `/search resolver system` uses the Mac's resolver. `/search resolver grounder` uses Grounder's resolver. The choice stays on the Mac.
 
 A page that could not be read comes back with the reason. Grounder asks before another search. [Grounder direct documentation.](https://grounder.net/docs/direct)

@@ -10,6 +10,9 @@ The reads themselves are faked here, except in the one live test, which runs onl
 
 import json
 import os
+import re
+import sys
+from pathlib import Path
 
 import pytest
 import yaml
@@ -512,3 +515,63 @@ def test_a_stored_full_page_without_the_users_choice_reads_as_summary(plugin, he
     assert plugin.direct_formats.saved() == "full-page"
     plugin.direct_dev.save_setting(plugin.direct_formats.FORMAT_KEY, "highlights")
     assert plugin.direct_formats.saved() == "highlights"
+
+
+def test_no_program_the_plugin_starts_receives_a_key_shaped_variable(plugin, monkeypatch, tmp_path):
+    """Hermes's environment holds the user's provider keys: the reader (the prebuilt one is not covered by the pinned sha), the sign-in window, the version check,
+    the build and every other helper get HOME and PATH and what they need, and nothing else."""
+    import subprocess
+    dd = plugin.direct_dev
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "GROUNDER_API_KEY", "AWS_SECRET_ACCESS_KEY", "SOME_TOKEN", "DB_PASSWORD"):
+        monkeypatch.setenv(name, "sk-secret")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    seen = []
+
+    class Fake:
+        def __init__(self, command, **kwargs):
+            seen.append((command, kwargs.get("env")))
+            if "-o" in command:  # the build: leave the program it would have written
+                Path(command[command.index("-o") + 1]).write_text("")
+            self.returncode, self.stdout, self.stderr = 0, json.dumps({"url": PAGE, "status": 200, "title": "t", "text": "x", "saved": 1, "names": []}) + "\n", ""
+
+        def wait(self, *a, **k):
+            return 0
+
+    monkeypatch.setattr(subprocess, "run", lambda command, **kw: Fake(command, **kw))
+    monkeypatch.setattr(subprocess, "Popen", lambda command, **kw: Fake(command, **kw))
+    monkeypatch.setattr(dd.sys, "platform", "darwin")
+    monkeypatch.setattr(dd, "user_agent", lambda: "Safari")
+    installed = tmp_path / "grounder-direct"
+    installed.write_text("")
+    installed.chmod(0o755)
+    monkeypatch.setattr(dd, "INSTALLED", installed)
+    dd._installed_ok.clear()
+    dd.set_resolver("grounder")
+    dd._read_at(PAGE, True)
+    dd.sign_in("reddit.com", wait=True)
+    dd.sign_in("reddit.com", wait=False)
+    dd.paste("reddit.com", header="a=b")
+    dd.paste("reddit.com")
+    dd.sign_out("reddit.com")
+    dd.device_name()
+    monkeypatch.setattr(dd, "SOURCE", tmp_path / "direct_reader.swift")
+    dd.SOURCE.write_text("//")
+    monkeypatch.setattr(dd, "INSTALLED", tmp_path / "missing")
+    dd._installed_ok.clear()
+    dd._build_helper()
+    assert len(seen) >= 8
+    for command, env in seen:
+        assert isinstance(env, dict), f"{command} inherited the whole environment"
+        assert not [name for name in env if re.search(r"KEY|TOKEN|SECRET|PASSWORD|API", name)], command
+        assert env["HOME"] == str(tmp_path) and "PATH" in env
+    reads = [env for command, env in seen if "--signin" in command or PAGE in command]
+    assert all(set(env) <= {"HOME", "PATH", "GROUNDER_DIRECT_RESOLVER", "GROUNDER_DIRECT_SIGNED_OUT"} for env in reads)
+
+
+def test_the_cache_is_under_the_active_profile(plugin, monkeypatch, tmp_path):
+    import types
+    monkeypatch.setitem(sys.modules, "hermes_constants", types.SimpleNamespace(get_hermes_home=lambda: tmp_path / "active"))
+    assert plugin.direct_dev._home() == tmp_path / "active"
+    monkeypatch.delitem(sys.modules, "hermes_constants")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    assert plugin.direct_dev._home() == tmp_path / "launch"

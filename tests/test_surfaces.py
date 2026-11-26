@@ -18,7 +18,7 @@ import pytest
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 HERMES_TOP = {"agent", "hermes_cli", "tools", "gateway", "hermes_constants", "hermes_state", "utils", "plugins", "cron", "providers"}
 # What the plugin may import of Hermes: hermes_cli/data/plugin_api.json's published entries it uses (a module, or ``module:Name``).
-PUBLISHED = {"agent.secret_scope", "agent.web_search_provider", "hermes_cli.auth_constants:AuthError", "hermes_cli.plugin_provider_requests", "hermes_cli.config",
+PUBLISHED = {"agent.secret_scope", "agent.web_search_provider", "hermes_cli.auth_constants:AuthError", "hermes_cli.plugin_provider_requests", "hermes_cli.config", "hermes_constants",
              "gateway.session_context:get_session_env", "tools.url_safety:is_safe_url"}
 
 
