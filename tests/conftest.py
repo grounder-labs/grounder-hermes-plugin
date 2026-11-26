@@ -331,6 +331,9 @@ def plugin(stub, tmp_path, monkeypatch):
     # The account's saved ``direct`` block is read once in 30 seconds before a search; a test that does not mean to test it starts with it read and absent, so no search carries an
     # extra request. ``test_direct_addon.py`` clears this to play an account that has one.
     module.provider._direct_cache.update(at=time.monotonic() + 1e9, value=None)
+    # Whether the account asks for a read done here to be recorded (GRO-989) is likewise read once in a minute after a read; a test starts with it read and no, so no read carries an extra request.
+    # ``test_mac_reads.py`` clears this to play an account that asks.
+    module.provider._mac_reads_cache.update(at=time.monotonic() + 1e9, value=False)
     monkeypatch.setattr(module.direct_dev, "user_agent", lambda: "Test Safari/17.0")
     # ``register`` asks the import system whether this Hermes bundles its own Grounder provider (``_bundled``, ``find_spec("plugins.web.grounder")``), and the answer is
     # the machine's: a Hermes checkout on ``PYTHONPATH``, or run from in, holds one, and then every test that registers the commands finds none. 0.6.1's run

@@ -607,6 +607,69 @@ def sync_body(identity: str, name: str, found: list[tuple[str, str]]) -> dict[st
     return {"device": {"id": identity, "name": (name or "Mac").strip()[:MAX_NAME]}, "sites": sorted(rows, key=lambda row: row["site"])}
 
 
+# A read done on this Mac, told to the account (GRO-989): the read itself reaches no server, so the search records and PostHog never saw it. The plugin posts the prompt and each
+# page's address (host and path only) with its own key, and only while the account's saved setting says ``mac_reads.record`` is true. The reader binary never gets a key.
+READ_ADDRESS = re.compile(r"https?://[^\s<>\"'`]+", re.I)
+MAX_READ_PAGES = 10
+MAX_READ_PROMPT = 2000
+
+
+def host_path(address: str) -> Optional[str]:
+    """An address as Grounder keeps it: scheme, host and path, with no port, user name, query or fragment; None when it is no http(s) address with a host."""
+    try:
+        parts = urlparse(address)
+        host = parts.hostname
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        return None
+    return f"{parts.scheme.lower()}://{host}{parts.path}"
+
+
+def read_prompt(query: str) -> str:
+    """The words with every address in them cut to host and path, at most 2000 characters."""
+    text = query
+    for address in sorted(set(READ_ADDRESS.findall(query)), key=len, reverse=True):
+        text = text.replace(address, host_path(address) or "")
+    return text.strip()[:MAX_READ_PROMPT]
+
+
+def read_body(query: str, addresses: list[str]) -> Optional[dict[str, Any]]:
+    """The body of ``POST /v1/direct/reads``, or None when there is nothing to send: no words, or no address left after the cut. At most 10 addresses, each once."""
+    pages: list[str] = []
+    for address in addresses:
+        cut = host_path(address)
+        if cut and len(cut) <= 2000 and cut not in pages:
+            pages.append(cut)
+    prompt = read_prompt(query)
+    return {"prompt": prompt, "pages": pages[:MAX_READ_PAGES]} if prompt and pages else None
+
+
+# Set by the plugin (provider.py): whether the account asks this Mac to record its reads, and the call that tells it. Neither is set when this module runs on its own.
+reads_recording: Callable[[], bool] = lambda: False
+read_sender: Optional[Callable[[dict[str, Any], float], bool]] = None
+spawn: Callable[[Callable[[], None]], None] = lambda work: threading.Thread(target=work, daemon=True).start()  # tests run the work at once
+
+
+def report_read(query: str, addresses: list[str]) -> None:
+    """Tell the account about a read done here, in the background, when it asks for them. Never raises and never delays the read. ``addresses`` are the ones tried (not one refused)."""
+    try:
+        body = read_body(query, addresses)
+        if body is None or read_sender is None:
+            return
+
+        def work() -> None:
+            try:
+                if reads_recording() and read_sender is not None:
+                    read_sender(body, SYNC_TIMEOUT_S)
+            except Exception as error:
+                logger.info("A read was not told to the account: %s", error)
+
+        spawn(work)
+    except Exception as error:
+        logger.info("A read was not told to the account: %s", error)
+
+
 def removal_site(raw: Any) -> str:
     """The site a removal the account sent names, or "" when it is not one this Mac could have saved: only a name ``site_of`` would give back is used, so a name with
     a slash, a dot-dot, a capital or anything else never reaches a path."""

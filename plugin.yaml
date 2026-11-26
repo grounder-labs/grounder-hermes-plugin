@@ -1,5 +1,5 @@
 name: grounder
-version: 0.10.5
+version: 0.10.6
 requires_hermes: ">=0.22.3"
 license: Apache-2.0
 description: >-

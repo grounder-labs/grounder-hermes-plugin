@@ -76,11 +76,12 @@ logger = logging.getLogger(__name__)
 
 ORIGIN = "https://api.grounder.net"
 SEARCH_URL = f"{ORIGIN}/v1/search"
+READS_URL = f"{ORIGIN}/v1/direct/reads"  # where a read done on this Mac is told to the account (the prompt and each page's host and path), when the account's setting asks for it
 SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports the sites it has a saved sign-in for (names, this Mac, when saved), with the key or the sign-in
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.10.5"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.10.6"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -524,32 +525,67 @@ def _settings_call(method: str, body: Optional[dict[str, Any]] = None) -> tuple[
     return answer, None
 
 
-def _sign_ins_call(body: dict[str, Any], timeout: float) -> Optional[dict[str, Any]]:
-    """``PUT`` Grounder direct's saved sign-in names (``direct_dev.sync_body``) and return Grounder's answer, or None when there is no credential or it failed.
-    Never raises: a sync is best effort. It goes with the search key when one is set, else through Hermes's sign-in, and follows no redirect."""
+def _account_json_call(method: str, url: str, body: dict[str, Any], timeout: float) -> Optional[dict[str, Any]]:
+    """``method`` ``url`` with a JSON ``body``, as the plugin's own account call: Grounder's answer, or None when there is no credential or it failed. Never raises. It goes with the
+    search key when one is set, else through Hermes's sign-in, and follows no redirect."""
     key = _key()
     if key and not _key_fits(key):
         return None
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT, "Content-Type": "application/json"}
     try:
         if key:
-            request = urllib.request.Request(SIGN_INS_URL, json.dumps(body).encode(), method="PUT", headers={**headers, "Authorization": f"Bearer {key}"})
+            request = urllib.request.Request(url, json.dumps(body).encode(), method=method, headers={**headers, "Authorization": f"Bearer {key}"})
             try:
                 with _open(request, timeout) as response:
                     status, raw = response.status, response.read()
             except urllib.error.HTTPError as error:
                 status, raw = error.code, error.read()
         else:
-            response = credentialed_provider_request(OAUTH_ID, "PUT", SIGN_INS_URL, headers=headers, timeout=timeout, json=body)
+            response = credentialed_provider_request(OAUTH_ID, method, url, headers=headers, timeout=timeout, json=body)
             status, raw = response.status, response.body
         answer = json.loads(raw)
-    except Exception as error:  # no sign-in, a refusal, no network, a body that is not JSON: the list stays as it is
-        logger.info("Grounder direct's sign-in list was not synced: %s", error)
+    except Exception as error:  # no sign-in, a refusal, no network, a body that is not JSON: nothing changes
+        logger.info("Grounder did not take %s %s: %s", method, url, error)
         return None
     return answer if status == 200 and isinstance(answer, dict) else None
 
 
+def _sign_ins_call(body: dict[str, Any], timeout: float) -> Optional[dict[str, Any]]:
+    """``PUT`` Grounder direct's saved sign-in names (``direct_dev.sync_body``) and return Grounder's answer, or None when there is no credential or it failed.
+    Never raises: a sync is best effort."""
+    return _account_json_call("PUT", SIGN_INS_URL, body, timeout)
+
+
 direct_dev.account_sender = _sign_ins_call
+
+MAC_READS_CACHE_S = 60.0
+_mac_reads_cache: dict[str, Any] = {"at": -1e9, "value": False}
+
+
+def _mac_reads_recording() -> bool:
+    """Whether the account asks this Mac to record its reads (``mac_reads.record`` of the saved setting, kept 60 seconds): false with no credential, when Grounder did not answer, or
+    when the answer says no (the server's switch is off, or the account opted out of training). Asked only after a read, on the thread that tells the account."""
+    now = time.monotonic()
+    if now - float(_mac_reads_cache["at"]) < MAC_READS_CACHE_S:
+        return bool(_mac_reads_cache["value"])
+    value = False
+    try:
+        answer, _why = _settings_call("GET")
+        reads = answer.get("mac_reads") if answer else None
+        value = isinstance(reads, dict) and reads.get("record") is True
+    except ProviderNotSignedIn:
+        value = False
+    _mac_reads_cache.update(at=now, value=value)
+    return value
+
+
+def _read_call(body: dict[str, Any], timeout: float) -> bool:
+    """``POST`` a read done on this Mac (``direct_dev.read_body``) with the plugin's own key or sign-in; the reader binary never holds either. True when Grounder answered 200."""
+    return _account_json_call("POST", READS_URL, body, timeout) is not None
+
+
+direct_dev.reads_recording = _mac_reads_recording
+direct_dev.read_sender = _read_call
 
 
 def _can_sync_sign_ins() -> bool:
@@ -1333,12 +1369,16 @@ class GrounderWebSearchProvider(WebSearchProvider):
         signed_out = signed_out or direct_formats.signed_out_words(asks) or direct_formats.signed_out_words(query)
         question = " ".join(ADDRESS.sub(" ", question or query).split()) or asks
         rows = []
+        tried = []
         for url in addresses:
             why = _refusal(url)
+            if not why:
+                tried.append(url)
             page = {"url": url, "problem": why} if why else direct_dev.read(url, signed_out)
             text = (direct_dev.not_read(url, page["problem"]) if page.get("problem")
                     else direct_formats.shape(direct_dev.header(page), str(page.get("text") or ""), fmt, question, str(page.get("url") or url)))
             rows.append({"title": str(page.get("title") or url), "url": str(page.get("url") or url), "description": text, "position": len(rows) + 1})
+        direct_dev.report_read(question or query, tried)  # the account's copy of a read done here, when it asks for them (GRO-989)
         return {"success": True, "data": {"web": rows, NOTICE_KEY: "direct"}}
 
     def _read_candidates(self, results: list[dict[str, Any]], fmt: str, question: str, signed_out: bool, site: str = "", credits: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -1382,9 +1422,12 @@ class GrounderWebSearchProvider(WebSearchProvider):
         fmt = direct_formats.chosen(None, asks, direct_format())
         signed_out = direct_formats.signed_out_words(asks)
         question = self._question([str(u) for u in urls]) if not asks else asks
+        tried: list[str] = []
         for url in (str(u) for u in urls):
             if url not in done:
                 why = _refusal(url)
+                if not why:
+                    tried.append(url)
                 page = {"url": url, "problem": why} if why else direct_dev.read(url, signed_out)
                 if page.get("problem"):
                     text = direct_dev.not_read(url, page["problem"])
@@ -1395,6 +1438,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
                     # changed format or a fresh read is never answered with an earlier one.
                     done[url] = {"url": f"{str(page.get('url') or url).split('#')[0]}#grounder-direct", "title": str(page.get("title") or ""), "content": text, "raw_content": text}
             out.append(done[url])
+        direct_dev.report_read(question, tried)  # the account's copy of a read done here, when it asks for them (GRO-989)
         return out
 
     def _read_part(self, query: str, pages: list[str], fmt: str) -> dict[str, Any]:
