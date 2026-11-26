@@ -24,8 +24,8 @@ hooks). Both work on what is already on this machine and send nothing. A
 ``web_search`` whose query holds a page's address reads that page for the rest of
 the query, and the page comes back whole.
 
-Grounder provider returns the results from each topic's source. Grounder direct finds the pages to read from that source.
-A page named by address is a free read. The line under each answer uses the response's mode and topics.
+Grounder provider returns the results of the source that answered. Grounder direct finds the pages to read from that source.
+A page named by address is a free read. The line under each answer uses the response's mode and sources.
 
 The plugin selects itself the first time it loads in a profile (``__init__.py``), by
 setting ``web.search_backend: grounder`` and ``web.extract_backend: grounder`` for each the user has set no backend for.
@@ -76,12 +76,11 @@ logger = logging.getLogger(__name__)
 
 ORIGIN = "https://api.grounder.net"
 SEARCH_URL = f"{ORIGIN}/v1/search"
-TOPICS_URL = f"{ORIGIN}/v1/topics"
 SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports the sites it has a saved sign-in for (names, this Mac, when saved), with the key or the sign-in
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.9.5"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.10.0"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -133,13 +132,12 @@ CITED = re.compile(r"\[(\d{1,3}(?:\s*[,–-]\s*\d{1,3})*)\]")
 # Code, which is never a citation: a fenced block (to its closing fence, or the end of the text) and an inline span (`items[2]`).
 CODE = re.compile(r"(?s)(?:\x60{3}|~~~).*?(?:\x60{3}|~~~|\Z)|(\x60+)(?!\x60)(?:(?!\n\n).)+?(?<!\x60)\1(?!\x60)")  # \x60 is the backtick, spelled so no line reads as a shell snippet to `hermes plugins validate`
 SEARCH_TOOL = "grounder_search"
-LIST_TOPICS_TOOL = "grounder_list_topics"
 TOOLSET = "grounder"
 SEARCH_SCHEMA = {
     "name": SEARCH_TOOL,
     "description": (
-        "Better web routing. Use for questions that need current or verifiable information on one of Grounder's topics. "
-        "Grounder provider returns the topic's source results. Grounder direct finds its page and reads it. "
+        "Better web routing. Use for questions that need current or verifiable information that Grounder has a source for. "
+        "Grounder provider returns the answering source's results. Grounder direct finds its page and reads it. "
         "Use urls when the user gives a page address, or site and query when they name a site without a page address. "
         "Reading a page named by address is free. " + direct_dev.SEARCH_PRICE
     ),
@@ -160,11 +158,6 @@ SEARCH_SCHEMA = {
                    "description": "Summary, full-page or highlights. Send only when the user's words name a format."},
     }},
 }
-LIST_TOPICS_SCHEMA = {
-    "name": LIST_TOPICS_TOOL,
-    "description": "List Grounder's topics and their sources, servers, example questions and ways to search. This is not a search.",
-    "parameters": {"type": "object", "properties": {}},
-}
 # Where a provider's or live source's id is not its name capitalized; the rest of Grounder's lists are.
 PROVIDER_NAMES = {"you": "You.com", "xai": "xAI", "newsapi": "NewsAPI.ai", "tinyfish": "TinyFish", "aeroapi": "FlightAware",
                   "ap-elections": "AP Elections", "bestbuy": "Best Buy", "espn": "ESPN", "fed": "Federal Reserve", "mlb": "MLB",
@@ -176,7 +169,6 @@ PROVIDER_NAMES = {"you": "You.com", "xai": "xAI", "newsapi": "NewsAPI.ai", "tiny
 # fallback 45 s behind it: 175 s in all. A deep run and its deep fallback are 90 s, Valyu's 15 s search and its fallback 19 s, Tako's 6 s search and its fallback about 10 s.
 # The Grounder service's own tests fail when its longest lane outgrows this figure.
 TIMEOUT_S = 40
-LIST_TIMEOUT_S = 8  # one of Grounder's public lists
 KEYS_URL = "https://grounder.net/account/keys"
 SETTINGS_KEY = "grounder"  # the section of config.yaml's web: that holds the usage-context setting
 SHARE_USAGE_KEY = "share_usage_context"  # in that section: whether a search carries the model that asked for it and a token for its session and prompt
@@ -452,48 +444,6 @@ def _post_signed_in(payload: dict[str, Any]) -> tuple[int, bytes]:
     return response.status, response.body
 
 
-def _get(url: str) -> tuple[int, bytes]:
-    """GET one of Grounder's public lists with no credential; return the HTTP status and the body."""
-    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
-    try:
-        with _open(request, LIST_TIMEOUT_S) as response:
-            return response.status, response.read()
-    except urllib.error.HTTPError as error:
-        return error.code, error.read()
-
-
-def _get_signed_in(url: str) -> tuple[int, bytes]:
-    """GET one of Grounder's public lists through Hermes, which raises ``ProviderNotSignedIn`` with no grant and otherwise attaches the token.
-    A public list needs none; this is how a plugin, which cannot see the grant, learns there is one, with no search spent."""
-    response = credentialed_provider_request(OAUTH_ID, "GET", url, headers={"Accept": "application/json", "User-Agent": USER_AGENT}, timeout=LIST_TIMEOUT_S)
-    return response.status, response.body
-
-
-def fetch_list(url: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """One of Grounder's public lists, as it is when asked and never kept: ``(body, None)``, or ``(None, reason)``.
-
-    Raises ``ProviderNotSignedIn`` when the user has neither a search key nor a sign-in: ``/search`` chooses what only a signed-in search
-    carries, so it answers with how to sign in instead of a list.
-    """
-    try:
-        status, raw = _get(url) if _key() else _get_signed_in(url)
-    except ProviderNotSignedIn:
-        raise
-    except AuthError as error:
-        return None, f"Grounder sign-in failed: {error}"
-    except PermissionError as error:
-        return None, f"Hermes refused the Grounder sign-in: {error}"
-    except (httpx.HTTPError, urllib.error.URLError, TimeoutError, OSError) as error:
-        return None, f"Could not reach Grounder: {error}"
-    if status != 200:
-        return None, f"HTTP {status}"
-    try:
-        body = json.loads(raw)
-    except ValueError:
-        return None, "Grounder's answer was not JSON"
-    return (body, None) if isinstance(body, dict) else (None, "Grounder's answer was not what was expected")
-
-
 def sharing_usage() -> bool:
     """Whether ``web.grounder.share_usage_context`` is on (``hermes config set web.grounder.share_usage_context true`` turns it on): only then does a search tell Grounder which
     model asked for it and carry a random token for its session and one for its prompt, and only then is the ``post_api_request`` hook that learns the model registered (at load, so
@@ -512,7 +462,7 @@ def sharing_usage() -> bool:
     return True if word in ("true", "yes", "on", "1") else False if word in ("false", "no", "off", "0") else SHARE_USAGE_DEFAULT
 
 
-SETTINGS_TIMEOUT_S = LIST_TIMEOUT_S  # one read or write of the saved setting
+SETTINGS_TIMEOUT_S = 8  # one read or write of the saved setting
 
 
 def _settings_error(status: int, body: Any, via: str) -> str:
@@ -1608,7 +1558,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         if body is None:
             return _notice(error) if isinstance(error, _Act) else _fail(error or "Grounder returned no answer")
         if body.get("no_topic"):
-            return _notice("No topic fits this question, so no source was asked and nothing was charged. grounder_list_topics names the topics Grounder covers.", "no_topic")
+            return _notice("No topic fits this question, so no source was asked and nothing was charged.", "no_topic")
         topics = [topic for topic in _listed(body.get("topics")) if isinstance(topic, dict)]
         results = _results(body)
         if not reading and isinstance(payload.get("top_k"), int):
@@ -1632,12 +1582,6 @@ class GrounderWebSearchProvider(WebSearchProvider):
             notes.append("Grounder found no page it could read. It made no other search.")
         return {"success": True, "data": {"web": rows, **({"topics": topics} if topics else {}),
                 **({"note": " ".join(notes)} if notes else {}), **({PAYMENT_KEY: paid[-1]} if paid else {})}}
-
-    def list_topics_tool(self, args: dict[str, Any], **_: Any) -> str:
-        """Read the same public topic catalog as both MCP addresses."""
-        body, error = fetch_list(TOPICS_URL)
-        return json.dumps({"success": True, "data": body} if body is not None
-                          else _fail(error or "Could not read Grounder's topics"), ensure_ascii=False)
 
     def _remember(self, query: str, rows: list[dict[str, Any]], summary: dict[str, Any], found_by: bool = True) -> None:
         """Note the query that found each of a search's pages, for the extract that may read them next, and the search's summary.
@@ -1672,7 +1616,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         """The entry ``hermes tools`` shows. It asks for no key, since signing in needs none; the tag names both ways in."""
         return {
             "name": "Grounder", "badge": "account",
-            "tag": "Grounder searches the source for your topic or reads its page. "
+            "tag": "Grounder searches a source it chose by hand for your question or reads its page. "
                    f"Free searches need no account. For more, use a search key in `{KEY_ENV}`, sign in with `{SIGN_IN}`, or pay per search with a wallet.",
             "env_vars": [],
         }

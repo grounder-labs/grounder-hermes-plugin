@@ -23,7 +23,7 @@ from hermes_cli.config import is_managed, load_config, save_config, save_env_val
 
 from . import direct_dev, direct_formats
 from .commands import register_commands
-from .provider import LIST_TOPICS_SCHEMA, SEARCH_SCHEMA, TOOLSET, CLIENT_ENV, CLIENT_ID, KEY_ENV, GrounderWebSearchProvider, note_message, note_model, note_turn, sharing_usage
+from .provider import SEARCH_SCHEMA, TOOLSET, CLIENT_ENV, CLIENT_ID, KEY_ENV, GrounderWebSearchProvider, note_message, note_model, note_turn, sharing_usage
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ def register(ctx) -> None:
     ctx.register_hook("transform_tool_result", provider.after_tool)
     ctx.register_hook("transform_llm_output", provider.after_answer)
     try:
-        for schema, handler in ((SEARCH_SCHEMA, provider.search_tool), (LIST_TOPICS_SCHEMA, provider.list_topics_tool)):
+        for schema, handler in ((SEARCH_SCHEMA, provider.search_tool),):
             ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema, handler=handler)
     except Exception as error:  # a Hermes that refuses a tool must not take web search down with it
         logger.warning("Could not add Grounder's search tools: %s", error)

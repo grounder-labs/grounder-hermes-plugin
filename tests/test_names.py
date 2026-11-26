@@ -95,7 +95,7 @@ def _all_text(value):
 
 def test_what_the_plugin_renders_says_Grounder(plugin):
     provider = plugin.GrounderWebSearchProvider()
-    texts = [*_all_text(plugin.provider.SEARCH_SCHEMA), *_all_text(plugin.provider.LIST_TOPICS_SCHEMA), provider.get_setup_schema()["tag"],
+    texts = [*_all_text(plugin.provider.SEARCH_SCHEMA), provider.get_setup_schema()["tag"],
              *plugin.provider.UNREAD.values(), plugin.provider.NOT_READ, plugin.provider.SHOWN_NOTE,
              plugin.provider.CITE_REQUEST, plugin.provider.CITE_REQUEST_LISTED, *plugin.commands.SEARCH_CHOICES]
     links = {"signup_url": "https://grounder.net/account", "billing_url": "https://grounder.net/account/billing"}

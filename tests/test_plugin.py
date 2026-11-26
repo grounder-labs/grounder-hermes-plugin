@@ -419,7 +419,7 @@ def test_setup_entry_asks_for_no_key_and_names_both_ways_in(plugin):
     assert entry["name"] == "Grounder" and entry["badge"] == "account"
     assert entry["env_vars"] == []
     assert "`hermes auth add grounder:grounder`" in entry["tag"] and "GROUNDER_API_KEY" in entry["tag"]
-    assert "searches the source for your topic or reads its page" in entry["tag"]
+    assert "searches a source it chose by hand for your question or reads its page" in entry["tag"]
 
 
 # --- web_extract ---------------------------------------------------------------------------------------------------

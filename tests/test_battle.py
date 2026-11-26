@@ -319,10 +319,9 @@ def test_a_redirect_is_an_error_and_the_search_key_goes_nowhere_else(plugin, stu
     assert len(_searches(stub)) == 1
 
 
-def test_a_free_search_and_every_public_list_follow_no_redirect_either(plugin, stub, free):
+def test_a_free_search_follows_no_redirect_either(plugin, stub, free):
     stub.search_status, stub.search_headers = 302, {"Location": f"{stub.origin}/stolen"}
     assert plugin.GrounderWebSearchProvider().search("q")["success"] is False
-    assert plugin.provider._get(f"{stub.origin}/v1/search")[0] == 302
     assert [r for r in stub.requests if r["path"] == "/stolen"] == []
 
 

@@ -58,11 +58,3 @@ def test_no_topic_is_a_grounder_notice_with_no_local_read_or_payment(plugin, fre
     assert data["grounder_notice"] == "no_topic"
     assert "nothing was charged" in data["web"][0]["description"]
     assert "grounder_payment" not in data and reads == []
-
-
-def test_catalog_returns_the_public_topics_without_sending_a_key(plugin, keyed, stub):
-    stub.topics_body = {"status": "decided", "topics": [{"id": "news", "name": "News"}]}
-    reply = json.loads(plugin.GrounderWebSearchProvider().list_topics_tool({}))
-    assert reply == {"success": True, "data": stub.topics_body}
-    assert stub.requests[-1]["path"] == "/v1/topics"
-    assert "Authorization" not in stub.requests[-1]["headers"]

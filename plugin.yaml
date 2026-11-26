@@ -1,15 +1,15 @@
 name: grounder
-version: 0.9.5
+version: 0.10.0
 requires_hermes: ">=0.22.3"
 license: Apache-2.0
 description: >-
-  Better web routing for Hermes Agent. Grounder provider returns the results of the source for your question's topic.
+  Better web routing for Hermes Agent. Grounder provider returns the results of a source Grounder chose by hand for your question.
   Grounder direct finds the source's page and reads it on your Mac with Safari. Reading a page named by address is free.
   A Grounder direct search is one search, at the one price, even if its page could not be read.
   Use /search (on Slack, /hermes search) to choose how to search, set the page format or pick a resolver. The search choice and format are saved on
   your Grounder account when connected. On macOS with Safari, install the reader as https://grounder.net/docs/direct shows.
   Use /search-login and /search-logout to manage site sign-ins. Cookies stay on your Mac. A connected account lists the site,
-  Mac and save time. Grounder supports web_search, web_extract, grounder_search and grounder_list_topics. Installing selects
+  Mac and save time. Grounder supports web_search, web_extract and grounder_search. Installing selects
   Grounder for web search and extract only where no backend has been chosen. Search free without an account or connect one using
   hermes auth add grounder:grounder or GROUNDER_API_KEY. An optional x402 wallet can pay after the free searches are used.
   Search queries and hosted page addresses are sent to api.grounder.net. Usage context is off by default. For usage reporting, run hermes config set web.grounder.share_usage_context true and restart Hermes.
@@ -18,7 +18,6 @@ author: Grounder
 kind: backend
 provides_tools:
   - grounder_search
-  - grounder_list_topics
 provides_hooks:
   - transform_tool_result
   - transform_llm_output

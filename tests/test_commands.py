@@ -23,12 +23,6 @@ PROVIDERS = {
         {"provider": "parallel", "display_name": "Parallel",
          "offerings": [{"type": "parallel", "mode": None}, {"type": "parallel:fast", "mode": "fast"}, {"type": "parallel:turbo", "mode": "turbo"}]}],
     "live_data_apis": [{"id": "polymarket", "display_name": "Polymarket"}, {"id": "espn", "display_name": "ESPN"}]}
-PROFILES = {"profiles": [
-    {"id": "fast", "name": "Fast", "description": "Quick answers", "includes": ["exa:instant", "tavily"]},
-    {"id": "cheap", "name": "Cheap", "description": "Lowest cost"},
-    {"id": "live", "name": "Live", "description": "Fresh data"},
-    {"id": "deep", "name": "Deep", "description": "Thorough research", "includes": ["exa:deep", "gone:mode"]},
-    {"id": "code", "name": "Code", "description": "Software questions"}, {"id": "balanced", "name": "Balanced", "description": "A bit of each"}]}
 TELEGRAM_NAME = re.compile(r"^[a-z0-9_]{1,32}$")
 # Slack's own commands, which an app cannot register (hermes_cli/commands_platforms.py _SLACK_RESERVED_COMMANDS, Hermes v0.23.1): a command of this name is run on Slack
 # as `/hermes <name>`. `search` is one of them, so the docs say so.
@@ -93,7 +87,7 @@ def _config(home, **web):
 
 @pytest.fixture
 def lists(stub):
-    stub.providers_body, stub.profiles_body = PROVIDERS, PROFILES
+    stub.providers_body = PROVIDERS
     return stub
 
 
@@ -101,10 +95,6 @@ def lists(stub):
 def signed_in(hermes, lists):
     hermes.token = "hermes-held-token"
     return hermes
-
-
-def _lists_read(stub):
-    return [r["path"] for r in stub.requests if r["path"] in ("/v1/providers", "/v1/search-profiles")]
 
 
 # --- registering, and standing aside -------------------------------------------------------------------------------------
@@ -194,7 +184,7 @@ def test_search_is_registered_only_while_the_profiles_web_search_backend_is_grou
     plugin.register(host)
     assert set(host.commands) == ({"search", "search-direct-format", "search-login", "search-logout"} if registers else set())
     # With another backend the model tools and the web provider are registered as ever: only the command goes.
-    assert host.tools == ["grounder_search", "grounder_list_topics"] and [p.name for p in host.providers] == ["grounder"]
+    assert host.tools == ["grounder_search"] and [p.name for p in host.providers] == ["grounder"]
     assert "transform_tool_result" in host.hooks and "pre_llm_call" in host.hooks
 
 
@@ -260,7 +250,7 @@ def test_a_config_that_cannot_be_read_registers_no_command_and_takes_nothing_els
     host = Host(selected=True)
     with caplog.at_level(logging.WARNING):
         plugin.register(host)
-    assert host.commands == {} and [p.name for p in host.providers] == ["grounder"] and host.tools == ["grounder_search", "grounder_list_topics"]
+    assert host.commands == {} and [p.name for p in host.providers] == ["grounder"] and host.tools == ["grounder_search"]
     assert any("Could not read the web backend" in record.getMessage() for record in caplog.records)
 
 

@@ -145,10 +145,7 @@ class Stub:
         self.search_script = []  # (status, body) or (status, body, headers) answers to the next searches, in order, before search_status and search_body apply
         self.reply_headers = {}  # the headers of the answer being given: a script entry's third item (a 402's PAYMENT-REQUIRED, a paid 200's PAYMENT-RESPONSE)
         self.features_body = {"features": []}
-        self.topics_body = {"status": "decided", "topics": []}
         self.providers_body = {"providers": [], "live_data_apis": []}
-        self.list_status = 200  # what /v1/providers and /v1/search-profiles answer
-        self.profiles_body = {"profiles": []}
         self.rejected = {"revoked-token", "revoked-key"}  # bearers /v1/search answers 401 for
         # The account's saved search setting, the one grounder.net's Routing page shows too: a test that changes these plays a change made on the site.
         self.saved_search = dict(SETTINGS["answer"]["search"])
@@ -227,14 +224,8 @@ class Stub:
                 self.reply_headers = answer_headers[0] if answer_headers else {}
                 return status, payload
             return self.search_status, self.search_body
-        if path == "/v1/topics":
-            return self.list_status, self.topics_body
         if path == "/v1/features":
             return 200, self.features_body
-        if path in ("/v1/providers", "/v1/search-profiles"):
-            if self.list_status != 200:
-                return self.list_status, {"error": {"code": "unavailable", "message": "later"}}
-            return 200, self.providers_body if path == "/v1/providers" else self.profiles_body
         return 404, {"error": "not_found"}
 
 

@@ -1,6 +1,6 @@
 # Grounder for Hermes Agent
 
-Better web routing for Hermes Agent's `web_search` and `web_extract`. A search goes to the source for your question's topic. Grounder provider returns that source's results. Grounder direct finds the source's page and reads it on your Mac with Safari. Reading a page named by address is free.
+Better web routing for Hermes Agent's `web_search` and `web_extract`. A search goes to a source Grounder chose by hand for your question. Grounder provider returns that source's results. Grounder direct finds the source's page and reads it on your Mac with Safari. Reading a page named by address is free.
 
 A Grounder direct search is one search, at the one price, even if its page could not be read. [See pricing.](https://grounder.net/pricing)
 
@@ -122,7 +122,6 @@ Until you connect your account, your searches are Grounder's free searches.
 - `web_search` searches with your saved choice. A page named by its address is read with Grounder direct.
 - `web_extract` reads the addresses you give it. With Grounder direct selected, your Mac reads them with Safari. Otherwise the hosted reader needs your Safari user agent and reads logged out.
 - `grounder_search` can specify a mode for one search, a date window, named pages or a site. To find a named page on a site, send the host in `site` and the question in `query`.
-- `grounder_list_topics` lists available topics, sources, examples and ways to search. It makes no search.
 
 A question that fits no topic gives a plain message with no results and no charge. Search results identify their topic and source. Grounder adds each cited source's title and link and a line identifying the search mode and source under the answer.
 
