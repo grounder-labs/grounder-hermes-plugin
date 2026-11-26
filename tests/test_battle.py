@@ -4,6 +4,7 @@
 """What an adversarial test of plugin 0.5.14 in a real Hermes found (GRO-832, plugin 0.5.15). Each test fails on 0.5.14."""
 
 import json
+import re
 import sys
 import urllib.parse
 
@@ -69,7 +70,7 @@ def test_a_follow_up_that_searched_nothing_cites_nothing_by_number_and_gets_no_l
     stub.search_body = _routed(PAGE_A, PAGE_B)
     _hook(provider, "one", provider.search("one"), turn="t1")
     first = provider.after_answer("First [1] [2].", session_id="s", turn_id="t1")
-    assert f"- \"Title a.\" example.com — {PAGE_A}\n- \"Title b.\" example.com — {PAGE_B}" in first
+    assert f"- [Title a]({PAGE_A}) (example.com)\n- [Title b]({PAGE_B}) (example.com)" in first
     # Turn 2 made no search: whatever numbers it writes name nothing, so no list and no card line.
     assert provider.after_answer("As said, [2].", session_id="s", turn_id="t2") is None
     # The first turn's results were not kept for it, whichever order the turns are answered in.
@@ -85,7 +86,7 @@ def test_a_follow_up_that_searches_starts_again_at_1_and_lists_only_its_own_resu
     second = json.loads(_hook(provider, "two", provider.search("two"), turn="t2"))
     assert [row["position"] for row in second["data"]["web"]] == [1, 2]
     answer = provider.after_answer("Now [1] and [2]; the earlier [3] is not here.", session_id="s", turn_id="t2")
-    assert answer.split("\n\nSearched")[0] == f"Now [1] and [2]; the earlier [3] is not here.\n\nSources:\n- \"Title c.\" example.com — {PAGE_C}\n- \"Title a.\" example.com — {PAGE_A}"
+    assert answer.split("\n\nSearched")[0] == f"Now [1] and [2]; the earlier [3] is not here.\n\nSources:\n- [Title c]({PAGE_C}) (example.com)\n- [Title a]({PAGE_A}) (example.com)"
     # Page B was turn 1's, and a number turn 1 gave it names nothing in turn 2.
     assert PAGE_B not in answer
 
@@ -107,7 +108,7 @@ def test_two_chats_keep_their_results_apart_and_the_memory_of_each_turn_is_bound
     _hook(provider, "q2", provider.search("q2"), session="two", turn="t", conversation_id="two")
     # The same turn id in another session is another turn: each answer lists only its own session's results, and nothing is kept once it is answered.
     two = provider.after_answer("[1]", session_id="two", turn_id="t")
-    assert f"\"Title c.\" example.com — {PAGE_C}" in two and "Title a" not in two and "Title b" not in two
+    assert f"[Title c]({PAGE_C}) (example.com)" in two and "Title a" not in two and "Title b" not in two
     one = provider.after_answer("[1] [2]", session_id="one", turn_id="t")
     assert "Title a" in one and "Title b" in one and "Title c" not in one
     assert provider.after_answer("[1]", session_id="one", turn_id="t") is None
@@ -125,7 +126,7 @@ def test_a_list_the_model_wrote_under_a_heading_or_label_is_left_alone(plugin, s
     provider = plugin.GrounderWebSearchProvider()
     _hook(provider, "q", provider.search("q"))
     text = f"It is so [1].\n\n{written}"
-    assert "\nSources:\n- Title a" not in provider.after_answer(text, session_id="s", turn_id="t")
+    assert "\nSources:\n- [Title a" not in provider.after_answer(text, session_id="s", turn_id="t")
 
 
 @pytest.mark.parametrize("sentence", ["Sources differ slightly on the day [1].", "References to it are scarce [1].", "Citations of the paper vary [1]."])
@@ -133,7 +134,7 @@ def test_a_sentence_that_starts_with_the_word_does_not_suppress_the_list(plugin,
     stub.search_body = _routed(PAGE_A)
     provider = plugin.GrounderWebSearchProvider()
     _hook(provider, "q", provider.search("q"))
-    assert f"Sources:\n- \"Title a.\" example.com — {PAGE_A}" in provider.after_answer(sentence, session_id="s", turn_id="t")
+    assert f"Sources:\n- [Title a]({PAGE_A}) (example.com)" in provider.after_answer(sentence, session_id="s", turn_id="t")
 
 
 # --- 4: code is not a citation ---------------------------------------------------------------------------------------------------------------------
@@ -151,7 +152,7 @@ def test_a_citation_next_to_code_still_counts(plugin, stub, keyed):
     stub.search_body = _routed(PAGE_A)
     provider = plugin.GrounderWebSearchProvider()
     _hook(provider, "q", provider.search("q"))
-    assert "- \"Title a." in provider.after_answer("Use `items[2]`, per the docs [1].", session_id="s", turn_id="t")
+    assert "- [Title a]" in provider.after_answer("Use `items[2]`, per the docs [1].", session_id="s", turn_id="t")
 
 
 # --- 5: a closing bracket that is the address's own stays ----------------------------------------------------------------------------------------
@@ -336,13 +337,15 @@ def test_the_sources_list_prints_no_markup_and_no_address_that_is_not_http(plugi
     _hook(provider, "q", provider.search("q", 6))
     listed = provider.after_answer("[1] [2] [3] [4] [5] [6]", session_id="s", turn_id="t").split("Sources:\n")[1].split("\n\nSearched")[0]
     lines = listed.splitlines()
-    # Only the three http(s) results are listed, each with an address that starts https://; the title's own words are plain, with no link in them.
-    assert len(lines) == 3 and all(line.startswith("- ") and line.rsplit(" — ", 1)[1].startswith("https://") for line in lines)
-    assert "](" not in listed.replace("\\]\\(", "") and "file:///" not in listed and "data:text" not in listed
-    assert lines[0] == "- \"Normal \\[1\\]\\(javascript:alert\\(1\\)\\) \\*\\*bold\\*\\* \\#\\# Sources - fake — https://evil.example.\" example.com — https://example.com/1"
-    assert "‮" not in listed and "​" not in listed and "<" not in lines[1].rsplit(" — ", 1)[1] and " " not in lines[1].rsplit(" — ", 1)[1]
-    assert lines[1].startswith("- \"Rtl evil zerowidth \\<b\\>x\\</b\\> \\`tick\\` \\| pipe \\_u\\_ \\~s\\~ \\#h.\" example.com — https://example.com/a%20b%E2%80%AE/%3Cx%3E%22y%22")
-    assert lines[2] == "- example.com — https://example.com/plain"
+    # Only the three http(s) results are listed, each one link to an https:// address and nothing else: the title's own words are plain, every bracket and
+    # parenthesis in them escaped, so a title can add no link of its own.
+    cited = [re.fullmatch(r"- \[((?:\\.|[^\\\[\]])*)\]\((https://[^\s()<>\"]*)\)(?: \(([^()]*)\))?", line) for line in lines]
+    assert len(lines) == 3 and all(cited)
+    assert "file:///" not in listed and "data:text" not in listed
+    assert lines[0] == "- [Normal \\[1\\]\\(javascript:alert\\(1\\)\\) \\*\\*bold\\*\\* \\#\\# Sources - fake — https://evil.example](https://example.com/1) (example.com)"
+    assert "‮" not in listed and "​" not in listed
+    assert lines[1] == "- [Rtl evil zerowidth \\<b\\>x\\</b\\> \\`tick\\` \\| pipe \\_u\\_ \\~s\\~ \\#h](https://example.com/a%20b%E2%80%AE/%3Cx%3E%22y%22) (example.com)"
+    assert lines[2] == "- [example.com](https://example.com/plain)"
 
 
 # --- 8: nothing tells the user to set the sign-in client by hand -----------------------------------------------------------------------------------
