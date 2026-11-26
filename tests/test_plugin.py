@@ -1313,3 +1313,32 @@ def test_the_documents_say_what_usage_context_is_for_and_how_to_turn_it_on(plugi
     assert "Usage context, on by default" not in texts["README.md"] and "unless you turn it off" not in " ".join(texts.values())
     provider = (PLUGIN_DIR / "provider.py").read_text()
     assert provider.count("SHARE_USAGE_DEFAULT = False") == 1  # the one line that decides it
+
+
+STEPS = [{"step": "choose", "latency_ms": 600}, {"step": "sources", "latency_ms": 450}, {"step": "licence", "latency_ms": 200}, {"step": "answer", "latency_ms": 150}]
+
+
+def _card(plugin, stub, keyed, usage, turns=1):
+    stub.search_body = {**ROUTED, "usage": {**ROUTED["usage"], **usage}}
+    provider = plugin.GrounderWebSearchProvider()
+    for _ in range(turns):
+        provider.after_tool("web_search", {"query": "q"}, json.dumps(provider.search("q")), session_id="s", turn_id="t")
+    return provider.after_answer("A [1].", session_id="s", turn_id="t")
+
+
+def test_the_card_line_says_what_a_searchs_seconds_were_spent_doing(plugin, stub, keyed):
+    out = _card(plugin, stub, keyed, {"latency_ms": 1400, "steps": STEPS})
+    assert out.endswith("1 source · 1.4 s (choosing sources 600 ms, sources 450 ms, licence check 200 ms, answer 150 ms)")
+
+
+def test_the_card_line_names_only_the_steps_the_answer_carries_and_invents_no_remainder(plugin, stub, keyed):
+    assert _card(plugin, stub, keyed, {"latency_ms": 1400}).endswith("1 source · 1.4 s")  # an older API: no steps
+    out = _card(plugin, stub, keyed, {"latency_ms": 1400, "steps": [STEPS[1], {"step": "mystery", "latency_ms": 90}, {"step": "read", "latency_ms": 0}, {"step": "pages", "latency_ms": "9"}]})
+    assert out.endswith("1 source · 1.4 s (sources 450 ms)")
+    assert "other" not in out.lower() and "remain" not in out.lower()
+
+
+def test_a_grounder_direct_search_names_its_page_pick_and_page_read(plugin, stub, keyed):
+    steps = [{"step": "choose", "latency_ms": 800}, {"step": "sources", "latency_ms": 1500}, {"step": "pages", "latency_ms": 600}, {"step": "read", "latency_ms": 5800}, {"step": "answer", "latency_ms": 300}]
+    out = _card(plugin, stub, keyed, {"latency_ms": 9000, "steps": steps})
+    assert "9.0 s (choosing sources 800 ms, sources 1.5 s, page pick 600 ms, page read 5.8 s, answer 300 ms)" in out

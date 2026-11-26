@@ -80,7 +80,7 @@ SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports t
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.10.3"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.10.4"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -191,6 +191,18 @@ def _duration(ms: int) -> str:
     return f"{ms / 1000:.1f} s" if ms >= 1000 else f"{ms} ms"
 
 
+# What each of `usage.steps` is called on the card line (GRO-719). The API's steps add up to its time with nothing counted twice, so the line names exactly the ones it was
+# sent and no remainder of its own.
+STEP_WORDS = {"choose": "choosing sources", "sources": "sources", "licence": "licence check", "pages": "page pick", "read": "page read", "answer": "answer"}
+
+
+def _steps_of(usage: dict[str, Any]) -> list[tuple[str, int]]:
+    """``usage.steps`` as ``(step, ms)`` pairs in the order sent: only the steps the plugin has a word for, with whole positive milliseconds."""
+    steps = usage.get("steps")
+    return [(str(one["step"]), one["latency_ms"]) for one in steps if isinstance(one, dict) and one.get("step") in STEP_WORDS
+            and isinstance(one.get("latency_ms"), int) and not isinstance(one.get("latency_ms"), bool) and one["latency_ms"] > 0] if isinstance(steps, list) else []
+
+
 def _provider_name(provider: str) -> str:
     return PROVIDER_NAMES.get(provider, provider.capitalize())
 
@@ -264,7 +276,7 @@ def _summary(body: dict[str, Any], sources: int, sent: dict[str, Any] | None = N
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     latency = usage.get("latency_ms")
     ms = latency if isinstance(latency, int) and not isinstance(latency, bool) else 0
-    return {"mode": way, "via": via, "sources": sources, "ms": ms,
+    return {"mode": way, "via": via, "sources": sources, "ms": ms, "steps": _steps_of(usage),
             "from": _clock() - ms / 1000, "fresh": True}
 
 
@@ -298,7 +310,9 @@ def _card_line(searches: list[dict[str, Any]]) -> str:
     parts.append(_plural(len(set().union(*(search["pages"] for search in searches))), "source"))
     total = _waited(searches)
     if total:
-        parts.append(_duration(total))
+        # The steps are one search's own clock: two searches of an answer may have run together, so only a lone search says where its time went.
+        steps = searches[0].get("steps") if len(searches) == 1 else None
+        parts.append(_duration(total) + (f" ({', '.join(f'{STEP_WORDS[step]} {_duration(ms)}' for step, ms in steps)})" if steps else ""))
     return " · ".join(parts)
 
 
@@ -1463,7 +1477,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
                 if served and summary is not None:
                     # A search is timed once, when it ran: the same query answered again from Hermes's cache took no time.
                     ran, summary["fresh"] = summary["fresh"], False
-                    self._turns.setdefault(turn, []).append({"mode": summary["mode"], "via": summary["via"], "ms": summary["ms"] if ran else 0, "from": summary["from"],
+                    self._turns.setdefault(turn, []).append({"mode": summary["mode"], "via": summary["via"], "ms": summary["ms"] if ran else 0, "steps": summary.get("steps", []) if ran else [], "from": summary["from"],
                                                              "pages": {_page_key(str(row["url"])) for row in served}})
                     _bounded(self._turns, REMEMBERED_TURNS)
                     inner[SERVED_KEY] = _served_line(summary, len(served))
