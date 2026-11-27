@@ -133,10 +133,13 @@ def manifest():
     return yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
 
 
+# GET /v1/search/settings and every PUT's answer, recorded from the server by workers/router/test/surface-parity.test.ts (GRO-1154); test_server_shapes.py
+# replays each recorded exchange against Stub, so Stub's rules below and the server's (workers/router/src/lib/topic-settings.ts) cannot drift apart.
 SETTINGS = json.loads((Path(__file__).parent / "api_shapes.json").read_text())["settings"]
-SEARCH_KEYS = ("mode", "profile", "requested_provider", "provider_mode", "fallback")
-SETTINGS_SHAPE = ('Body must be {"search"?: {"mode": "optimized" | "preset" | "direct", …}, "specialized"?: {"<live-data API>": {"use": "auto" | "always" | "off"}}}: '
-                  "a search credential sets these two and nothing else on the account.")
+NO_PROVIDER = ("Grounder routes each search by topic, so there is no provider or live-data setting to save. "
+               "A search is Grounder provider or Grounder direct.")
+ADD_ON = ('The add-on is gone: a search is Grounder provider or Grounder direct, never both. '
+          'Save "grounder-provider" or "grounder-direct" as search.mode (direct.use "off" or "only").')
 
 
 FIRST_USE = []  # the plugin's real ``_first_use_line``, kept by the ``plugin`` fixture
@@ -155,58 +158,62 @@ class Stub:
         self.features_body = {"features": []}
         self.providers_body = {"providers": [], "live_data_apis": []}
         self.rejected = {"revoked-token", "revoked-key"}  # bearers /v1/search answers 401 for
-        # The account's saved search setting, the one grounder.net's Routing page shows too: a test that changes these plays a change made on the site.
-        self.saved_search = dict(SETTINGS["answer"]["search"])
-        self.saved_direct = None  # the account's ``direct`` block ({use, format, user_agent}); None is a server that has none
-        self.saved_live = {}  # {live-data API id: "always" | "off"}; one not here is Grounder decides
-        self.off_providers = set()  # providers turned off on the account: saving one as the search provider is a 400
+        # The account's saved Grounder direct block, the one grounder.net's Routing page shows too: a test that changes it plays a change made on the site.
+        # search.mode is read from its use, as the server reads it.
+        self.saved_direct = dict(SETTINGS["answer"]["direct"])
         self.settings_script = []  # (status, body) answers to the next reads and writes of the setting, in order, before the stub answers as the server does
 
     def settings_answer(self):
-        live = {api["id"]: {"use": self.saved_live.get(api["id"], "auto")} for api in self.providers_body.get("live_data_apis", [])}
-        live.update({ident: {"use": use} for ident, use in self.saved_live.items()})
-        return {**SETTINGS["answer"], "search": dict(self.saved_search), "specialized": live, **({"direct": dict(self.saved_direct)} if self.saved_direct is not None else {})}
+        mode = "grounder-direct" if self.saved_direct.get("use") == "only" else "grounder-provider"
+        return {**SETTINGS["answer"], "search": {**SETTINGS["answer"]["search"], "mode": mode},
+                "direct": {"user_agent": None, **self.saved_direct}}
 
     def apply_settings(self, change):
-        """The server's PUT: the 400 message when it refuses ``change`` (nothing is saved then), else None once saved."""
+        """The server's PUT (topic-settings.ts saveTopicSettings, routing-settings.ts applyDirect): the 400 message when it refuses ``change``
+        (nothing is saved then), else None once saved."""
         if not isinstance(change, dict) or not change:
-            return SETTINGS_SHAPE
-        other = next((key for key in change if key not in ("search", "specialized", "direct")), None)
+            return "Send an object with a saved search or direct setting."
+        other = next((key for key in change if key not in ("search", "direct", "providers", "fallback", "specialized")), None)
         if other is not None:
-            return f"{other} is not part of the saved search setting. {SETTINGS_SHAPE}"
-        search, live = dict(self.saved_search), dict(self.saved_live)
-        if "direct" in change:
-            given = change["direct"]
-            if not isinstance(given, dict) or any(k not in ("use", "format", "user_agent") for k in given):
-                return "direct must be {use?, format?, user_agent?}"
-            if given.get("use") not in (None, "off", "only") or given.get("format") not in (None, "full-page", "highlights", "summary"):
-                return "direct.use must be off or only; direct.format full-page, highlights or summary"
-            self.saved_direct = {**(self.saved_direct or {"use": "off", "format": "summary"}), **given}
-        if "search" in change:
-            given = change["search"]
-            if not isinstance(given, dict):
-                return 'search must be {"mode": "optimized" | "preset" | "direct", …}'
-            unknown = next((key for key in given if key not in SEARCH_KEYS), None)
-            if unknown is not None:
-                return f"Unknown setting: search.{unknown}"
-            mode = given.get("mode")
-            if mode not in ("grounder-provider", "grounder-direct", "optimized"):
-                return "search.mode must be grounder-provider or grounder-direct"
-            if mode != "optimized":
-                use = "only" if mode == "grounder-direct" else "off"
-                if change.get("direct", {}).get("use", use) != use:
-                    return "search.mode and direct.use disagree"
-                self.saved_direct = {**(self.saved_direct or {"format": "summary"}), "use": use}
-                search = {**SETTINGS["answer"]["search"], "mode": mode}
-        known = {api["id"] for api in self.providers_body.get("live_data_apis", [])} | set(self.saved_live)
-        for ident, entry in (change.get("specialized") or {}).items():
-            if ident not in known:
-                return f"No such specialized API: {ident}"
-            use = entry.get("use") if isinstance(entry, dict) else None
-            if use not in ("auto", "always", "off"):
-                return f"specialized.{ident}.use must be one of auto, always, off"
-            live.pop(ident, None) if use == "auto" else live.__setitem__(ident, use)
-        self.saved_search, self.saved_live = search, live
+            return f"{other[:40]} is not part of the saved search setting."
+        if "specialized" in change:
+            return NO_PROVIDER
+        if "search" in change and not isinstance(change["search"], dict):
+            return "search must contain a mode."
+        if "direct" in change and not isinstance(change["direct"], dict):
+            return "direct must contain a use, format or user_agent."
+        mode = change["search"].get("mode") if isinstance(change.get("search"), dict) else None
+        if mode is not None and mode not in ("optimized", "grounder-provider", "grounder-direct"):
+            return NO_PROVIDER
+        direct = dict(change.get("direct") or {})
+        if direct.get("use") == "add-on":
+            return ADD_ON
+        if mode in ("grounder-provider", "grounder-direct"):
+            use = "only" if mode == "grounder-direct" else "off"
+            if direct.get("use") is not None and direct["use"] != use:
+                return "search.mode and direct.use must choose the same way to search."
+            direct["use"] = use
+        saved = dict(self.saved_direct)
+        for key in direct:
+            if key not in ("use", "format", "user_agent"):
+                return f"direct.{key[:40]} is not a Grounder direct setting. Use use, format or user_agent."
+        if direct.get("use") is not None:
+            if direct["use"] not in ("off", "only"):
+                return "direct.use must be one of off, only."
+            saved["use"] = direct["use"]
+        if direct.get("format") is not None:
+            if direct["format"] not in ("full-page", "highlights", "summary"):
+                return "direct.format must be one of full-page, highlights, summary."
+            saved["format"] = direct["format"]
+        if "user_agent" in direct:
+            agent = direct["user_agent"]
+            if agent in (None, ""):
+                saved["user_agent"] = None
+            elif not isinstance(agent, str) or len(agent) > SETTINGS["answer"]["choices"]["direct"]["user_agent_max"]:
+                return "direct.user_agent must be a browser user agent."
+            else:
+                saved["user_agent"] = agent
+        self.saved_direct = saved
         return None
 
     def settings(self, method, body):

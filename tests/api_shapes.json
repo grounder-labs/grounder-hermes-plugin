@@ -1,111 +1,373 @@
 {
-  "query": "What is the capital of Freedonia?",
-  "early": {
-    "whole_chars": 3263,
-    "text": "The capital of Freedonia is Fredville, a port city on the northern coast. The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging schedules. The harbour board met on day 7 to discuss mooring fees and dredging schedules. The harbour board met on day 8 to discuss mooring fees and dredging"
-  },
-  "late": {
-    "whole_chars": 6453,
-    "text": "The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging … The harbour board met on day 39 to discuss mooring fees and dredging schedules. The capital of Freedonia is Fredville, a port city on the northern coast. The harbour board met on day 0 to discuss mooring fees and dredging schedules."
-  },
-  "none": {
-    "whole_chars": 6379,
-    "text": "The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging schedules. The harbour board met on day 7 to discuss mooring fees and dredging schedules. The harbour board met on day 8 to discuss mooring fees and dredging schedules. The harbour board met on day 9 to discuss mooring fees and dredging schedules. The harbou"
-  },
-  "short": {
-    "whole_chars": 38,
-    "text": "Fredville is the capital of Freedonia."
-  },
-  "long": {
-    "whole_chars": 100000,
-    "text": "The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging … The harbour board met on day 39 to discuss mooring fees and dredging schedules. The capital of Freedonia is Fredville, a port city on the northern coast. The harbour board met on day 0 to discuss mooring fees and dredging schedules."
-  },
-  "settings": {
-    "about": "What GET /v1/search/settings answers for an account that has saved nothing (workers/router/src/routes/search-settings.ts, `view`); PUT answers the same shape. The plugin reads `search` and `specialized` and ignores the rest. Trimmed to two live-data APIs and `choices.search`; the profiles are the public list's. A PUT sends `search` and/or `specialized` only (anything else is a 400); `specialized` is partial.",
-    "answer": {
-      "search": {
-        "mode": "optimized",
-        "profile": null,
-        "requested_provider": null,
-        "provider_mode": null,
-        "fallback": false
-      },
-      "specialized": {
-        "polymarket": {
-          "use": "auto"
-        },
-        "espn": {
-          "use": "auto"
-        }
-      },
-      "updated_at": null,
-      "choices": {
-        "search": {
-          "modes": [
-            "optimized",
-            "preset",
-            "direct"
-          ],
-          "profiles": [
-            {
-              "id": "fast",
-              "name": "Fast",
-              "description": "The quickest answer: one provider call, and no deep-research modes."
-            },
-            {
-              "id": "cheap",
-              "name": "Cheap",
-              "description": "One call to a lower-priced provider."
-            },
-            {
-              "id": "live",
-              "name": "Live",
-              "description": "Pages from the last seven days, and no deep-research modes; a score, a quote or another live value is answered by its live-data source."
-            },
-            {
-              "id": "deep",
-              "name": "Deep",
-              "description": "Deep research for a thorough, cited answer: it reads many pages, so it takes longer than one search."
-            },
-            {
-              "id": "code",
-              "name": "Code",
-              "description": "Library and framework documentation, code examples and developer answers."
-            },
-            {
-              "id": "balanced",
-              "name": "Balanced",
-              "description": "The best all-round answer: one provider call."
-            }
-          ]
-        }
-      }
+ "query": "What is the capital of Freedonia?",
+ "early": {
+  "whole_chars": 3263,
+  "text": "The capital of Freedonia is Fredville, a port city on the northern coast. The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging schedules. The harbour board met on day 7 to discuss mooring fees and dredging schedules. The harbour board met on day 8 to discuss mooring fees and dredging"
+ },
+ "late": {
+  "whole_chars": 6453,
+  "text": "The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging … The harbour board met on day 39 to discuss mooring fees and dredging schedules. The capital of Freedonia is Fredville, a port city on the northern coast. The harbour board met on day 0 to discuss mooring fees and dredging schedules."
+ },
+ "none": {
+  "whole_chars": 6379,
+  "text": "The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging schedules. The harbour board met on day 7 to discuss mooring fees and dredging schedules. The harbour board met on day 8 to discuss mooring fees and dredging schedules. The harbour board met on day 9 to discuss mooring fees and dredging schedules. The harbou"
+ },
+ "short": {
+  "whole_chars": 38,
+  "text": "Fredville is the capital of Freedonia."
+ },
+ "long": {
+  "whole_chars": 100000,
+  "text": "The harbour board met on day 0 to discuss mooring fees and dredging schedules. The harbour board met on day 1 to discuss mooring fees and dredging schedules. The harbour board met on day 2 to discuss mooring fees and dredging schedules. The harbour board met on day 3 to discuss mooring fees and dredging schedules. The harbour board met on day 4 to discuss mooring fees and dredging schedules. The harbour board met on day 5 to discuss mooring fees and dredging schedules. The harbour board met on day 6 to discuss mooring fees and dredging … The harbour board met on day 39 to discuss mooring fees and dredging schedules. The capital of Freedonia is Fredville, a port city on the northern coast. The harbour board met on day 0 to discuss mooring fees and dredging schedules."
+ },
+ "settings": {
+  "about": "Written by workers/router/test/surface-parity.test.ts from what GET and PUT /v1/search/settings answer, each PUT on a fresh account; never by hand. tests/test_server_shapes.py replays each exchange against the fake server in conftest.py; an exchange keeps the parts of the answer the plugin reads.",
+  "answer": {
+   "search": {
+    "mode": "grounder-provider",
+    "profile": null,
+    "requested_provider": null,
+    "provider_mode": null,
+    "fallback": false
+   },
+   "direct": {
+    "use": "off",
+    "format": "summary",
+    "user_agent": null
+   },
+   "specialized": {},
+   "updated_at": null,
+   "choices": {
+    "search": {
+     "modes": [
+      "grounder-provider",
+      "grounder-direct"
+     ],
+     "profiles": []
     },
-    "puts": [
-      {
-        "search": {
-          "mode": "optimized"
-        }
-      },
-      {
-        "search": {
-          "mode": "preset",
-          "profile": "fast"
-        }
-      },
-      {
-        "search": {
-          "mode": "direct",
-          "requested_provider": "exa",
-          "provider_mode": "instant",
-          "fallback": false
-        },
-        "specialized": {
-          "espn": {
-            "use": "always"
-          }
-        }
+    "providers": [],
+    "specialized": [],
+    "direct": {
+     "uses": [
+      "off",
+      "only"
+     ],
+     "formats": [
+      "full-page",
+      "highlights",
+      "summary"
+     ],
+     "user_agent_max": 512
+    }
+   },
+   "mac_reads": {
+    "record": false
+   }
+  },
+  "exchanges": [
+   {
+    "body": {
+     "search": {
+      "mode": "grounder-direct"
+     }
+    },
+    "status": 200,
+    "answer": {
+     "search": {
+      "mode": "grounder-direct",
+      "profile": null,
+      "requested_provider": null,
+      "provider_mode": null,
+      "fallback": false
+     },
+     "direct": {
+      "use": "only",
+      "format": "summary",
+      "user_agent": null
+     },
+     "specialized": {}
+    }
+   },
+   {
+    "body": {
+     "search": {
+      "mode": "grounder-provider"
+     }
+    },
+    "status": 200,
+    "answer": {
+     "search": {
+      "mode": "grounder-provider",
+      "profile": null,
+      "requested_provider": null,
+      "provider_mode": null,
+      "fallback": false
+     },
+     "direct": {
+      "use": "off",
+      "format": "summary",
+      "user_agent": null
+     },
+     "specialized": {}
+    }
+   },
+   {
+    "body": {
+     "direct": {
+      "format": "highlights"
+     }
+    },
+    "status": 200,
+    "answer": {
+     "search": {
+      "mode": "grounder-provider",
+      "profile": null,
+      "requested_provider": null,
+      "provider_mode": null,
+      "fallback": false
+     },
+     "direct": {
+      "use": "off",
+      "format": "highlights",
+      "user_agent": null
+     },
+     "specialized": {}
+    }
+   },
+   {
+    "body": {
+     "direct": {
+      "user_agent": "Mozilla/5.0 (Macintosh) Test"
+     }
+    },
+    "status": 200,
+    "answer": {
+     "search": {
+      "mode": "grounder-provider",
+      "profile": null,
+      "requested_provider": null,
+      "provider_mode": null,
+      "fallback": false
+     },
+     "direct": {
+      "use": "off",
+      "format": "summary",
+      "user_agent": "Mozilla/5.0 (Macintosh) Test"
+     },
+     "specialized": {}
+    }
+   },
+   {
+    "body": {
+     "search": {
+      "mode": "grounder-direct"
+     },
+     "direct": {
+      "format": "full-page"
+     }
+    },
+    "status": 200,
+    "answer": {
+     "search": {
+      "mode": "grounder-direct",
+      "profile": null,
+      "requested_provider": null,
+      "provider_mode": null,
+      "fallback": false
+     },
+     "direct": {
+      "use": "only",
+      "format": "full-page",
+      "user_agent": null
+     },
+     "specialized": {}
+    }
+   },
+   {
+    "body": {},
+    "status": 400,
+    "message": "Send an object with a saved search or direct setting."
+   },
+   {
+    "body": {
+     "other": true
+    },
+    "status": 400,
+    "message": "other is not part of the saved search setting."
+   },
+   {
+    "body": {
+     "search": {
+      "mode": "sideways"
+     }
+    },
+    "status": 400,
+    "message": "Grounder routes each search by topic, so there is no provider or live-data setting to save. A search is Grounder provider or Grounder direct."
+   },
+   {
+    "body": {
+     "search": {
+      "mode": "grounder-direct",
+      "colour": "blue"
+     }
+    },
+    "status": 200,
+    "answer": {
+     "search": {
+      "mode": "grounder-direct",
+      "profile": null,
+      "requested_provider": null,
+      "provider_mode": null,
+      "fallback": false
+     },
+     "direct": {
+      "use": "only",
+      "format": "summary",
+      "user_agent": null
+     },
+     "specialized": {}
+    }
+   },
+   {
+    "body": {
+     "direct": {
+      "format": "everything"
+     }
+    },
+    "status": 400,
+    "message": "direct.format must be one of full-page, highlights, summary."
+   },
+   {
+    "body": {
+     "direct": {
+      "use": "sometimes"
+     }
+    },
+    "status": 400,
+    "message": "direct.use must be one of off, only."
+   },
+   {
+    "body": {
+     "specialized": {
+      "nowhere": {
+       "use": "always"
       }
-    ]
+     }
+    },
+    "status": 400,
+    "message": "Grounder routes each search by topic, so there is no provider or live-data setting to save. A search is Grounder provider or Grounder direct."
+   }
+  ]
+ },
+ "search": {
+  "about": "Written by workers/router/test/surface-parity.test.ts from what POST /v1/search answers for `query` against fake pages; ids, times, latencies and the timed steps are blanked, and the site the question was routed to is written as source.example. Never by hand.",
+  "query": "When was the main building finished?",
+  "answer": {
+   "query": "When was the main building finished?",
+   "topics": [
+    {
+     "id": "-",
+     "name": "A chosen source",
+     "source": "source.example",
+     "server": "exa",
+     "reached": "provider",
+     "status": "ok",
+     "result_count": 2
+    }
+   ],
+   "results": [
+    {
+     "id": "-",
+     "url": "https://source.example/building",
+     "domain": "source.example",
+     "canonical_url": "source.example/building",
+     "title": "The main building",
+     "text": "The building was finished in 1935.",
+     "score": 1,
+     "rank": 1,
+     "provenance": {
+      "provider": "exa",
+      "found_by": [
+       "exa"
+      ],
+      "licensed": true,
+      "promoted": "none",
+      "topic": "source.example",
+      "source": "source.example",
+      "licensed_basis": "robots-allowed",
+      "publisher": {
+       "name": "source.example",
+       "domain": "source.example"
+      }
+     },
+     "published_date": "2026-01-02",
+     "fetched": {
+      "at": null,
+      "live": false
+     }
+    },
+    {
+     "id": "-",
+     "url": "https://source.example/history",
+     "domain": "source.example",
+     "canonical_url": "source.example/history",
+     "title": "A history of the building",
+     "text": "Construction began in 1931.",
+     "score": 0.5,
+     "rank": 2,
+     "provenance": {
+      "provider": "exa",
+      "found_by": [
+       "exa"
+      ],
+      "licensed": true,
+      "promoted": "none",
+      "topic": "source.example",
+      "source": "source.example",
+      "licensed_basis": "robots-allowed",
+      "publisher": {
+       "name": "source.example",
+       "domain": "source.example"
+      }
+     },
+     "fetched": {
+      "at": null,
+      "live": false
+     }
+    }
+   ],
+   "routing": {
+    "policy": "ranked",
+    "calls": [
+     {
+      "provider": "exa",
+      "status": "ok",
+      "latency_ms": 0,
+      "result_count": 2,
+      "results_requested": 10,
+      "unique_result_count": 2,
+      "topic": "source.example",
+      "source": "source.example"
+     }
+    ],
+    "mode": "grounder-provider",
+    "provider": "exa"
+   },
+   "usage": {
+    "latency_ms": 0,
+    "steps": [],
+    "cached": false,
+    "licensed_result_count": 2,
+    "cost_usd": 0,
+    "free_search": true,
+    "free_searches_left": 49
+   },
+   "root_query_id": "-",
+   "response_count": 0,
+   "counting_started_at": "-",
+   "historical_count_known": false,
+   "request_id": "-",
+   "citation_request": "Cite every result your answer uses by its \"Cite as\" line (its title linked, then its site and its date), in this answer and in every later one in this chat, not only the first."
   }
+ }
 }
