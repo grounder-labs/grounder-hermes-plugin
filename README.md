@@ -137,14 +137,14 @@ A question that fits no topic gives a plain message with no results and no charg
 Install the reader on macOS 13 or later with Safari, using the command on the [Grounder direct docs page](https://grounder.net/docs/direct).
 
 - `/search-direct-format` sets summary, full-page or highlights. Summary is the default. On the Mac, Hermes can ask your active model to write it from the page's first 20,000 characters.
-- `/search-login <site>` opens the site to save a sign-in in your Mac's login keychain. A connected account lists the site, Mac and save time. `/search-logout <site>` forgets it. You can also ask to read a page logged out. The reader and the sign-in window run with only `HOME` and `PATH` (and the resolver you chose), never Hermes's environment or your provider keys; the saved sites are listed from Grounder's own sign-ins folder, not the keychain.
+- Grounder direct reads every page logged out, with no cookies and no saved sign-in. It keeps none: an older version's saved sign-ins on your Mac (its sign-ins folder and keychain items) are deleted when the plugin loads. The reader runs with only `HOME` and `PATH` (and the resolver you chose), never Hermes's environment or your provider keys.
 - `/search resolver system` uses the Mac's resolver. `/search resolver grounder` uses Grounder's resolver. The choice stays on the Mac.
 
 A page that could not be read comes back with the reason. Grounder asks before another search. [Grounder direct documentation.](https://grounder.net/docs/direct)
 
 ## What is sent
 
-A search sends the query, relevant search options and the search credential when connected to `api.grounder.net`. Hosted page reads also send the page address. The Mac sends a locally read page's address and any saved sign-in cookies directly to its site. When the Mac is signed in to your Grounder account, it also tells Grounder your question and the site and path of each page you named, never the page's text, unless your account opted out of training. Grounder receives the host name for a DNS lookup only when you choose Grounder's resolver. The summary format can send the opening of the page and your question to your active model in Hermes.
+A search sends the query, relevant search options and the search credential when connected to `api.grounder.net`. Hosted page reads also send the page address. The Mac sends a locally read page's address directly to its site, with no cookies. When the Mac is signed in to your Grounder account, it also tells Grounder your question and the site and path of each page you named, never the page's text, unless your account opted out of training. Grounder receives the host name for a DNS lookup only when you choose Grounder's resolver. The summary format can send the opening of the page and your question to your active model in Hermes.
 
 Usage context is off by default. For usage reporting, the optional `post_api_request` hook shares the model name and random session and prompt tokens. To enable it, set `hermes config set web.grounder.share_usage_context true` and restart Hermes. [Privacy policy.](https://grounder.net/privacy)
 

@@ -4,36 +4,25 @@
 // Grounder direct: read one page in a hidden WebKit view, asked for with the user agent given (Safari's own), and print it as one JSON line.
 //
 //   direct-reader <url> <user agent> [most characters of text]   read one page
-//   direct-reader --signin <site> <user agent> [start address]   open a window to sign in to a site, and save that sign-in
-//   direct-reader --paste <site>                                 save a Cookie header for a site, typed or pasted at a hidden prompt
 //
-// With GROUNDER_DIRECT_SIGNED_OUT=1 a read uses no saved sign-in at all: nothing is read from the keychain or the sealed file, and nothing is saved back.
+// Every read is logged out: no saved sign-in, no cookie and no keychain item is read, set or saved (Grounder direct keeps none since 2026-11-27).
 //
 // With GROUNDER_DIRECT_RESOLVER set to a DNS-over-HTTPS address (Grounder's, when the user picks it), pages are looked up there instead of through this Mac's
 // resolver, so a filter on the Mac or its network does not decide what loads. The pages themselves still go straight from this Mac to each site, encrypted end
 // to end: the resolver learns which hosts are read, never what is on them. An answer that points at a private, loopback or link-local address is refused.
 //
-// Each read starts a fresh, empty session. Where the user saved a sign-in for the page's site, that site's cookies are set in it before the page is asked for, so
-// the site sees the user signed in, with the same user agent they signed in with; cookies the site changes while reading are saved back, so the sign-in stays
-// fresh. Nothing is kept for any other site. Each site's cookies are sealed (AES-GCM, the site's name authenticated with them) in a file only this user can read,
-// ~/Library/Application Support/Grounder Direct/sign-ins/<site>.sealed, under a key of its own that only the login keychain holds (service "grounder-direct",
-// one item a site, written through /usr/bin/security on its standard input). No cookie value is ever on a command line, in a log or in the output: output names a
-// site and counts its cookies. A site's own checks run as in any browser; nothing here solves or skips one.
+// Each read starts a fresh, empty session. Nothing is kept. A site's own checks run as in any browser; nothing here solves or skips one.
 
 import AppKit
-import CryptoKit
 import Network
 import WebKit
 
-let SERVICE = "grounder-direct"
-let LEGACY_SERVICE = "grounder-direct-dev"  // 0.8.0-dev.2 kept a site's whole sign-in in the item; still read, and moved to SERVICE when next saved
 let SECURITY = "/usr/bin/security"
-/// The home directory: ``HOME`` when it names one (so a test or a second profile can point the reader at its own store), else the user's own.
+/// The home directory: ``HOME`` when it names one (so a test or a second profile can point it at its own folder), else the user's own.
 func homeDirectory() -> URL {
     if let home = ProcessInfo.processInfo.environment["HOME"], home.hasPrefix("/") { return URL(fileURLWithPath: home, isDirectory: true) }
     return FileManager.default.homeDirectoryForCurrentUser
 }
-let STORE = homeDirectory().appendingPathComponent("Library/Application Support/Grounder Direct/sign-ins")
 let NOT_FOUND: Int32 = 44  // errSecItemNotFound, as security exits
 
 func printLine(_ object: [String: Any]) {
@@ -42,7 +31,7 @@ func printLine(_ object: [String: Any]) {
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
-// MARK: Saved sign-ins
+// MARK: Running /usr/bin/security
 
 /// Run /usr/bin/security with ``input`` on its standard input. It starts in a session of its own, with no terminal: run from a terminal it would otherwise ask
 /// that terminal for a key, and wait there, instead of reading what it is given.
@@ -71,203 +60,6 @@ func security(_ arguments: [String], input: String? = nil) -> (status: Int32, ou
     var status: Int32 = 0
     waitpid(pid, &status, 0)
     return ((status >> 8) & 0xff, String(decoding: out, as: UTF8.self))
-}
-
-/// The site a cookie domain belongs to: the site itself, one of its subdomains, or a parent domain of it.
-func belongs(_ domain: String, to site: String) -> Bool {
-    let bare = domain.hasPrefix(".") ? String(domain.dropFirst()) : domain
-    return bare == site || bare.hasSuffix("." + site) || site.hasSuffix("." + bare)
-}
-
-/// The sites a host's saved sign-in may be filed under, nearest first: ``old.reddit.com``, then ``reddit.com``.
-func sitesFor(_ host: String) -> [String] {
-    var labels = host.lowercased().split(separator: ".").map(String.init)
-    var out: [String] = []
-    while labels.count >= 2 {
-        out.append(labels.joined(separator: "."))
-        labels.removeFirst()
-    }
-    return out
-}
-
-func cookieRecord(_ cookie: HTTPCookie) -> [String: Any] {
-    var record: [String: Any] = ["name": cookie.name, "value": cookie.value, "domain": cookie.domain, "path": cookie.path,
-                                 "secure": cookie.isSecure, "httpOnly": cookie.isHTTPOnly]
-    if let expires = cookie.expiresDate { record["expires"] = expires.timeIntervalSince1970 }
-    if let policy = cookie.sameSitePolicy { record["sameSite"] = policy.rawValue }
-    return record
-}
-
-func cookie(from record: [String: Any]) -> HTTPCookie? {
-    guard let name = record["name"] as? String, let value = record["value"] as? String, let domain = record["domain"] as? String else { return nil }
-    var properties: [HTTPCookiePropertyKey: Any] = [.name: name, .value: value, .domain: domain, .path: (record["path"] as? String) ?? "/"]
-    if record["secure"] as? Bool == true { properties[.secure] = "TRUE" }
-    if record["httpOnly"] as? Bool == true { properties[HTTPCookiePropertyKey("HttpOnly")] = "TRUE" }
-    if let expires = record["expires"] as? Double {
-        if expires < Date().timeIntervalSince1970 { return nil }  // expired: the site would not take it either
-        properties[.expires] = Date(timeIntervalSince1970: expires)
-    }
-    if let policy = record["sameSite"] as? String { properties[.sameSitePolicy] = policy }
-    return HTTPCookie(properties: properties)
-}
-
-/// One cookie's identity and value, to tell whether a site changed its cookies during a read.
-func fingerprint(_ records: [[String: Any]]) -> [String] {
-    records.map { "\($0["domain"] ?? "")|\($0["path"] ?? "")|\($0["name"] ?? "")=\($0["value"] ?? "")" }.sorted()
-}
-
-enum Lookup {
-    case none
-    case found(site: String, cookies: [HTTPCookie], records: [[String: Any]])
-    case failed(String)
-}
-
-func sealedFile(_ site: String) -> URL { STORE.appendingPathComponent("\(site).sealed") }
-
-func records(from json: Data) -> [[String: Any]]? {
-    ((try? JSONSerialization.jsonObject(with: json)) as? [String: Any])?["cookies"] as? [[String: Any]]
-}
-
-enum Key {
-    case none
-    case key(SymmetricKey)
-    case legacy([[String: Any]])
-    case failed(String)
-}
-
-/// A site's key from the login keychain; or, from 0.8.0-dev.2, the sign-in itself. A keychain that cannot be read is a failure, not "no sign-in".
-func key(for site: String) -> Key {
-    let locked = { (status: Int32) in "could not read the sign-in saved for \(site) from the login keychain (security exited \(status); is the keychain locked?)" }
-    let (status, out) = security(["find-generic-password", "-s", SERVICE, "-a", site, "-w"])
-    if status == 0 {
-        guard let raw = Data(base64Encoded: out.trimmingCharacters(in: .whitespacesAndNewlines)), raw.count == 32 else {
-            return .failed("the key saved for \(site) is not one this reader made; sign in again with /search-login \(site)")
-        }
-        return .key(SymmetricKey(data: raw))
-    }
-    if status != NOT_FOUND { return .failed(locked(status)) }
-    let (old, legacy) = security(["find-generic-password", "-s", LEGACY_SERVICE, "-a", site, "-w"])
-    if old == NOT_FOUND { return .none }
-    if old != 0 { return .failed(locked(old)) }
-    guard let json = Data(base64Encoded: legacy.trimmingCharacters(in: .whitespacesAndNewlines)), let found = records(from: json) else {
-        return .failed("the sign-in saved for \(site) could not be read; sign in again with /search-login \(site)")
-    }
-    return .legacy(found)
-}
-
-/// The sign-in saved for a host, if there is one, nearest site first.
-func savedSignIn(for host: String) -> Lookup {
-    for site in sitesFor(host) {
-        var found: [[String: Any]]
-        switch key(for: site) {
-        case .none: continue
-        case .failed(let why): return .failed(why)
-        case .legacy(let old): found = old
-        case .key(let key):
-            guard let sealed = try? Data(contentsOf: sealedFile(site)) else {
-                return .failed("the keychain has a key for \(site) but its sealed sign-in is missing; sign in again with /search-login \(site)")
-            }
-            guard let box = try? AES.GCM.SealedBox(combined: sealed), let json = try? AES.GCM.open(box, using: key, authenticating: Data(site.utf8)),
-                  let opened = records(from: json) else {
-                return .failed("the sealed sign-in for \(site) does not open with its key; sign in again with /search-login \(site)")
-            }
-            found = opened
-        }
-        return .found(site: site, cookies: found.compactMap(cookie(from:)), records: found)
-    }
-    return .none
-}
-
-/// A site's cookies, each made to go to every subdomain and every page of the site (``.reddit.com``, path ``/``), so one sign-in covers the whole site. A
-/// ``__Host-`` cookie stays as the site set it: a browser takes one only for its own host. Where two become the same cookie, the one the site scoped most
-/// narrowly wins, as a browser would send it there.
-func widened(_ records: [[String: Any]], to site: String) -> [[String: Any]] {
-    var kept: [String: (rank: Int, record: [String: Any])] = [:]
-    for record in records {
-        guard let name = record["name"] as? String else { continue }
-        let domain = (record["domain"] as? String) ?? site
-        let rank = domain.count * 1000 + ((record["path"] as? String) ?? "/").count
-        var wide = record
-        if !name.hasPrefix("__Host-") {
-            wide["domain"] = "." + site
-            wide["path"] = "/"
-        }
-        let id = "\(wide["domain"] ?? "")|\(wide["path"] ?? "")|\(name)"
-        if let held = kept[id], held.rank >= rank { continue }
-        kept[id] = (rank, wide)
-    }
-    return kept.values.map { $0.record }
-}
-
-/// The cookies to set for one read. WebKit does not send a cookie set here for ``.reddit.com`` to ``www.reddit.com`` (checked 2026-11-19), only to the host
-/// named, so each site-wide cookie is set instead for the host being read, and for the site and its ``www.``, between which sites commonly redirect.
-func forHosts(_ cookies: [HTTPCookie], site: String, host: String) -> [HTTPCookie] {
-    var out = cookies.filter { !$0.domain.hasPrefix(".") || $0.name.hasPrefix("__Host-") }  // site-wide ones are replaced by their per-host copies
-    for cookie in cookies where cookie.domain.hasPrefix(".") && !cookie.name.hasPrefix("__Host-") {
-        for name in Set([host.lowercased(), site, "www." + site]) {
-            var properties = cookie.properties ?? [:]
-            properties[.domain] = name
-            if let copy = HTTPCookie(properties: properties) { out.append(copy) }
-        }
-    }
-    return out
-}
-
-/// Save a site's cookies, replacing what was saved for it: sealed in its file under its key, the key (new the first time) in the login keychain. Returns why
-/// not, or nil.
-func saveSignIn(site: String, records raw: [[String: Any]], how: String) -> String? {
-    let records = widened(raw, to: site)
-    let now = ISO8601DateFormatter().string(from: Date())
-    guard let json = try? JSONSerialization.data(withJSONObject: ["site": site, "saved": now, "how": how, "cookies": records]) else {
-        return "could not encode the cookies"
-    }
-    var siteKey: SymmetricKey
-    switch key(for: site) {
-    case .key(let existing): siteKey = existing
-    case .failed(let why): return why
-    case .none, .legacy: siteKey = SymmetricKey(size: .bits256)
-    }
-    let encoded = siteKey.withUnsafeBytes { Data($0) }.base64EncodedString()
-    // The key goes on security's standard input (asked for twice, as it asks a person), never on its command line. The comment names no value.
-    let (status, _) = security(["add-generic-password", "-U", "-s", SERVICE, "-a", site, "-l", "Grounder direct sign-in key: \(site)",
-                                "-j", "saved \(now) by \(how), \(records.count) cookies", "-w"], input: "\(encoded)\n\(encoded)\n")
-    if status != 0 { return "security exited \(status) saving the key to the login keychain" }
-    do {
-        try FileManager.default.createDirectory(at: STORE, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let sealed = try AES.GCM.seal(json, using: siteKey, authenticating: Data(site.utf8))
-        guard let combined = sealed.combined else { return "could not seal the cookies" }
-        let partial = STORE.appendingPathComponent(".\(site).\(UUID().uuidString).partial")
-        FileManager.default.createFile(atPath: partial.path, contents: nil, attributes: [.posixPermissions: 0o600])
-        try combined.write(to: partial)
-        _ = try FileManager.default.replaceItemAt(sealedFile(site), withItemAt: partial)
-    } catch {
-        return "could not write the sealed sign-in: \(error.localizedDescription)"
-    }
-    _ = security(["delete-generic-password", "-s", LEGACY_SERVICE, "-a", site])  // moved: the 0.8.0-dev.2 item, if there was one, is no longer needed
-    return nil
-}
-
-/// A line typed or pasted at a hidden prompt on the terminal. Raw, not line mode: macOS cuts a line-mode line at 1024 characters, and a Cookie header is longer.
-func hiddenLine(_ prompt: String) -> String? {
-    let tty = open("/dev/tty", O_RDWR)
-    guard tty >= 0 else { return nil }
-    defer { close(tty) }
-    var saved = termios()
-    tcgetattr(tty, &saved)
-    var raw = saved
-    raw.c_lflag &= ~tcflag_t(ECHO | ICANON)
-    tcsetattr(tty, TCSAFLUSH, &raw)
-    defer { tcsetattr(tty, TCSAFLUSH, &saved); _ = write(tty, "\n", 1) }
-    _ = prompt.withCString { write(tty, $0, strlen($0)) }
-    var bytes: [UInt8] = []
-    var byte: UInt8 = 0
-    while read(tty, &byte, 1) == 1 {
-        if byte == 10 || byte == 13 { break }
-        if byte == 3 || byte == 4 { return nil }  // Control-C, Control-D: nothing saved
-        if byte == 127 || byte == 8 { if !bytes.isEmpty { bytes.removeLast() }; continue }
-        bytes.append(byte)
-    }
-    return String(decoding: bytes, as: UTF8.self)
 }
 
 // MARK: Which addresses may be read
@@ -622,8 +414,6 @@ final class Reader: NSObject, WKNavigationDelegate {
     var tries = 0  // reads of a page that showed no text yet
     var leftFor: String?  // the other site a shown page tried to send the browser to
     var requested: URL?  // the address asked for
-    var site: String?  // the site whose saved sign-in this read carries
-    var sent: [[String: Any]] = []
     var lookedUp: [String: Bool] = [:]  // host: whether this Mac's resolver gave only public addresses for it
 
     init(userAgent: String, maxChars: Int) {
@@ -641,17 +431,6 @@ final class Reader: NSObject, WKNavigationDelegate {
         done = true
         printLine(object)
         exit(0)
-    }
-
-    /// Set the saved cookies in this read's empty session, then go on.
-    func setCookies(_ cookies: [HTTPCookie], then next: @escaping () -> Void) {
-        let store = web.configuration.websiteDataStore.httpCookieStore
-        let group = DispatchGroup()
-        for cookie in cookies {
-            group.enter()
-            store.setCookie(cookie) { group.leave() }
-        }
-        group.notify(queue: .main, execute: next)
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
@@ -783,256 +562,21 @@ final class Reader: NSObject, WKNavigationDelegate {
         }
     }
 
-    /// Say which saved sign-in the read carried (the site and how many cookies, never their values), and save back what the site changed.
+    /// Say whether the read went through Grounder's resolver, and print the page.
     func finish(_ page: [String: Any]) {
         var page = page
         if tunnel?.resolver != nil { page["resolver"] = "grounder" }
-        guard let site = site else { return emit(page) }
-        page["signed_in"] = site
-        page["cookies_sent"] = sent.count
-        web.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-            let now = widened(cookies.filter { belongs($0.domain, to: site) }.map(cookieRecord), to: site)  // the per-host copies fold back into one
-            if self.status < 400, !now.isEmpty, fingerprint(now) != fingerprint(widened(self.sent, to: site)) {
-                if let why = saveSignIn(site: site, records: now, how: "refresh") {
-                    page["sign_in_not_refreshed"] = why
-                } else {
-                    page["sign_in_refreshed"] = true
-                }
-            }
-            self.emit(page)
-        }
+        emit(page)
     }
-}
-
-// MARK: Sign in to a site in a window
-
-final class SignIn: NSObject, NSWindowDelegate, WKUIDelegate {
-    let site: String
-    let userAgent: String
-    let window: NSWindow
-    let web: WKWebView
-    var finished = false
-    var popups: [ObjectIdentifier: (web: WKWebView, window: NSWindow)] = [:]  // windows the site opened (a "Continue with Google" popup), kept until closed
-
-    init(site: String, userAgent: String, start: URL) {
-        self.site = site
-        self.userAgent = userAgent
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
-        web = WKWebView(frame: .zero, configuration: config)
-        web.customUserAgent = userAgent  // the user agent every read of the site carries, so the site sees one browser
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 800), styleMask: [.titled, .closable, .resizable, .miniaturizable],
-                          backing: .buffered, defer: false)
-        super.init()
-        web.uiDelegate = self
-        window.title = "Grounder direct: sign in to \(site)"
-        window.delegate = self
-        window.isReleasedWhenClosed = false
-
-        let note = NSTextField(wrappingLabelWithString: "Sign in to \(site) above, then click Save sign-in. Its cookies for \(site) are sealed on this Mac under a key in your "
-                               + "login keychain, and sent only to \(site), when Grounder direct reads one of its pages. Cancel or closing this window saves nothing.")
-        note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        note.textColor = .secondaryLabelColor
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelPressed))
-        let save = NSButton(title: "Save sign-in", target: self, action: #selector(savePressed))
-        save.keyEquivalent = "s"
-        save.keyEquivalentModifierMask = .command
-        save.bezelColor = .controlAccentColor
-        let bar = NSStackView(views: [note, cancel, save])
-        bar.orientation = .horizontal
-        bar.alignment = .centerY
-        bar.spacing = 12
-        bar.edgeInsets = NSEdgeInsets(top: 10, left: 16, bottom: 10, right: 16)
-        note.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        cancel.setContentHuggingPriority(.required, for: .horizontal)
-        save.setContentHuggingPriority(.required, for: .horizontal)
-
-        let column = NSStackView(views: [web, bar])
-        column.orientation = .vertical
-        column.spacing = 0
-        column.setHuggingPriority(.defaultLow, for: .vertical)
-        web.setContentHuggingPriority(.defaultLow, for: .vertical)
-        window.contentView = column
-        window.center()
-    }
-
-    /// Show the window, with the sign-in already saved for the site set in it, so it opens as the site last saw the user.
-    func show(start: URL, existing: [HTTPCookie]) {
-        let store = web.configuration.websiteDataStore.httpCookieStore
-        let group = DispatchGroup()
-        for cookie in existing {
-            group.enter()
-            store.setCookie(cookie) { group.leave() }
-        }
-        group.notify(queue: .main) {
-            self.web.load(URLRequest(url: start))
-            self.window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-        }
-    }
-
-    @objc func cancelPressed() { window.close() }
-
-    @objc func savePressed() {
-        web.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-            let records = cookies.filter { belongs($0.domain, to: self.site) }.map(cookieRecord)
-            if records.isEmpty {
-                let alert = NSAlert()
-                alert.messageText = "No cookies for \(self.site) yet"
-                alert.informativeText = "Sign in to \(self.site) in this window first, or click Cancel."
-                alert.beginSheetModal(for: self.window)
-                return
-            }
-            if let why = saveSignIn(site: self.site, records: records, how: "signin") {
-                let alert = NSAlert()
-                alert.messageText = "Could not save the sign-in"
-                alert.informativeText = why
-                alert.beginSheetModal(for: self.window)
-                return
-            }
-            self.finished = true
-            printLine(["site": self.site, "saved": records.count, "names": records.compactMap { $0["name"] as? String }.sorted()])
-            exit(0)
-        }
-    }
-
-    /// A window the site opens, such as the one "Continue with Google" opens: without this WebKit drops it and the button does nothing. It is made from the
-    /// configuration WebKit passes, so it shares this window's session (its cookies land where Save sign-in reads them) and the page that opened it can hear
-    /// back from it, and it carries the same user agent.
-    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction,
-                 windowFeatures: WKWindowFeatures) -> WKWebView? {
-        let child = WKWebView(frame: .zero, configuration: configuration)
-        child.customUserAgent = userAgent
-        child.uiDelegate = self
-        let width = windowFeatures.width.map { CGFloat($0.doubleValue) } ?? 600
-        let height = windowFeatures.height.map { CGFloat($0.doubleValue) } ?? 700
-        let popup = NSWindow(contentRect: NSRect(x: 0, y: 0, width: max(width, 400), height: max(height, 500)),
-                             styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-        popup.title = "Grounder direct: a window \(site) opened"
-        popup.isReleasedWhenClosed = false
-        popup.contentView = child
-        popup.delegate = self
-        let frame = window.frame
-        popup.setFrameOrigin(NSPoint(x: frame.midX - popup.frame.width / 2, y: frame.midY - popup.frame.height / 2))
-        popups[ObjectIdentifier(child)] = (child, popup)
-        popup.makeKeyAndOrderFront(nil)
-        return child
-    }
-
-    /// The page in a window the site opened closed it (``window.close()``), as Google's does once it has handed the sign-in back.
-    func webViewDidClose(_ webView: WKWebView) {
-        popups[ObjectIdentifier(webView)]?.window.close()
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        if let closing = notification.object as? NSWindow, closing !== window {  // a window the site opened: drop it, the sign-in window stays
-            if let key = popups.first(where: { $0.value.window === closing })?.key { popups[key] = nil }
-            return
-        }
-        if !finished {
-            printLine(["site": site, "canceled": true])
-            exit(0)
-        }
-    }
-}
-
-/// An app menu (Quit) and an Edit menu, so a password can be pasted into the site's form with Command-V.
-func installMenus() {
-    let main = NSMenu()
-    let appItem = NSMenuItem()
-    let appMenu = NSMenu()
-    appMenu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-    appItem.submenu = appMenu
-    main.addItem(appItem)
-    let editItem = NSMenuItem()
-    let edit = NSMenu(title: "Edit")
-    edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-    edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
-    edit.addItem(.separator())
-    edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-    edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-    edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-    edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-    editItem.submenu = edit
-    main.addItem(editItem)
-    NSApp.mainMenu = main
 }
 
 // MARK: Main
 
-func validSite(_ raw: String) -> String? {
-    let site = raw.lowercased()
-    return site.range(of: "^[a-z0-9-]+(\\.[a-z0-9-]+)+$", options: .regularExpression) != nil ? site : nil
-}
-
-/// The reader itself. ``args`` is a command line: ``args[0]`` the program, then ``<url> <user agent> [max]``, ``--signin ...`` or ``--paste ...``. Built alone
+/// The reader itself. ``args`` is a command line: ``args[0]`` the program, then ``<url> <user agent> [max]``. Built alone
 /// (the Hermes plugin's fallback) the file calls it with this process's own arguments; built into grounder-direct that binary's
 /// ``reader`` subcommand does.
 func readerMain(_ args: [String]) -> Never {
 let app = NSApplication.shared
-
-if args.count >= 2, args[1] == "--paste" {
-    // A Cookie header (``name=value; other=value``) for a site, from standard input: for a site that will not sign in inside this window.
-    guard args.count >= 3, let site = validSite(args[2]) else {
-        printLine(["error": "usage: direct-reader --paste <site>"])
-        exit(64)
-    }
-    let typed = isatty(STDIN_FILENO) == 1
-        ? hiddenLine("Cookie header for \(site) (hidden; from Safari's Web Inspector, Network, a request to \(site), its Cookie header): ")
-        : String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
-    guard let typed = typed else {
-        printLine(["error": "nothing was entered, so nothing was saved"])
-        exit(65)
-    }
-    let header = typed.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "^[Cc]ookie:\\s*", with: "", options: .regularExpression)
-    var records: [[String: Any]] = []
-    for part in header.split(separator: ";") {
-        let pair = part.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-        guard pair.count == 2, !pair[0].isEmpty else { continue }
-        records.append(["name": pair[0], "value": pair[1], "domain": "." + site, "path": "/", "secure": true, "httpOnly": true])
-    }
-    if records.isEmpty {
-        printLine(["error": "no cookies in what was pasted; paste the request's Cookie header, name=value pairs split by semicolons"])
-        exit(65)
-    }
-    if let why = saveSignIn(site: site, records: records, how: "paste") {
-        printLine(["error": why])
-        exit(70)
-    }
-    printLine(["site": site, "saved": records.count, "names": records.compactMap { $0["name"] as? String }.sorted()])
-    exit(0)
-}
-
-if args.count >= 2, args[1] == "--signin" {
-    guard args.count >= 4, let site = validSite(args[2]) else {
-        printLine(["error": "usage: direct-reader --signin <site> <user agent> [start address]"])
-        exit(64)
-    }
-    let start = args.count > 4 ? URL(string: args[4]) : URL(string: "https://\(site)/")
-    guard let start = start, start.scheme == "https" else {
-        printLine(["error": "the start address must be an https address"])
-        exit(64)
-    }
-    var existing: [HTTPCookie] = []
-    switch savedSignIn(for: site) {
-    case .found(let saved, let cookies, _) where saved == site: existing = cookies
-    case .failed(let why):
-        printLine(["error": why])
-        exit(70)
-    default: break
-    }
-    app.setActivationPolicy(.regular)
-    installMenus()
-    let signIn = SignIn(site: site, userAgent: args[3], start: start)
-    useResolver(signIn.web.configuration.websiteDataStore) { problem in
-        if let problem = problem {
-            printLine(["error": problem])
-            exit(70)
-        }
-        signIn.show(start: start, existing: existing)
-    }
-    app.run()
-}
 
 guard args.count >= 3, let url = URL(string: args[1]) else {
     printLine(["error": "usage: direct-reader <url> <user agent> [max chars]"])
@@ -1048,19 +592,7 @@ useResolver(reader.web.configuration.websiteDataStore, always: true) { problem i
         printLine(["error": problem, "status": 0])
         exit(0)
     }
-    // GROUNDER_DIRECT_SIGNED_OUT=1: a logged-out read, asked for or after a sign-in that could not be used. No saved sign-in is looked up, set or saved back.
-    let signedOut = ProcessInfo.processInfo.environment["GROUNDER_DIRECT_SIGNED_OUT"] == "1"
-    switch signedOut ? .none : savedSignIn(for: url.host ?? "") {
-    case .failed(let why):
-        printLine(["error": why, "status": 0])
-        exit(0)
-    case .found(let site, let cookies, let records):
-        reader.site = site
-        reader.sent = records.filter { record in cookies.contains { $0.name == record["name"] as? String && $0.domain == record["domain"] as? String } }
-        reader.setCookies(forHosts(cookies, site: site, host: url.host ?? site)) { reader.web.load(request) }
-    case .none:
-        reader.web.load(request)
-    }
+    reader.web.load(request)
 }
 DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
     reader.emit(["error": "timed out after 30 s", "status": reader.status])

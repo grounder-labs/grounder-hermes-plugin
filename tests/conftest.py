@@ -124,8 +124,8 @@ def _load_plugin():
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    # No test syncs the saved sign-ins by itself (that lists this Mac's login keychain and calls Grounder); the ones that test it set a sender.
-    sys.modules["grounder_hermes_plugin.direct_dev"].account_sender = None
+    # No test runs the old sign-ins cleanup by itself (it deletes this Mac's keychain items and files); the ones that test it call it with a fake ``security``.
+    sys.modules["grounder_hermes_plugin.direct_dev"].forget_saved_sign_ins_soon = lambda: None
     return module
 
 
@@ -398,7 +398,7 @@ def reads(plugin, monkeypatch):
     """Every direct read, faked: a Reddit community reads; anything with ``blocked`` in it is a site's check."""
     done = []
 
-    def read(url, signed_out=False):
+    def read(url):
         done.append(url)
         if "blocked" in url:
             return {"url": url, "status": 403, "text": "You've been blocked by network security.", "problem": "the site showed a check instead of the page (HTTP 403)"}

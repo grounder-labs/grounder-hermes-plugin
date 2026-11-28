@@ -77,11 +77,10 @@ logger = logging.getLogger(__name__)
 ORIGIN = "https://api.grounder.net"
 SEARCH_URL = f"{ORIGIN}/v1/search"
 READS_URL = f"{ORIGIN}/v1/direct/reads"  # where a read done on this Mac is told to the account (the prompt and each page's host and path), when the account's setting asks for it
-SIGN_INS_URL = f"{ORIGIN}/v1/direct/sign-ins"  # where Grounder direct reports the sites it has a saved sign-in for (names, this Mac, when saved), with the key or the sign-in
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.10.7"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.10.8"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -154,7 +153,6 @@ SEARCH_SCHEMA = {
         "mode": {"type": "string", "enum": list(MODES),
                  "description": "Use grounder-direct when the user asks to read a page. Leave mode out to use the saved choice."},
         "site": {"type": "string", "description": "Only a host the user's own words write, such as bbc.co.uk, never one inferred from a name (the Oscars is not oscars.org). Put their words in query. " + direct_dev.SEARCH_PRICE},
-        "signed_in": {"type": "boolean", "description": "Grounder direct only. Set false when the user asks to read logged out. Saved sign-ins stay on the Mac."},
         "format": {"type": "string", "enum": list(direct_formats.FORMATS),
                    "description": "Summary, full-page or highlights. Send only when the user's words name a format."},
     }},
@@ -551,14 +549,6 @@ def _account_json_call(method: str, url: str, body: dict[str, Any], timeout: flo
     return answer if status == 200 and isinstance(answer, dict) else None
 
 
-def _sign_ins_call(body: dict[str, Any], timeout: float) -> Optional[dict[str, Any]]:
-    """``PUT`` Grounder direct's saved sign-in names (``direct_dev.sync_body``) and return Grounder's answer, or None when there is no credential or it failed.
-    Never raises: a sync is best effort."""
-    return _account_json_call("PUT", SIGN_INS_URL, body, timeout)
-
-
-direct_dev.account_sender = _sign_ins_call
-
 MAC_READS_CACHE_S = 60.0
 _mac_reads_cache: dict[str, Any] = {"at": -1e9, "value": False}
 
@@ -587,21 +577,6 @@ def _read_call(body: dict[str, Any], timeout: float) -> bool:
 
 direct_dev.reads_recording = _mac_reads_recording
 direct_dev.read_sender = _read_call
-
-
-def _can_sync_sign_ins() -> bool:
-    """Whether there is a credential to report the saved sign-ins with: a search key, or a Hermes sign-in (which only a request can show, so it is asked with the
-    settings read, which spends no search). Asked before the keychain is listed."""
-    if _key():
-        return True
-    try:
-        _settings_call("GET")
-    except ProviderNotSignedIn:
-        return False
-    return True
-
-
-direct_dev.credential_probe = _can_sync_sign_ins
 
 
 SITE_NAME = re.compile(r"^[a-z0-9-]+(?:\.[a-z0-9-]+)+$")
@@ -1358,7 +1333,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
             for url in asked
         ]
 
-    def _dev_search(self, query: str, fmt: Optional[str] = None, question: str = "", signed_out: bool = False, pages: Optional[list[str]] = None) -> dict[str, Any]:
+    def _dev_search(self, query: str, fmt: Optional[str] = None, question: str = "", pages: Optional[list[str]] = None) -> dict[str, Any]:
         """Grounder direct's ``web_search``: no search at all. It reads the addresses in the query, else those in the user's latest message, each straight from its
         site (``direct_dev.read``), one row a page with the page's text. With no address it reads nothing and says so. Every outcome is a successful result with a notice
         mark, so Hermes serves none of it from its keyless ring and the hooks claim none of it for Grounder."""
@@ -1367,7 +1342,6 @@ class GrounderWebSearchProvider(WebSearchProvider):
         if not addresses:
             return _notice(direct_dev.NO_ADDRESS, "refused")
         fmt = direct_formats.chosen(fmt, asks, direct_format())
-        signed_out = signed_out or direct_formats.signed_out_words(asks) or direct_formats.signed_out_words(query)
         question = " ".join(ADDRESS.sub(" ", question or query).split()) or asks
         rows = []
         tried = []
@@ -1375,14 +1349,14 @@ class GrounderWebSearchProvider(WebSearchProvider):
             why = _refusal(url)
             if not why:
                 tried.append(url)
-            page = {"url": url, "problem": why} if why else direct_dev.read(url, signed_out)
+            page = {"url": url, "problem": why} if why else direct_dev.read(url)
             text = (direct_dev.not_read(url, page["problem"]) if page.get("problem")
                     else direct_formats.shape(direct_dev.header(page), str(page.get("text") or ""), fmt, question, str(page.get("url") or url)))
             rows.append({"title": str(page.get("title") or url), "url": str(page.get("url") or url), "description": text, "position": len(rows) + 1})
         direct_dev.report_read(question or query, tried)  # the account's copy of a read done here, when it asks for them (GRO-989)
         return {"success": True, "data": {"web": rows, NOTICE_KEY: "direct"}}
 
-    def _read_candidates(self, results: list[dict[str, Any]], fmt: str, question: str, signed_out: bool, site: str = "", credits: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    def _read_candidates(self, results: list[dict[str, Any]], fmt: str, question: str, site: str = "", credits: dict[str, str] | None = None) -> list[dict[str, Any]]:
         """Read the chosen pages, trying a later address only for the same topic and site. `credits` is each topic's credit line (GRO-972), which a page read here carries as a result does."""
         groups: dict[tuple[str, str], list[str]] = {}
         first_site: dict[str, str] = {}
@@ -1401,7 +1375,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         rows = []
         for (topic, _), urls in groups.items():
             for url in list(dict.fromkeys(urls))[:MAX_READ_TRIES]:
-                page = direct_dev.read(url, signed_out)
+                page = direct_dev.read(url)
                 problem = page.get("problem")
                 if problem:
                     text = direct_dev.not_read(url, problem)
@@ -1421,7 +1395,6 @@ class GrounderWebSearchProvider(WebSearchProvider):
         done: dict[str, dict[str, Any]] = {}
         asks = _ASKS.get(_session(), "")
         fmt = direct_formats.chosen(None, asks, direct_format())
-        signed_out = direct_formats.signed_out_words(asks)
         question = self._question([str(u) for u in urls]) if not asks else asks
         tried: list[str] = []
         for url in (str(u) for u in urls):
@@ -1429,7 +1402,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
                 why = _refusal(url)
                 if not why:
                     tried.append(url)
-                page = {"url": url, "problem": why} if why else direct_dev.read(url, signed_out)
+                page = {"url": url, "problem": why} if why else direct_dev.read(url)
                 if page.get("problem"):
                     text = direct_dev.not_read(url, page["problem"])
                     done[url] = {"url": GROUNDER_SITE, "title": direct_dev.NAME, "content": text, "raw_content": text}
@@ -1620,17 +1593,14 @@ class GrounderWebSearchProvider(WebSearchProvider):
         local = state == direct_dev.ONLY
         reading = mode == DIRECT_MODE or (not mode and (local or bool(pages) or bool(site)))
         fmt = direct_formats.chosen(asked_format, asks or query, direct_format()) if reading else ""
-        signed_out = args.get("signed_in") is False or direct_formats.signed_out_words(asks)
         if pages:
-            return self._dev_search(query, fmt, signed_out=signed_out, pages=pages) if local else self._read_part(query, pages, fmt)
+            return self._dev_search(query, fmt, pages=pages) if local else self._read_part(query, pages, fmt)
         payload = _options(args, query)
         payload["mode"] = DIRECT_MODE if reading else PROVIDER_MODE
         if reading:
             payload["format"] = fmt
             if site:
                 payload["site"] = site
-            if args.get("signed_in") is not None:
-                payload["signed_in"] = args["signed_in"]
             if local:
                 payload["reader"] = "mac"
             elif agent := direct_dev.user_agent():
@@ -1651,7 +1621,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         rows = [_row(row, i + 1) for i, row in enumerate(results)]
         if local and reading:
             credits = {str(topic.get("id")): credit for topic in topics if (credit := _credit(topic.get("licence")))}
-            found = self._read_candidates(_candidates(body), fmt, query, signed_out, site, credits)
+            found = self._read_candidates(_candidates(body), fmt, query, site, credits)
             combined = [*found, *rows]
             order = {str(topic.get("id")): i for i, topic in enumerate(topics)}
             rows = sorted(combined, key=lambda row: order.get(str(row.get("topic")), len(order)))

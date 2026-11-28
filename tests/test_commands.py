@@ -102,7 +102,7 @@ def signed_in(hermes, lists):
 def test_register_adds_search_and_only_search_with_its_hint(plugin):
     host = Host()
     plugin.register(host)
-    assert set(host.commands) == {"search", "search-direct-format", "search-login", "search-logout"}  # the presets are a choice in /search's first picker, not a command
+    assert set(host.commands) == {"search", "search-direct-format"}  # the presets are a choice in /search's first picker, not a command
     assert host.commands["search"].args_hint == "[provider|direct|direct off|format|resolver]"
     assert host.commands["search"].description.startswith("Choose Grounder provider, Grounder direct")
     assert [p.name for p in host.providers] == ["grounder"]  # the backend is registered beside it
@@ -164,7 +164,7 @@ def test_another_plugins_commands_are_left_alone_and_this_plugins_own_are_replac
     assert other.commands == {}
     mine = Host(manager=SimpleNamespace(_plugin_commands={"search": {"plugin_key": "grounder"}}))
     plugin.register(mine)
-    assert set(mine.commands) == {"search", "search-direct-format", "search-login", "search-logout"}
+    assert set(mine.commands) == {"search", "search-direct-format"}
 
 
 def test_the_registered_handlers_run_the_commands(plugin, free):
@@ -182,7 +182,7 @@ def test_search_is_registered_only_while_the_profiles_web_search_backend_is_grou
     _config(tmp_path, **web)
     host = Host(selected=True)  # a profile that has been set up: nothing here selects Grounder
     plugin.register(host)
-    assert set(host.commands) == ({"search", "search-direct-format", "search-login", "search-logout"} if registers else set())
+    assert set(host.commands) == ({"search", "search-direct-format"} if registers else set())
     # With another backend the model tools and the web provider are registered as ever: only the command goes.
     assert host.tools == ["grounder_search"] and [p.name for p in host.providers] == ["grounder"]
     assert "transform_tool_result" in host.hooks and "pre_llm_call" in host.hooks
@@ -207,18 +207,18 @@ def test_the_load_that_makes_grounder_the_backend_registers_the_command_in_the_s
     _config(tmp_path, keyless_fallback=False)  # no backend chosen yet
     host = Host()  # the first load in this profile: the plugin selects itself, then registers
     plugin.register(host)
-    assert set(host.commands) == {"search", "search-direct-format", "search-login", "search-logout"}
+    assert set(host.commands) == {"search", "search-direct-format"}
     web = yaml.safe_load((tmp_path / "config.yaml").read_text())["web"]
     assert web["search_backend"] == "grounder" and web["extract_backend"] == "grounder"
     second = Host(selected=True)  # the next start: the backend is Grounder, so the command is there again
     plugin.register(second)
-    assert set(second.commands) == {"search", "search-direct-format", "search-login", "search-logout"}
+    assert set(second.commands) == {"search", "search-direct-format"}
 
 
 def test_a_switch_made_in_hermes_tools_takes_effect_at_the_next_start_and_back_again(plugin, tmp_path):
     first = Host()
     plugin.register(first)
-    assert set(first.commands) == {"search", "search-direct-format", "search-login", "search-logout"}
+    assert set(first.commands) == {"search", "search-direct-format"}
     _config(tmp_path, search_backend="tavily", extract_backend="tavily")  # the user picks another backend in `hermes tools`
     plugin.register(Host(selected=True))
     again = Host(selected=True)
@@ -227,7 +227,7 @@ def test_a_switch_made_in_hermes_tools_takes_effect_at_the_next_start_and_back_a
     _config(tmp_path, search_backend="grounder")
     back = Host(selected=True)
     plugin.register(back)
-    assert set(back.commands) == {"search", "search-direct-format", "search-login", "search-logout"}
+    assert set(back.commands) == {"search", "search-direct-format"}
 
 
 def test_a_managed_install_is_left_alone_and_registers_the_command_only_where_the_config_names_grounder(plugin, tmp_path, monkeypatch):
@@ -239,7 +239,7 @@ def test_a_managed_install_is_left_alone_and_registers_the_command_only_where_th
     _config(tmp_path, search_backend="grounder")
     named = Host()
     plugin.register(named)
-    assert set(named.commands) == {"search", "search-direct-format", "search-login", "search-logout"}
+    assert set(named.commands) == {"search", "search-direct-format"}
 
 
 def test_a_config_that_cannot_be_read_registers_no_command_and_takes_nothing_else_down(plugin, tmp_path, monkeypatch, caplog):

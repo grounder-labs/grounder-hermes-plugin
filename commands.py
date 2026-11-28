@@ -84,7 +84,6 @@ def search_format_command(ctx, raw_args: str) -> str:
 
 
 def register_commands(ctx) -> None:
-    direct_dev.register_login(ctx)
     ctx.register_command(
         "search-direct-format", lambda raw_args: search_format_command(ctx, raw_args),
         args_hint="[full-page|highlights|summary]", description="Choose the Grounder direct page format")

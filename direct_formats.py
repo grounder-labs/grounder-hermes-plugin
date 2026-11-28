@@ -169,17 +169,6 @@ def from_words(text: object) -> Optional[str]:
         return None
     found = [(match.start(), name) for name, pattern in WORDS.items() if (match := pattern.search(text))]
     return min(found)[1] if found else None
-
-
-SIGNED_OUT = re.compile(r"\b(?:not|without)\s+(?:being\s+)?(?:logged|signed)\s+in\b|\blogged[\s-]?out\b|\bsigned[\s-]?out\b|"
-                        r"\bwithout\s+(?:my\s+|the\s+|a\s+)?(?:sign[\s-]?in|login|log[\s-]?in|account|cookies)\b|\bincognito\b|\bprivate(?:ly| window)\b", re.I)
-
-
-def signed_out_words(text: object) -> bool:
-    """Whether the user's words ask for a page read logged out ("not logged in", "logged out", "without my sign-in")."""
-    return isinstance(text, str) and bool(SIGNED_OUT.search(text))
-
-
 def valid(value: object) -> Optional[str]:
     """``value`` as one of the three formats (any case, a space for the hyphen), or None."""
     word = str(value or "").strip().lower().replace(" ", "-").replace("_", "-")

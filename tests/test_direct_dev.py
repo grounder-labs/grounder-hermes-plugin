@@ -267,54 +267,6 @@ def test_turning_grounder_direct_on_drops_pages_hermes_cached_from_grounders_rea
     assert list(saved) == [digest(PAGE, None, "exa")] and not mine.exists() and other.exists()
 
 
-def test_a_broken_sign_in_never_stops_a_read_it_is_read_logged_out(plugin, monkeypatch):
-    calls = []
-
-    def at(url, signed_out=False):
-        calls.append(signed_out)
-        if not signed_out:
-            return {"url": url, "status": 0, "problem": "the keychain has a key for reddit.com but its sealed sign-in is missing; sign in again with /search-login reddit.com"}
-        return {"url": url, "status": 200, "title": "r/x", "text": "posts", "chars": 5, "ms": 7}
-
-    monkeypatch.setattr(plugin.direct_dev, "_read_at", at)
-    monkeypatch.setattr(plugin.direct_dev, "safari_version", lambda: "27.2")
-    page = plugin.direct_dev.read("https://www.reddit.com/r/x/")
-    assert calls == [False, True] and not page.get("problem")
-    assert "logged out because the saved sign-in for it could not be used" in plugin.direct_dev.header(page)
-
-
-def test_the_user_can_ask_for_a_logged_out_read(plugin, stub, hermes, dev_on, monkeypatch):
-    asked = []
-    monkeypatch.setattr(plugin.direct_dev, "read", lambda url, signed_out=False: asked.append(signed_out) or {"url": url, "status": 200, "title": "t", "text": "x", "chars": 1, "ms": 1})
-    monkeypatch.setattr(plugin.direct_dev, "safari_version", lambda: "27.2")
-    monkeypatch.setattr(plugin.provider, "_session", lambda: "s")
-    assert plugin.direct_formats.signed_out_words("read it not logged in") and plugin.direct_formats.signed_out_words("without my sign-in please")
-    assert not plugin.direct_formats.signed_out_words("log in and read it")
-    plugin.provider.note_message(session_id="s", user_message="read it not logged in")
-    plugin.GrounderWebSearchProvider().extract([PAGE])
-    json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "urls": [PAGE], "mode": "grounder-direct", "signed_in": False}))
-    plugin.provider.note_message(session_id="s", user_message="read it")
-    plugin.GrounderWebSearchProvider().extract([PAGE])
-    assert asked == [True, True, False]
-    assert "The user asked to read logged out" in plugin.direct_dev.turn_note(user_message="read it not logged in")["context"]
-    assert "Pass signed_in false" not in plugin.direct_dev.turn_note(user_message="read reddit")["context"]
-
-
-def test_a_logged_out_read_tells_the_reader_to_use_no_sign_in(plugin, monkeypatch):
-    import subprocess
-    seen = {}
-    monkeypatch.setattr(plugin.direct_dev, "_helper", lambda: (plugin.direct_dev.Path("/bin/echo"), ""))
-    monkeypatch.setattr(plugin.direct_dev, "user_agent", lambda: "Safari")
-    monkeypatch.setattr(plugin.direct_dev.sys, "platform", "darwin")
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: seen.update(k.get("env") or {}) or subprocess.CompletedProcess(a, 0, json.dumps({"url": PAGE, "status": 200, "title": "t", "text": "x"}) + "\n", ""))
-    plugin.direct_dev._read_at(PAGE, True)
-    assert seen.get("GROUNDER_DIRECT_SIGNED_OUT") == "1"
-    seen.clear()
-    plugin.direct_dev._read_at(PAGE)
-    assert "GROUNDER_DIRECT_SIGNED_OUT" not in seen
-
-
-# Saved sign-ins (0.8.0-dev.2): the reader holds the values in the login keychain; Hermes only names sites.
 
 
 
@@ -327,58 +279,6 @@ def test_a_site_is_a_bare_name_or_an_https_address(plugin):
     assert site_of("reddit")[0] == "" and site_of("a b.com")[0] == ""
 
 
-def test_a_page_read_signed_in_says_so_and_names_no_value(plugin, monkeypatch):
-    monkeypatch.setattr(plugin.direct_dev, "safari_version", lambda: "27.2")
-    line = plugin.direct_dev.header({"url": PAGE, "status": 200, "ms": 9, "signed_in": "reddit.com", "cookies_sent": 7})
-    assert "signed in to reddit.com with the sign-in the user saved (7 cookies sent)" in line and "logged-out" not in line
-    assert "a fresh logged-out session" in plugin.direct_dev.header({"url": PAGE, "status": 200, "ms": 9})
-
-
-@pytest.mark.skipif(os.environ.get("GROUNDER_DIRECT_LIVE") != "1", reason="writes a test item to the login keychain and reads httpbin.org; set GROUNDER_DIRECT_LIVE=1")
-def test_live_a_saved_sign_in_goes_with_safaris_user_agent_to_its_site_only(plugin):
-    import base64
-    import stat
-    import subprocess
-    dev = plugin.direct_dev
-    try:
-        assert dev.paste("httpbin.org", "Cookie: grounder_test=fake-one; other=fake-two").startswith("Saved a sign-in for httpbin.org: 2 cookies")
-        assert "httpbin.org" in [site for site, _ in dev.sites()]
-        key = subprocess.run([dev.SECURITY, "find-generic-password", "-s", dev.SERVICE, "-a", "httpbin.org", "-w"], capture_output=True, text=True).stdout.strip()
-        assert len(base64.b64decode(key)) == 32  # the keychain holds only a key
-        sealed = dev.STORE / "httpbin.org.sealed"
-        assert stat.S_IMODE(sealed.stat().st_mode) == 0o600 and b"fake-one" not in sealed.read_bytes()  # the cookies are sealed, not stored in the clear
-        page = dev.read("https://httpbin.org/headers")
-        sent = json.loads(page["text"])["headers"]
-        assert sent["Cookie"] == "grounder_test=fake-one; other=fake-two" and sent["User-Agent"] == dev.user_agent() and page["signed_in"] == "httpbin.org"
-        assert "fake-one" not in dev.header(page)
-        refreshed = dev.read("https://httpbin.org/cookies/set?fresh=1")  # the site sets a cookie: saved back for the next read
-        assert refreshed.get("sign_in_refreshed") is True
-        assert json.loads(dev.read("https://httpbin.org/cookies")["text"])["cookies"] == {"grounder_test": "fake-one", "other": "fake-two", "fresh": "1"}
-        assert json.loads(dev.read("https://postman-echo.com/cookies")["text"])["cookies"] == {}  # another site gets none
-    finally:
-        assert "Forgot the httpbin.org sign-in" in dev.sign_out("httpbin.org")
-    assert dev.sign_out("httpbin.org") == "No sign-in was saved for httpbin.org." and not (dev.STORE / "httpbin.org.sealed").exists()
-
-
-@pytest.mark.skipif(os.environ.get("GROUNDER_DIRECT_LIVE") != "1", reason="writes a test item to the login keychain and reads httpbin.org; set GROUNDER_DIRECT_LIVE=1")
-def test_live_a_sign_in_saved_by_0_8_0_dev_2_still_works_and_moves_to_the_new_store(plugin):
-    import base64
-    import subprocess
-    dev = plugin.direct_dev
-    old = {"site": "httpbin.org", "cookies": [{"name": "legacy", "value": "fake-old", "domain": ".httpbin.org", "path": "/", "secure": True, "httpOnly": True}]}
-    subprocess.run([dev.SECURITY, "add-generic-password", "-U", "-s", dev.LEGACY_SERVICE, "-a", "httpbin.org", "-w",
-                    base64.b64encode(json.dumps(old).encode()).decode()], check=True, capture_output=True)  # the old format, fake value
-    try:
-        assert json.loads(dev.read("https://httpbin.org/cookies")["text"])["cookies"] == {"legacy": "fake-old"}
-        dev.read("https://httpbin.org/cookies/set?fresh=1")  # a change is saved in the new store, and the old item goes
-        gone = subprocess.run([dev.SECURITY, "find-generic-password", "-s", dev.LEGACY_SERVICE, "-a", "httpbin.org"], capture_output=True)
-        assert gone.returncode == 44 and (dev.STORE / "httpbin.org.sealed").exists()
-        assert json.loads(dev.read("https://httpbin.org/cookies")["text"])["cookies"] == {"legacy": "fake-old", "fresh": "1"}
-    finally:
-        dev.sign_out("httpbin.org")
-
-
-# /search-login (0.8.0): a site typed any way is cleaned to the site itself, and one sign-in covers every subdomain and page of it.
 
 @pytest.mark.parametrize("typed, site, start", [
     ("reddit.com", "reddit.com", "https://reddit.com/"),
@@ -396,32 +296,6 @@ def test_a_site_typed_any_way_is_cleaned_to_the_site_itself(plugin, typed, site,
 @pytest.mark.parametrize("typed", ["", "reddit", "localhost", "192.168.1.1", "ftp://reddit.com", "a b.com"])
 def test_what_is_not_a_site_is_refused(plugin, typed):
     assert plugin.direct_dev.site_of(typed)[0] == ""
-
-
-def test_search_login_opens_the_window_for_the_cleaned_site(plugin, monkeypatch):
-    opened = []
-    monkeypatch.setattr(plugin.direct_dev, "sign_in", lambda raw, wait=False: opened.append(raw) or "opened")
-    monkeypatch.setattr(plugin.direct_dev, "sites", lambda: [("reddit.com", "saved today")])
-    host = Host()
-    plugin.direct_dev.register_login(host)
-    assert host.commands["search-login"].handler("https://old.reddit.com/r/x") == "opened" and opened == ["https://old.reddit.com/r/x"]
-    usage = host.commands["search-login"].handler("")
-    assert "Usage: `/search-login <site>`" in usage and "reddit.com: saved today" in usage
-
-
-@pytest.mark.skipif(os.environ.get("GROUNDER_DIRECT_LIVE") != "1", reason="writes a test item to the login keychain and reads httpbin.org; set GROUNDER_DIRECT_LIVE=1")
-def test_live_one_sign_in_covers_every_subdomain_and_page(plugin):
-    dev = plugin.direct_dev
-    helper, _ = dev._helper()
-    # Cookies as a site might scope them: one host-only, one on a path, one __Host- (which must stay host-only).
-    try:
-        assert dev.paste("www.httpbin.org/anything", "a=fake-1; b=fake-2").startswith("Saved a sign-in for httpbin.org: 2 cookies")
-        for url in ("https://httpbin.org/cookies", "https://www.httpbin.org/anything/deep/page?x=1"):
-            page = dev.read(url)
-            seen = json.loads(page["text"]).get("cookies") or dict(c.split("=", 1) for c in json.loads(page["text"])["headers"].get("Cookie", "").split("; ") if c)
-            assert seen.get("a") == "fake-1" and seen.get("b") == "fake-2" and page["signed_in"] == "httpbin.org", url
-    finally:
-        dev.sign_out("httpbin.org")
 
 
 # The resolver setting (0.8.0): the user's own by default, Grounder's when picked.
@@ -447,26 +321,6 @@ def test_live_a_read_through_another_resolver_reaches_the_site_and_refuses_priva
     assert page.get("resolver") == "grounder" and not page.get("problem") and json.loads(page["text"])["headers"]["Host"] == "httpbin.org"
     private = dev.read("https://localtest.me/")  # a public name that answers 127.0.0.1
     assert "only a private or local address" in private["problem"]
-
-
-def test_search_logout_forgets_the_cleaned_site(plugin, monkeypatch):
-    forgot = []
-    monkeypatch.setattr(plugin.direct_dev, "sign_out", lambda raw: forgot.append(raw) or "forgot")
-    monkeypatch.setattr(plugin.direct_dev, "sites", lambda: [])
-    host = Host()
-    plugin.direct_dev.register_login(host)
-    assert set(host.commands) == {"search-login", "search-logout"}
-    assert host.commands["search-logout"].handler("https://old.reddit.com/r/x") == "forgot" and forgot == ["https://old.reddit.com/r/x"]
-    assert "Usage: `/search-logout <site>`" in host.commands["search-logout"].handler("")
-
-
-def test_signing_out_cleans_the_site_the_same_way(plugin, monkeypatch, tmp_path):
-    import subprocess
-    monkeypatch.setattr(plugin.direct_dev, "STORE", tmp_path)  # never the user's real sign-ins
-    ran = []
-    monkeypatch.setattr(subprocess, "run", lambda args, **kw: ran.append(args) or subprocess.CompletedProcess(args, 44, "", ""))
-    assert plugin.direct_dev.sign_out("https://old.reddit.com/r/x") == "No sign-in was saved for reddit.com."
-    assert all(args[-1] == "reddit.com" for args in ran) and len(ran) == 2  # both keychain services, the cleaned site
 
 
 # 0.8.0: the installed grounder-direct is the reader when it runs; the swiftc build is the fallback, and with neither the problem names the install page.
@@ -518,7 +372,7 @@ def test_a_stored_full_page_without_the_users_choice_reads_as_summary(plugin, he
 
 
 def test_no_program_the_plugin_starts_receives_a_key_shaped_variable(plugin, monkeypatch, tmp_path):
-    """Hermes's environment holds the user's provider keys: the reader (the prebuilt one is not covered by the pinned sha), the sign-in window, the version check,
+    """Hermes's environment holds the user's provider keys: the reader (the prebuilt one is not covered by the pinned sha), the version check,
     the build and every other helper get HOME and PATH and what they need, and nothing else."""
     import subprocess
     dd = plugin.direct_dev
@@ -547,25 +401,19 @@ def test_no_program_the_plugin_starts_receives_a_key_shaped_variable(plugin, mon
     monkeypatch.setattr(dd, "INSTALLED", installed)
     dd._installed_ok.clear()
     dd.set_resolver("grounder")
-    dd._read_at(PAGE, True)
-    dd.sign_in("reddit.com", wait=True)
-    dd.sign_in("reddit.com", wait=False)
-    dd.paste("reddit.com", header="a=b")
-    dd.paste("reddit.com")
-    dd.sign_out("reddit.com")
-    dd.device_name()
+    dd._read_at(PAGE)
     monkeypatch.setattr(dd, "SOURCE", tmp_path / "direct_reader.swift")
     dd.SOURCE.write_text("//")
     monkeypatch.setattr(dd, "INSTALLED", tmp_path / "missing")
     dd._installed_ok.clear()
     dd._build_helper()
-    assert len(seen) >= 8
+    assert len(seen) >= 3
     for command, env in seen:
         assert isinstance(env, dict), f"{command} inherited the whole environment"
         assert not [name for name in env if re.search(r"KEY|TOKEN|SECRET|PASSWORD|API", name)], command
         assert env["HOME"] == str(tmp_path) and "PATH" in env
-    reads = [env for command, env in seen if "--signin" in command or PAGE in command]
-    assert all(set(env) <= {"HOME", "PATH", "GROUNDER_DIRECT_RESOLVER", "GROUNDER_DIRECT_SIGNED_OUT"} for env in reads)
+    reads = [env for command, env in seen if PAGE in command]
+    assert reads and all(set(env) <= {"HOME", "PATH", "GROUNDER_DIRECT_RESOLVER", "GROUNDER_DIRECT_SIGNED_OUT"} for env in reads)
 
 
 def test_the_cache_is_under_the_active_profile(plugin, monkeypatch, tmp_path):
@@ -575,3 +423,81 @@ def test_the_cache_is_under_the_active_profile(plugin, monkeypatch, tmp_path):
     monkeypatch.delitem(sys.modules, "hermes_constants")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
     assert plugin.direct_dev._home() == tmp_path / "launch"
+
+
+def test_every_read_is_logged_out_and_says_so(plugin, monkeypatch):
+    import subprocess
+    seen = {}
+    monkeypatch.setattr(plugin.direct_dev, "_helper", lambda: (plugin.direct_dev.Path("/bin/echo"), ""))
+    monkeypatch.setattr(plugin.direct_dev, "user_agent", lambda: "Safari")
+    monkeypatch.setattr(plugin.direct_dev.sys, "platform", "darwin")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: seen.update(env=k.get("env") or {}) or subprocess.CompletedProcess(a, 0, json.dumps({"url": PAGE, "status": 200, "title": "t", "text": "x"}) + "\n", ""))
+    page = plugin.direct_dev.read(PAGE)
+    assert not page.get("problem") and set(seen["env"]) <= {"HOME", "PATH", "GROUNDER_DIRECT_RESOLVER", "GROUNDER_DIRECT_SIGNED_OUT"} and seen["env"]["GROUNDER_DIRECT_SIGNED_OUT"] == "1"
+    monkeypatch.setattr(plugin.direct_dev, "safari_version", lambda: "27.2")
+    line = plugin.direct_dev.header(page)
+    assert "a fresh logged-out session" in line and "signed in" not in line
+    assert not hasattr(plugin.direct_dev, "sign_in") and not hasattr(plugin.direct_dev, "sync")
+    assert "signed_in" not in plugin.provider.SEARCH_SCHEMA["parameters"]["properties"]
+
+
+def _old_sign_ins(plugin, monkeypatch, tmp_path, items):
+    """An old Mac: a sign-ins folder with a sealed file, the sync files, and ``items`` keychain items (a fake ``security`` that deletes one per call)."""
+    import subprocess
+    dd = plugin.direct_dev
+    support = tmp_path / "Grounder Direct"
+    (support / "sign-ins").mkdir(parents=True)
+    (support / "sign-ins" / "reddit.com.sealed").write_text("x")
+    (support / "sync.json").write_text("{}")
+    (support / "device.json").write_text("{}")
+    (support / "bin").mkdir()
+    (support / "bin" / "grounder-direct").write_text("keep")
+    for name, value in (("SUPPORT", support), ("STORE", support / "sign-ins"), ("CLEANED", support / ".sign-ins-removed")):
+        monkeypatch.setattr(dd, name, value)
+    monkeypatch.setattr(dd.sys, "platform", "darwin")
+    ran, left = [], dict(items)
+
+    def run(args, **kw):
+        ran.append(list(args))
+        service = args[args.index("-s") + 1]
+        if left.get(service):
+            left[service] -= 1
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return subprocess.CompletedProcess(args, 44, "", "not found")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return support, ran, left
+
+
+def test_the_old_sign_ins_are_deleted_once_and_nothing_else_is_touched(plugin, monkeypatch, tmp_path):
+    dd = plugin.direct_dev
+    support, ran, left = _old_sign_ins(plugin, monkeypatch, tmp_path, {"grounder-direct": 3, "grounder-direct-dev": 1})
+    dd.forget_saved_sign_ins()
+    assert not (support / "sign-ins").exists() and not (support / "sync.json").exists() and not (support / "device.json").exists()
+    assert (support / "bin" / "grounder-direct").read_text() == "keep" and (support / ".sign-ins-removed").exists()
+    assert left == {"grounder-direct": 0, "grounder-direct-dev": 0}
+    assert all(args[:2] == [dd.SECURITY, "delete-generic-password"] and args[2] == "-s" and "-a" not in args for args in ran) and len(ran) == 6
+    ran.clear()
+    dd.forget_saved_sign_ins()  # the marker: a second load does nothing
+    assert ran == []
+
+
+def test_the_cleanup_never_raises_and_is_skipped_off_a_mac(plugin, monkeypatch, tmp_path):
+    import subprocess
+    dd = plugin.direct_dev
+    support, ran, _ = _old_sign_ins(plugin, monkeypatch, tmp_path, {"grounder-direct": 1})
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("no security")))
+    dd.forget_saved_sign_ins()
+    assert not (support / ".sign-ins-removed").exists()  # a keychain that cannot be asked: tried again at the next load
+    monkeypatch.setattr(dd.sys, "platform", "linux")
+    (support / "sign-ins").mkdir()
+    dd.forget_saved_sign_ins()
+    assert (support / "sign-ins").exists() and not (support / ".sign-ins-removed").exists()
+
+
+def test_the_plugin_runs_the_cleanup_when_it_loads(plugin, stub, hermes, monkeypatch):
+    ran = []
+    monkeypatch.setattr(plugin.direct_dev, "forget_saved_sign_ins_soon", lambda: ran.append(1))
+    plugin.register(Host())
+    assert ran == [1]
+

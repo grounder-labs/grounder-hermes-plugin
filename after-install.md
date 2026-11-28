@@ -6,6 +6,6 @@ You can search free without an account. To connect an account, run `hermes auth 
 
 Use `/search provider` to search through sources Grounder chose for the question or `/search direct` to find and read the source's page on a Mac. The reader for macOS with Safari installs as https://grounder.net/docs/direct shows. A page named by address is read free. A Grounder direct search is one search, at the one price, even if its page could not be read.
 
-`/search` (`/hermes search` on Slack) also sets the page format and resolver. Use `/search-login <site>` and `/search-logout <site>` to manage sign-ins stored on the Mac. [Grounder direct documentation.](https://grounder.net/docs/direct)
+`/search` (`/hermes search` on Slack) also sets the page format and resolver. Grounder direct reads every page logged out: it keeps no sign-ins or cookies. [Grounder direct documentation.](https://grounder.net/docs/direct)
 
 Usage context is off by default. To share the model name and pseudonymous session and prompt identifiers for usage reporting, run `hermes config set web.grounder.share_usage_context true` and restart Hermes. [Privacy policy.](https://grounder.net/privacy)

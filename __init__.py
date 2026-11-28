@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 SELECTED_MARK = "backends_selected"  # in the plugin's own per-profile state: this profile has been set up
 BUNDLED = "plugins.web.grounder"  # Hermes's own Grounder web provider, in the Hermes releases that ship one; it registers the same command
-COMMANDS = ("search", "search-direct-format", "search-login", "search-logout")
+COMMANDS = ("search", "search-direct-format")
 
 
 def _bundled() -> bool:
@@ -149,6 +149,7 @@ def register(ctx) -> None:
         _add_commands(ctx)
     except Exception as error:  # a Hermes that refuses a command must not take web search down with it
         logger.warning("Could not add Grounder's commands: %s", error)
+    direct_dev.forget_saved_sign_ins_soon()
     ctx.register_hook("pre_tool_call", note_turn)
     if sharing_usage():  # the model behind each answer is learned only while share_usage_context is on
         ctx.register_hook("post_api_request", note_model)
