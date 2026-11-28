@@ -136,10 +136,7 @@ def manifest():
 # GET /v1/search/settings and every PUT's answer, recorded from the server by workers/router/test/surface-parity.test.ts (GRO-1154); test_server_shapes.py
 # replays each recorded exchange against Stub, so Stub's rules below and the server's (workers/router/src/lib/topic-settings.ts) cannot drift apart.
 SETTINGS = json.loads((Path(__file__).parent / "api_shapes.json").read_text())["settings"]
-NO_PROVIDER = ("Grounder routes each search by topic, so there is no provider or live-data setting to save. "
-               "A search is Grounder provider or Grounder direct.")
-ADD_ON = ('The add-on is gone: a search is Grounder provider or Grounder direct, never both. '
-          'Save "grounder-provider" or "grounder-direct" as search.mode (direct.use "off" or "only").')
+NO_PROVIDER = "Grounder routes each search by the site's stored method, so there is no provider or live-data setting to save."
 
 
 FIRST_USE = []  # the plugin's real ``_first_use_line``, kept by the ``plugin`` fixture
@@ -159,48 +156,32 @@ class Stub:
         self.providers_body = {"providers": [], "live_data_apis": []}
         self.rejected = {"revoked-token", "revoked-key"}  # bearers /v1/search answers 401 for
         # The account's saved Grounder direct block, the one grounder.net's Routing page shows too: a test that changes it plays a change made on the site.
-        # search.mode is read from its use, as the server reads it.
+        # There is no saved search mode (GRO-1161): the block holds a format and a user agent.
         self.saved_direct = dict(SETTINGS["answer"]["direct"])
         self.settings_script = []  # (status, body) answers to the next reads and writes of the setting, in order, before the stub answers as the server does
 
     def settings_answer(self):
-        mode = "grounder-direct" if self.saved_direct.get("use") == "only" else "grounder-provider"
-        return {**SETTINGS["answer"], "search": {**SETTINGS["answer"]["search"], "mode": mode},
-                "direct": {"user_agent": None, **self.saved_direct}}
+        return {**SETTINGS["answer"], "direct": {"user_agent": None, **self.saved_direct}}
 
     def apply_settings(self, change):
         """The server's PUT (topic-settings.ts saveTopicSettings, routing-settings.ts applyDirect): the 400 message when it refuses ``change``
         (nothing is saved then), else None once saved."""
         if not isinstance(change, dict) or not change:
-            return "Send an object with a saved search or direct setting."
+            return "Send an object with a saved direct or cap setting."
         other = next((key for key in change if key not in ("search", "direct", "providers", "fallback", "specialized")), None)
         if other is not None:
             return f"{other[:40]} is not part of the saved search setting."
         if "specialized" in change:
             return NO_PROVIDER
-        if "search" in change and not isinstance(change["search"], dict):
-            return "search must contain a mode."
         if "direct" in change and not isinstance(change["direct"], dict):
-            return "direct must contain a use, format or user_agent."
-        mode = change["search"].get("mode") if isinstance(change.get("search"), dict) else None
-        if mode is not None and mode not in ("optimized", "grounder-provider", "grounder-direct"):
-            return NO_PROVIDER
+            return "direct must contain a format or user_agent."
+        # `search` and `direct.use` are the removed Search with choice: taken and dropped.
         direct = dict(change.get("direct") or {})
-        if direct.get("use") == "add-on":
-            return ADD_ON
-        if mode in ("grounder-provider", "grounder-direct"):
-            use = "only" if mode == "grounder-direct" else "off"
-            if direct.get("use") is not None and direct["use"] != use:
-                return "search.mode and direct.use must choose the same way to search."
-            direct["use"] = use
+        direct.pop("use", None)
         saved = dict(self.saved_direct)
         for key in direct:
-            if key not in ("use", "format", "user_agent"):
+            if key not in ("format", "user_agent"):
                 return f"direct.{key[:40]} is not a Grounder direct setting. Use use, format or user_agent."
-        if direct.get("use") is not None:
-            if direct["use"] not in ("off", "only"):
-                return "direct.use must be one of off, only."
-            saved["use"] = direct["use"]
         if direct.get("format") is not None:
             if direct["format"] not in ("full-page", "highlights", "summary"):
                 return "direct.format must be one of full-page, highlights, summary."
@@ -342,6 +323,9 @@ def plugin(stub, tmp_path, monkeypatch):
     # ``test_mac_reads.py`` clears this to play an account that asks.
     module.provider._mac_reads_cache.update(at=time.monotonic() + 1e9, value=False)
     monkeypatch.setattr(module.direct_dev, "user_agent", lambda: "Test Safari/17.0")
+    # Grounder direct is installed and available when the program runs on this Mac (GRO-1161: no saved mode says so); a test starts with none here, and one that needs it says so.
+    module.direct_dev.real_installed = module.direct_dev._installed  # the two tests of the installed-program check put it back
+    monkeypatch.setattr(module.direct_dev, "_installed", lambda: False)
     # ``register`` asks the import system whether this Hermes bundles its own Grounder provider (``_bundled``, ``find_spec("plugins.web.grounder")``), and the answer is
     # the machine's: a Hermes checkout on ``PYTHONPATH``, or run from in, holds one, and then every test that registers the commands finds none. 0.6.1's run
     # of this suite failed 6 such tests once in four, by where it was started from. Every test starts with no bundled provider; one that needs the other answer says so.

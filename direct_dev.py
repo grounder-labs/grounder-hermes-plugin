@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 NAME = "Grounder direct"
-SETTINGS_KEY, DIRECT_KEY, DEV_KEY = "grounder", "direct", "direct_dev"  # web.grounder.direct ("only", "with-search" or "off"); direct_dev is 0.8.0-dev's, still read
+SETTINGS_KEY, DIRECT_KEY = "grounder", "direct"  # web.grounder.direct was the saved search choice, gone with GRO-1161: an old value is never read
 SAFARI_PLIST = Path("/Applications/Safari.app/Contents/Info.plist")
 # Safari freezes the platform and WebKit parts of its user agent; only Version/ follows the installed Safari. Checked 2026-11-19 against the request Safari 27.2 sent.
 SAFARI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{version} Safari/605.1.15"
@@ -59,27 +59,20 @@ _lock = threading.Lock()
 _last_read: dict[str, float] = {}
 
 
-ONLY, OFF = "only", "off"
 SEARCH_PRICE = "A Grounder direct search is one search, at the one price, even if its page could not be read."
 
 
-# Set by provider.py: ``account_direct_reader()`` is the ``direct`` block of the account's saved setting (``use``, ``format``) or None with no credential or no block, and
-# ``account_direct_writer(change)`` saves ``change`` (``{"use": ...}`` or ``{"format": ...}``) there, True when it was saved. The account is the source when there is one.
+# Set by provider.py: ``account_direct_reader()`` is the ``direct`` block of the account's saved setting (``format``, ``user_agent``) or None with no credential or no block, and
+# ``account_direct_writer(change)`` saves ``change`` (``{"format": ...}``) there, True when it was saved. The account is the source when there is one. There is no saved choice of how to
+# search (GRO-1161): Grounder routes each search by the site's stored method, and the program on this Mac is what makes Grounder direct available (``available``).
 account_direct_reader: Callable[[], dict[str, Any] | None] = lambda: None
 account_direct_writer: Callable[[dict[str, Any]], bool | None] = lambda change: None  # True saved, False Grounder did not take it, None no credential
 account_save_error = ""  # why the last account save was not taken (set by provider.py)
 _last_save: dict[str, Any] = {"on_account": None}  # the last save's outcome: True (on the account), False (the account refused it), None (no credential: this machine only)
-USE_WORDS = {"off": "off", "only": "only"}
-
-
-def account_use() -> str | None:
-    """The effective account choice, or None when no account setting can be read."""
-    use = (account_direct_reader() or {}).get("use")
-    return None if use is None else ONLY if use == ONLY else OFF
 
 
 def save_to_account(change: dict[str, Any]) -> None:
-    """Save ``change`` on the account (``search.mode`` or page settings) and keep what came of it for the words under the reply (``saved_note``)."""
+    """Save ``change`` on the account (page settings) and keep what came of it for the words under the reply (``saved_note``)."""
     _last_save["on_account"] = account_direct_writer(change)
 
 
@@ -95,35 +88,9 @@ def saved_note(key: str = DIRECT_KEY) -> str:
     return f"(saved on this machine: web.grounder.{key} in config.yaml)"
 
 
-def state() -> str:
-    """Read the account choice first, then the local choice."""
-    from_account = account_use()
-    if from_account is not None:
-        return from_account
-    try:
-        from hermes_cli.config import load_config
-        web = load_config().get("web")
-    except Exception as error:
-        logger.warning("Could not read the Grounder direct setting: %s", error)
-        return OFF
-    section = web.get(SETTINGS_KEY) if isinstance(web, dict) else None
-    section = section if isinstance(section, dict) else {}
-    if isinstance(section.get(DIRECT_KEY), str):
-        word = section[DIRECT_KEY].strip().lower().replace("_", "-")
-        return ONLY if word == ONLY else OFF
-    value = section.get(DEV_KEY)
-    if value is True or str(value).lower() == ONLY:
-        return ONLY
-    return OFF
-
-
-def is_on() -> bool:
-    """Whether Grounder direct is the mode by itself (``only``)."""
-    return state() == ONLY
-
-
-def reads_pages() -> bool:
-    return state() == ONLY
+def available() -> bool:
+    """Whether Grounder direct is installed and available on this Mac: the program runs. The server offers the sites only it reaches to a search that says so (``reader: mac``)."""
+    return _installed()
 
 
 def save_setting(key: str, value: Any) -> None:
@@ -136,21 +103,6 @@ def save_setting(key: str, value: Any) -> None:
     section = dict(web.get(SETTINGS_KEY) or {}) if isinstance(web, dict) and isinstance(web.get(SETTINGS_KEY), dict) else {}
     section[key] = value
     save_config({"web": {SETTINGS_KEY: section}}, merge_existing=True)
-
-
-def set_state(value: str) -> None:
-    """Save the setting on this machine and, with a credential, on the account (``search.mode``) too."""
-    use = USE_WORDS[value]
-    save_setting(DIRECT_KEY, use)
-    save_to_account({"use": use})
-    from . import direct_formats
-    direct_formats.forget_cached_searches()
-    if value != OFF:  # reading straight from sites from now on: no page Grounder's reader cached earlier is served in its place
-        direct_formats.forget_cached_pages()
-
-
-def set_on(on: bool) -> None:
-    set_state(ONLY if on else OFF)
 
 
 def safari_version() -> str:
@@ -331,13 +283,13 @@ def header(page: dict[str, Any]) -> str:
             f"HTTP {page.get('status')}, {page.get('ms')} ms{cut}. {charge}]")
 
 
-TURN_NOTE = ("[Grounder direct is the user's search choice. For a question, use web_search to find and read the source's page. "
+TURN_NOTE = ("[Grounder direct is installed on this Mac. For a question, use web_search; a source only Grounder direct reaches is read here. "
              "Pass URLs the user provides, or use grounder_search with site and query when the user writes a site's host without a page's address. "
              "Reading a page named by address is free. " + SEARCH_PRICE + "]")
 NO_ADDRESS = "No page address was provided. Give a specific address to read, or search for the page using the question."
 
 def turn_note(user_message: Any = None, **_: Any) -> Optional[dict[str, str]]:
-    if not reads_pages():
+    if not available():
         return None
     from . import direct_formats
     return {"context": TURN_NOTE[:-1] + direct_formats.turn_words(direct_formats.from_words(user_message)) + "]"}

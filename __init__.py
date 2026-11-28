@@ -10,7 +10,7 @@ time it runs in a profile, selects it where the user has chosen no backend (``_s
 this plugin keeps no credential of its own. Two hooks say on each result that Grounder served it, ask the
 model to cite a read Grounder served and end an answer that searched with the line Grounder's card shows. Two tools
 carry what Hermes's ``web_search`` cannot: every option of Grounder's MCP search, and the topic catalog.
-Use /search to choose Grounder provider or Grounder direct. The choice is shared with the account Routing page.
+Use /search to choose the page format or resolver. Grounder routes each search by the site's stored method; there is no choice of how to search.
 """
 
 from __future__ import annotations

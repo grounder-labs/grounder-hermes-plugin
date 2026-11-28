@@ -192,7 +192,7 @@ def test_a_paid_retry_sends_the_same_current_search_fields(plugin, stub, free, w
     stub.search_script = [refused(), paid()]
     out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "profile": "fast", "routing_settings": {"fallback": False}, "top_k": 3}))
     first, second = (json.loads(r["body"]) for r in _searches(stub))
-    assert first == second == {"query": "q", "top_k": 3, "mode": "grounder-provider"}
+    assert first == second == {"query": "q", "top_k": 3}
     assert signature_of(_searches(stub)[0]) is None and signature_of(_searches(stub)[1])
     assert out["success"] is True and "note" not in out
     assert out["data"][plugin.provider.PAYMENT_KEY]["transaction"] == TRANSACTION

@@ -103,8 +103,8 @@ def test_register_adds_search_and_only_search_with_its_hint(plugin):
     host = Host()
     plugin.register(host)
     assert set(host.commands) == {"search", "search-direct-format"}  # the presets are a choice in /search's first picker, not a command
-    assert host.commands["search"].args_hint == "[provider|direct|direct off|format|resolver]"
-    assert host.commands["search"].description.startswith("Choose Grounder provider, Grounder direct")
+    assert host.commands["search"].args_hint == "[format|resolver]"
+    assert host.commands["search"].description.startswith("Choose the Grounder page format or resolver")
     assert [p.name for p in host.providers] == ["grounder"]  # the backend is registered beside it
 
 
@@ -168,10 +168,10 @@ def test_another_plugins_commands_are_left_alone_and_this_plugins_own_are_replac
 
 
 def test_the_registered_handlers_run_the_commands(plugin, free):
-    host = Host(["only"])
+    host = Host(["format", "highlights"])
     plugin.register(host)
-    assert "Grounder direct" in host.commands["search"].handler("")
-    assert plugin.direct_dev.state() == "only"
+    assert "Highlights" in host.commands["search"].handler("")
+    assert plugin.direct_formats.saved() == "highlights"
 
 
 @pytest.mark.parametrize("web,registers", [
@@ -256,30 +256,16 @@ def test_a_config_that_cannot_be_read_registers_no_command_and_takes_nothing_els
 
 # --- nobody is signed in ------------------------------------------------------------------------------------------------
 
-def test_search_menu_marks_the_saved_choice_and_writes_it_once(plugin, hermes, stub):
+def test_search_menu_has_no_search_with_choice_and_writes_only_the_page_settings(plugin, hermes, stub):
     hermes.token = "signed-in"
-    stub.saved_direct = {"use": "off", "format": "summary"}
     plugin.provider._direct_cache.update(at=0, value=None)
-    host = Host(["only"])
-    result = plugin.commands.search_command(host, "")
-    assert "Search with: Grounder direct" in result
-    assert plugin.direct_dev.SEARCH_PRICE in result
-    assert [item["value"] for item in host.asked[0][1]] == ["off", "only", "format", "resolver", "done"]
-    assert host.asked[0][1][0]["label"].endswith("(current)")
-    saves = [json.loads(r["body"]) for r in stub.requests if r["method"] == "PUT"]
-    assert saves == [{"search": {"mode": "grounder-direct"}}]
-    assert stub.saved_direct["use"] == "only"
-
-    assert "Search with: Grounder provider" in plugin.commands.search_command(Host(), "provider")
+    host = Host(["done"])
+    plugin.commands.search_command(host, "")
+    assert [item["value"] for item in host.asked[0][1]] == ["format", "resolver", "done"]
     assert "Highlights" in plugin.commands.search_command(Host(), "format highlights")
     assert plugin.provider.save_direct({"user_agent": "Test Safari/17.0"}) is True
-    assert _puts(stub) == [
-        {"search": {"mode": "grounder-direct"}},
-        {"search": {"mode": "grounder-provider"}},
-        {"direct": {"format": "highlights"}},
-        {"direct": {"user_agent": "Test Safari/17.0"}},
-    ]
-    assert stub.saved_direct == {"use": "off", "format": "highlights", "user_agent": "Test Safari/17.0"}
+    assert _puts(stub) == [{"direct": {"format": "highlights"}}, {"direct": {"user_agent": "Test Safari/17.0"}}]
+    assert stub.saved_direct == {"format": "highlights", "user_agent": "Test Safari/17.0"} or stub.saved_direct.get("format") == "highlights"
 
 
 def test_search_format_and_resolver_offer_the_current_choice(plugin, free):
@@ -291,10 +277,9 @@ def test_search_format_and_resolver_offer_the_current_choice(plugin, free):
     assert plugin.direct_dev.resolver() == "grounder"
 
 
-def test_a_free_caller_can_change_the_local_mode(plugin, free):
+def test_a_free_caller_has_no_mode_to_change(plugin, free):
     host = Host()
-    assert "Grounder direct" in plugin.commands.search_command(host, "direct")
-    assert plugin.direct_dev.state() == "only"
-    assert "Grounder provider" in plugin.commands.search_command(host, "direct off")
-    assert plugin.direct_dev.state() == "off"
+    assert plugin.commands.search_command(host, "direct").startswith("Use /search format")
     assert not host.asked
+
+

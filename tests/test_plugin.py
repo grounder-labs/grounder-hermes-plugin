@@ -34,7 +34,7 @@ def test_with_no_key_and_no_sign_in_a_search_is_a_free_search_that_carries_no_cr
     assert [call["provider"] for call in free.calls] == ["grounder"]  # signing in was tried first, and Hermes had no grant
     request = _searches(stub)[0]
     assert not {name.lower() for name in request["headers"]} & {"authorization", "cookie"}
-    assert json.loads(request["body"]) == {"query": "q", "top_k": 5, "mode": "grounder-provider"}  # no option that cuts what Grounder returns
+    assert json.loads(request["body"]) == {"query": "q", "top_k": 5}  # no option that cuts what Grounder returns
     assert request["headers"]["User-Agent"] == plugin.provider.USER_AGENT
 
 
@@ -48,7 +48,7 @@ def test_a_page_read_with_no_key_and_no_sign_in_is_free_too(plugin, stub, free):
 def test_a_free_search_ignores_legacy_provider_configuration(plugin, stub, free, tmp_path):
     (tmp_path / "config.yaml").write_text(yaml.safe_dump({"web": {"grounder": {"preset": "deep", "server": "provider:exa"}}}))
     plugin.GrounderWebSearchProvider().search("q")
-    assert json.loads(_searches(stub)[0]["body"]) == {"query": "q", "top_k": 5, "mode": "grounder-provider"}
+    assert json.loads(_searches(stub)[0]["body"]) == {"query": "q", "top_k": 5}
 
 
 def test_a_free_search_ignores_retired_routing_fields(plugin, stub, free):
@@ -68,7 +68,7 @@ def test_a_signed_in_search_also_ignores_retired_routing_fields(plugin, stub, he
     hermes.token = "t"
     out = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "q", "profile": "fast", "routing_settings": {"fallback": False}}))
     sent = json.loads(_searches(stub)[0]["body"])
-    assert sent == {"query": "q", "mode": "grounder-provider"} and out["success"]
+    assert sent == {"query": "q"} and out["success"]
 
 
 def test_a_free_search_that_reaches_a_limit_says_where_to_sign_up_and_add_credit(plugin, stub, free):
@@ -122,7 +122,7 @@ def test_signed_in_search_goes_through_hermes_which_attaches_the_token(plugin, s
          "description": "short", "position": 2}]}}
     call = hermes.calls[0]
     assert (call["provider"], call["method"], call["url"]) == ("grounder", "POST", "https://api.grounder.net/v1/search")
-    assert call["json"] == {"query": "offshore wind", "top_k": 50, "mode": "grounder-provider"}
+    assert call["json"] == {"query": "offshore wind", "top_k": 50}
     assert not {name.lower() for name in call["headers"]} & {"authorization", "cookie"}
     assert _searches(stub)[0]["headers"]["Authorization"] == "Bearer hermes-held-token"
 
@@ -264,7 +264,7 @@ def test_query_is_cut_to_2000_characters_and_the_limit_kept_in_range(plugin, stu
     provider = plugin.GrounderWebSearchProvider()
     rows = provider.search("é" * 2500, limit=0)["data"]["web"]
     assert len(rows) == 1
-    assert json.loads(_searches(stub)[0]["body"]) == {"query": "é" * 2000, "top_k": 1, "mode": "grounder-provider"}
+    assert json.loads(_searches(stub)[0]["body"]) == {"query": "é" * 2000, "top_k": 1}
     provider.search("q")
     assert json.loads(_searches(stub)[1]["body"])["top_k"] == 5
 
@@ -290,7 +290,7 @@ def test_key_in_environment_wins_and_goes_without_hermes(plugin, stub, hermes, k
     assert hermes.calls == []
     request = _searches(stub)[0]
     assert request["headers"]["Authorization"] == f"Bearer {keyed}"
-    assert json.loads(request["body"]) == {"query": "q", "top_k": 5, "mode": "grounder-provider"}
+    assert json.loads(request["body"]) == {"query": "q", "top_k": 5}
 
 
 def _said(result):
@@ -436,7 +436,7 @@ def test_extract_is_one_search_for_the_pages_with_no_question_when_no_search_fou
     stub.search_body = {"results": [_page(PAGE_B), _page(PAGE_A)]}
     rows = plugin.GrounderWebSearchProvider().extract([PAGE_A, PAGE_B], format="markdown", include_raw=True, max_chars=99)
     assert len(_searches(stub)) == 1
-    assert json.loads(_searches(stub)[0]["body"]) == {"query": f"{PAGE_A} {PAGE_B}", "urls": [PAGE_A, PAGE_B], "mode": "grounder-direct",
+    assert json.loads(_searches(stub)[0]["body"]) == {"query": f"{PAGE_A} {PAGE_B}", "urls": [PAGE_A, PAGE_B],
                                                          "format": "summary", "user_agent": "Test Safari/17.0"}
     # In the order asked, whatever order Grounder answered in.
     assert rows == [{"url": PAGE_A, "title": "T", "content": "page text", "raw_content": "page text"},
@@ -1028,7 +1028,7 @@ def test_a_search_that_names_a_page_reads_it_for_the_rest_of_the_query(plugin, s
     provider = plugin.GrounderWebSearchProvider()
     stub.search_body = {"results": [_page(PAGE_A, text="Books\n* 2020: 7 Ways\n* 2021: Together", title="Jamie Oliver")]}
     result = provider.search(f"{PAGE_A}, books section list")
-    assert json.loads(_searches(stub)[-1]["body"]) == {"query": "books section list", "urls": [PAGE_A], "mode": "grounder-direct",
+    assert json.loads(_searches(stub)[-1]["body"]) == {"query": "books section list", "urls": [PAGE_A],
                                                            "format": "summary", "user_agent": "Test Safari/17.0"}
     # The page's text as Grounder read it, its lines kept, in web_search's shape; served, so it is numbered and noted.
     assert result == {"success": True, "data": {"web": [{"title": "Jamie Oliver", "url": PAGE_A, "description": "Books\n* 2020: 7 Ways\n* 2021: Together",
@@ -1230,7 +1230,7 @@ def test_grounder_search_sends_every_option_as_the_mcp_search_maps_it(plugin, st
         "query": " q ", "top_k": 3, "days": 7, "domains": ["bbc.com"], "features": ["news"], "include_text": False, "requested_provider": "exa",
         "providers": ["exa"], "routing_settings": {"fallback": False}, "user_location": " Austin ", "user_time_zone": "America/Chicago"}))
     sent = json.loads(_searches(stub)[0]["body"])
-    assert sent == {"query": "q", "top_k": 3, "include_text": False, "mode": "grounder-provider",
+    assert sent == {"query": "q", "top_k": 3, "include_text": False,
                     "filters": {"recency": {"mode": "rolling", "days": 7}},
                     "context": {"user_location": "Austin", "user_time_zone": "America/Chicago"}}
     assert out["success"] and out["data"]["web"][0]["title"] == "A" and "cite_sources" not in out
@@ -1292,7 +1292,7 @@ def test_a_failed_read_says_why_when_the_api_knows(plugin, stub, keyed):
 # --- Search modes and source credit --------------------------------------------------------
 
 @pytest.mark.parametrize("how", ["keyed", "hermes", "free"])
-def test_requests_use_only_current_modes_and_apply_them_independent_of_auth(plugin, stub, request, how):
+def test_requests_send_no_mode_and_drop_retired_fields_independent_of_auth(plugin, stub, request, how):
     auth = request.getfixturevalue(how)
     if how == "hermes":
         auth.token = "t"
@@ -1301,19 +1301,17 @@ def test_requests_use_only_current_modes_and_apply_them_independent_of_auth(plug
     provider.search_tool({"query": "q", "requested_provider": "exa", "workspace": "team", "profile": "deep"})
     provider.extract([PAGE_A])
     provider.search_tool({"query": "q", "urls": [PAGE_A], "mode": "grounder-direct"})
-    assert [body["mode"] for body in _bodies(stub)] == ["grounder-provider", "grounder-direct", "grounder-direct"]
+    assert all("mode" not in body for body in _bodies(stub))
     assert all(not {"requested_provider", "workspace", "profile", "features"} & set(body) for body in _bodies(stub))
-    for mode in ("optimized", "preset", "direct"):
-        assert json.loads(provider.search_tool({"query": "q", "mode": mode}))["success"] is False
     assert len(_searches(stub)) == 3
 
 
 @pytest.mark.parametrize("routing", [None, "direct", [], {}, {"provider": 7}, {"mode": ["direct"]}, {"mode": "turbo"}])
-def test_a_response_with_missing_or_unknown_routing_uses_the_request_mode(plugin, stub, keyed, routing):
+def test_a_response_with_missing_or_unknown_routing_is_named_by_what_was_asked(plugin, stub, keyed, routing):
     provider = plugin.GrounderWebSearchProvider()
     stub.search_body = {"results": [RESULT], "routing": routing}
-    for turn, mode, label in (("t1", "grounder-provider", "Grounder provider"), ("t2", "grounder-direct", "Grounder direct")):
-        shown = provider.search_tool({"query": "q", "mode": mode})
+    for turn, args, label in (("t1", {"query": "q"}, "Grounder provider"), ("t2", {"query": "q", "urls": [PAGE_A]}, "Grounder direct")):
+        shown = provider.search_tool(args)
         provider.after_tool("grounder_search", {"query": "q"}, shown, session_id="s", turn_id=turn)
         assert provider.after_answer("A", session_id="s", turn_id=turn) == f"A\n\nSearched with {label} · 1 source"
 
@@ -1324,7 +1322,7 @@ def test_searches_of_one_answer_in_different_modes_name_each_mode_once(plugin, s
                                ("three", "grounder-provider", "developer.mozilla.org")):
         stub.search_body = {"routing": {"mode": mode}, "results": [{**RESULT, "url": f"https://example.com/{word}"}],
                             "topics": [{"id": word, "source": source, "reached": mode.split("-")[1]}]}
-        shown = provider.search_tool({"query": word, "mode": mode})
+        shown = provider.search_tool({"query": word})
         provider.after_tool("grounder_search", {"query": word}, shown, session_id="s", turn_id="t")
     assert provider.after_answer("A", session_id="s", turn_id="t") == (
         "A\n\nSearched with Grounder provider, Grounder direct · via developer.mozilla.org, github.com · 3 sources")

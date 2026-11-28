@@ -97,7 +97,7 @@ def test_what_the_plugin_renders_says_Grounder(plugin):
     provider = plugin.GrounderWebSearchProvider()
     texts = [*_all_text(plugin.provider.SEARCH_SCHEMA), provider.get_setup_schema()["tag"],
              *plugin.provider.UNREAD.values(), plugin.provider.NOT_READ, plugin.provider.SHOWN_NOTE,
-             plugin.provider.CITE_REQUEST, plugin.provider.CITE_REQUEST_LISTED, *plugin.commands.SEARCH_CHOICES]
+             plugin.provider.CITE_REQUEST, plugin.provider.CITE_REQUEST_LISTED]
     links = {"signup_url": "https://grounder.net/account", "billing_url": "https://grounder.net/account/billing"}
     for status, via, body in ((401, "key", {}), (401, "sign-in", {}), (429, "free", {"error": {"details": links}}), (503, "free", {"error": {"details": links}}),
                               (402, "free", {"error": {"details": links}}), (402, "free", {}), (402, "key", {}), (429, "key", {"error": {"message": "slow down"}}), (500, "sign-in", {})):

@@ -32,8 +32,9 @@ def _dev(home):
 
 
 @pytest.fixture
-def dev_on(plugin, tmp_path):
-    plugin.direct_dev.set_on(True)
+def dev_on(plugin, tmp_path, monkeypatch):
+    # Grounder direct is available when the program runs on this Mac (GRO-1161: nothing is saved).
+    monkeypatch.setattr(plugin.direct_dev, "_installed", lambda: True)
     return tmp_path
 
 
@@ -68,8 +69,8 @@ def test_grounder_search_searches_nothing_either(plugin, stub, hermes, dev_on, r
     assert reads == [PAGE] and not stub.requests and answer["data"]["web"][0]["url"] == PAGE
 
 
-def test_off_by_default(plugin, stub, hermes):
-    assert plugin.direct_dev.is_on() is False
+def test_not_available_without_the_program(plugin, stub, hermes):
+    assert plugin.direct_dev.available() is False
 
 
 @pytest.mark.skipif(os.environ.get("GROUNDER_DIRECT_LIVE") != "1", reason="reads reddit.com from this Mac; set GROUNDER_DIRECT_LIVE=1")
@@ -139,7 +140,7 @@ def test_the_users_words_pick_the_format_of_a_web_extract(plugin, stub, hermes, 
 
 def test_the_turn_note_asks_for_the_format_the_user_named(plugin, hermes, dev_on):
     note = plugin.direct_dev.turn_note(user_message="highlights from the wikipedia page on switches")["context"]
-    assert 'format "highlights"' in note and 'mode "grounder-direct"' in note
+    assert 'format "highlights"' in note and 'mode "' not in note
     assert "format full-page" not in plugin.direct_dev.turn_note(user_message="what does wikipedia say")["context"]
 
 
@@ -149,7 +150,7 @@ def test_search_format_saves_the_default_format_and_chat_words_win_over_it(plugi
     assert plugin.commands.search_format_command(Host(), "poem") == "Use /search-direct-format full-page, highlights or summary."
     assert plugin.commands.search_format_command(Host(["summary"]), "").startswith("Page format: Summary")
     row = plugin.GrounderWebSearchProvider().search(f"read full page {PAGE}", limit=5)["data"]["web"][0]
-    assert "Format: full-page" in row["description"] and _dev(plugin_home(plugin)) is True  # saving the format kept the mode
+    assert "Format: full-page" in row["description"]
     monkeypatch.setattr(plugin.provider, "_session", lambda: "s")
     plugin.provider.note_message(session_id="s", user_message=f"full page of {PAGE}")
     assert "Format: full-page" in plugin.GrounderWebSearchProvider().extract([PAGE])[0]["content"]
@@ -230,7 +231,7 @@ def test_an_empty_script_only_page_is_reported_as_a_bot_check(plugin, monkeypatc
     assert "bot check" in problem and "Nothing was done to get past it" in problem
 
 
-def test_a_changed_format_or_mode_drops_hermess_cached_grounder_searches(plugin, hermes, monkeypatch, dev_on):
+def test_a_changed_format_drops_hermess_cached_grounder_searches(plugin, hermes, monkeypatch, dev_on):
     import sys
     import threading
     import types
@@ -239,7 +240,7 @@ def test_a_changed_format_or_mode_drops_hermess_cached_grounder_searches(plugin,
     plugin.direct_formats.save("summary")
     assert list(memo._store) == [("exa", "q", 10)]
     memo._store[("grounder", "q", 10)] = (0, {})
-    plugin.direct_dev.set_state(plugin.direct_dev.OFF)
+    plugin.direct_formats.save("highlights")
     assert list(memo._store) == [("exa", "q", 10)]
 
 
@@ -249,25 +250,6 @@ def test_a_read_through_grounders_resolver_says_so(plugin, monkeypatch):
     monkeypatch.setattr(plugin.direct_dev, "safari_version", lambda: "27.2")
     line = plugin.direct_dev.header({"url": PAGE, "status": 200, "ms": 5, "resolver": "grounder"})
     assert "its name looked up through Grounder's resolver" in line
-
-
-def test_turning_grounder_direct_on_drops_pages_hermes_cached_from_grounders_reader(plugin, hermes, monkeypatch, tmp_path):
-    import hashlib
-    import sys
-    import threading
-    import types
-    digest = lambda url, fmt, provider="": hashlib.sha256(f"{url}\n{fmt or 'markdown'}\n{provider or ''}".encode()).hexdigest()[:16]
-    mine, other = tmp_path / "g.cache.md", tmp_path / "e.cache.md"
-    mine.write_text("x"); other.write_text("y")
-    index = {digest(PAGE, None, "grounder"): {"url": PAGE, "file": str(mine)}, digest(PAGE, None, "exa"): {"url": PAGE, "file": str(other)}}
-    saved = {}
-    cache = types.SimpleNamespace(_index_lock=threading.Lock(), _load_index=lambda: dict(index), _save_index=saved.update, _url_digest=digest)
-    monkeypatch.setitem(sys.modules, "tools.web_result_cache", cache)
-    plugin.direct_dev.set_state(plugin.direct_dev.ONLY)
-    assert list(saved) == [digest(PAGE, None, "exa")] and not mine.exists() and other.exists()
-
-
-
 
 
 def test_a_site_is_a_bare_name_or_an_https_address(plugin):
@@ -337,6 +319,7 @@ def test_the_installed_program_is_the_reader_and_runs_as_its_reader_subcommand(p
     program = _fake_program(tmp_path / "bin" / "grounder-direct", "grounder-direct 0.8.0")
     monkeypatch.setattr(dd, "INSTALLED", program)
     monkeypatch.setattr(dd, "_installed_ok", {})
+    monkeypatch.setattr(dd, "_installed", dd.real_installed)
     monkeypatch.setattr(dd, "_build_helper", lambda: (_ for _ in ()).throw(AssertionError("no build when the program is installed")))
     helper, why = dd._helper()
     assert helper == program and why == ""
@@ -349,6 +332,7 @@ def test_a_broken_installed_program_falls_back_to_the_build_and_with_neither_the
     broken = _fake_program(tmp_path / "bin" / "grounder-direct", "not it")
     monkeypatch.setattr(dd, "INSTALLED", broken)
     monkeypatch.setattr(dd, "_installed_ok", {})
+    monkeypatch.setattr(dd, "_installed", dd.real_installed)
     built = tmp_path / "direct-reader-abc"
     monkeypatch.setattr(dd, "_build_helper", lambda: (built, ""))
     assert dd._helper() == (built, "")

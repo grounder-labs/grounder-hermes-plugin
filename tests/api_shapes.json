@@ -24,14 +24,12 @@
   "about": "Written by workers/router/test/surface-parity.test.ts from what GET and PUT /v1/search/settings answer, each PUT on a fresh account; never by hand. tests/test_server_shapes.py replays each exchange against the fake server in conftest.py; an exchange keeps the parts of the answer the plugin reads.",
   "answer": {
    "search": {
-    "mode": "grounder-provider",
     "profile": null,
     "requested_provider": null,
     "provider_mode": null,
     "fallback": false
    },
    "direct": {
-    "use": "off",
     "format": "summary",
     "user_agent": null
    },
@@ -39,19 +37,11 @@
    "updated_at": null,
    "choices": {
     "search": {
-     "modes": [
-      "grounder-provider",
-      "grounder-direct"
-     ],
      "profiles": []
     },
     "providers": [],
     "specialized": [],
     "direct": {
-     "uses": [
-      "off",
-      "only"
-     ],
      "formats": [
       "full-page",
       "highlights",
@@ -74,14 +64,12 @@
     "status": 200,
     "answer": {
      "search": {
-      "mode": "grounder-direct",
       "profile": null,
       "requested_provider": null,
       "provider_mode": null,
       "fallback": false
      },
      "direct": {
-      "use": "only",
       "format": "summary",
       "user_agent": null
      },
@@ -97,14 +85,12 @@
     "status": 200,
     "answer": {
      "search": {
-      "mode": "grounder-provider",
       "profile": null,
       "requested_provider": null,
       "provider_mode": null,
       "fallback": false
      },
      "direct": {
-      "use": "off",
       "format": "summary",
       "user_agent": null
      },
@@ -120,14 +106,12 @@
     "status": 200,
     "answer": {
      "search": {
-      "mode": "grounder-provider",
       "profile": null,
       "requested_provider": null,
       "provider_mode": null,
       "fallback": false
      },
      "direct": {
-      "use": "off",
       "format": "highlights",
       "user_agent": null
      },
@@ -143,14 +127,12 @@
     "status": 200,
     "answer": {
      "search": {
-      "mode": "grounder-provider",
       "profile": null,
       "requested_provider": null,
       "provider_mode": null,
       "fallback": false
      },
      "direct": {
-      "use": "off",
       "format": "summary",
       "user_agent": "Mozilla/5.0 (Macintosh) Test"
      },
@@ -169,14 +151,12 @@
     "status": 200,
     "answer": {
      "search": {
-      "mode": "grounder-direct",
       "profile": null,
       "requested_provider": null,
       "provider_mode": null,
       "fallback": false
      },
      "direct": {
-      "use": "only",
       "format": "full-page",
       "user_agent": null
      },
@@ -186,7 +166,7 @@
    {
     "body": {},
     "status": 400,
-    "message": "Send an object with a saved search or direct setting."
+    "message": "Send an object with a saved direct or cap setting."
    },
    {
     "body": {
@@ -201,8 +181,20 @@
       "mode": "sideways"
      }
     },
-    "status": 400,
-    "message": "Grounder routes each search by topic, so there is no provider or live-data setting to save. A search is Grounder provider or Grounder direct."
+    "status": 200,
+    "answer": {
+     "search": {
+      "profile": null,
+      "requested_provider": null,
+      "provider_mode": null,
+      "fallback": false
+     },
+     "direct": {
+      "format": "summary",
+      "user_agent": null
+     },
+     "specialized": {}
+    }
    },
    {
     "body": {
@@ -214,14 +206,12 @@
     "status": 200,
     "answer": {
      "search": {
-      "mode": "grounder-direct",
       "profile": null,
       "requested_provider": null,
       "provider_mode": null,
       "fallback": false
      },
      "direct": {
-      "use": "only",
       "format": "summary",
       "user_agent": null
      },
@@ -243,8 +233,20 @@
       "use": "sometimes"
      }
     },
-    "status": 400,
-    "message": "direct.use must be one of off, only."
+    "status": 200,
+    "answer": {
+     "search": {
+      "profile": null,
+      "requested_provider": null,
+      "provider_mode": null,
+      "fallback": false
+     },
+     "direct": {
+      "format": "summary",
+      "user_agent": null
+     },
+     "specialized": {}
+    }
    },
    {
     "body": {
@@ -255,7 +257,7 @@
      }
     },
     "status": 400,
-    "message": "Grounder routes each search by topic, so there is no provider or live-data setting to save. A search is Grounder provider or Grounder direct."
+    "message": "Grounder routes each search by the site's stored method, so there is no provider or live-data setting to save."
    }
   ]
  },

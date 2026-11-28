@@ -3,7 +3,7 @@
 
 """Grounder direct's three formats for a page read straight from its site: ``full-page``, ``highlights`` and ``summary``.
 
-A ``grounder_search`` call names one with ``format`` (only with ``mode: "grounder-direct"``, or while the mode is on). In chat, the user's own words pick one
+A ``grounder_search`` call names one with ``format`` (with ``urls`` or ``site``, which ask for a read). In chat, the user's own words pick one
 ("full page", "highlights", "summary"): the turn note asks the model to pass it and to answer in it, and a ``web_search`` or ``web_extract`` with no format of its
 own takes it from the user's latest message. Left out, a read is ``summary``.
 
@@ -224,5 +224,5 @@ def turn_words(fmt: Optional[str]) -> str:
     if not fmt:
         kept = saved()
         return f" The user's /search-direct-format is {kept}: pages come back in it, and answer in it. {ANSWER[kept]}" if kept else ""
-    return (f" The user asked for the {fmt} format: call grounder_search with mode \"{DIRECT_MODE}\", format \"{fmt}\" and the address in urls, "
+    return (f" The user asked for the {fmt} format: call grounder_search with format \"{fmt}\" and the address in urls, "
             f"and answer in that format. {ANSWER[fmt]}")

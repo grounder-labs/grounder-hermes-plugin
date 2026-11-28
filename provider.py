@@ -38,7 +38,7 @@ With a wallet set (``GROUNDER_X402_PRIVATE_KEY``) a free search that Grounder an
 what is paid, and what is never paid, is ``payment.choose``. No request the plugin makes follows
 a redirect (``_open``), and no address that carries a key or is not public is sent (``_refusal``).
 
-``/search`` saves the search choice and format on the Grounder account when connected, otherwise locally. The resolver is local.
+``/search`` saves the page format on the Grounder account when connected, otherwise locally. The resolver is local. There is no saved choice of how to search (GRO-1161).
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ READS_URL = f"{ORIGIN}/v1/direct/reads"  # where a read done on this Mac is told
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.10.10"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.10.11"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -88,8 +88,8 @@ CLIENT_ENV = "GROUNDER_OAUTH_CLIENT_ID"  # filled in at the first load when ther
 CLIENT_ID = f"{ORIGIN}/oauth/clients/hermes-agent"  # public, the same for everyone
 MAX_RESULTS = 100  # most results one search asks Grounder for: its top_k range, and the 100 Hermes clamps a model's limit to
 MAX_QUERY_CHARS = 2000  # Grounder's limit on a query
-MODES = ("grounder-provider", "grounder-direct")
-PROVIDER_MODE = MODES[0]
+# What a response's routing.mode says answered a search (an answer, never a choice: GRO-1161).
+ANSWERED = ("grounder-provider", "grounder-direct")
 DIRECT_MODE = direct_formats.DIRECT_MODE
 MAX_PAGES = 5
 REMEMBERED_PAGES = 500  # how many pages the plugin remembers the web_search of, in memory only
@@ -137,7 +137,7 @@ SEARCH_SCHEMA = {
     "name": SEARCH_TOOL,
     "description": (
         "Better web routing. Use for questions that need current or verifiable information that Grounder has a source for. "
-        "Grounder provider returns the answering sources' results. Grounder direct finds their pages and reads them. "
+        "Grounder routes the question to the sources it chose, each reached by its stored method. Grounder direct finds a page and reads it on this Mac. "
         "Use urls when the user gives a page address, or site and query when they name a site without a page address. "
         "Reading a page named by address is free. " + direct_dev.SEARCH_PRICE
     ),
@@ -150,8 +150,6 @@ SEARCH_SCHEMA = {
         "include_text": {"type": "boolean", "description": "Include each result's text. Default true."},
         "user_location": {"type": "string", "description": "Where the user is, only when stated in this chat."},
         "user_time_zone": {"type": "string", "description": "The user's IANA time zone, only when stated in this chat."},
-        "mode": {"type": "string", "enum": list(MODES),
-                 "description": "Use grounder-direct when the user asks to read a page. Leave mode out to use the saved choice."},
         "site": {"type": "string", "description": "Only a host the user's own words write, such as bbc.co.uk, never one inferred from a name (the Oscars is not oscars.org). Put their words in query. " + direct_dev.SEARCH_PRICE},
         "format": {"type": "string", "enum": list(direct_formats.FORMATS),
                    "description": "Summary, full-page or highlights. Send only when the user's words name a format."},
@@ -267,8 +265,9 @@ def _summary(body: dict[str, Any], sources: int, sent: dict[str, Any] | None = N
     """What the line under an answer needs of one search."""
     routing = body.get("routing") if isinstance(body.get("routing"), dict) else {}
     mode = routing.get("mode")
-    if mode not in MODES:
-        mode = (sent or {}).get("mode")
+    if mode not in ANSWERED:
+        # No answer names the way: a search that asked for pages or a site was a Grounder direct search (there is no mode to send, GRO-1161).
+        mode = DIRECT_MODE if (sent or {}).get("urls") or (sent or {}).get("site") else None
     way = "Grounder direct" if mode == DIRECT_MODE else "Grounder provider"
     topics = [topic for topic in _listed(body.get("topics")) if isinstance(topic, dict)]
     via = list(dict.fromkeys(str(topic["source"]) for topic in topics if topic.get("source") and topic.get("reached") != "none" and topic.get("status", "ok") == "ok"))
@@ -594,8 +593,8 @@ _direct_cache: dict[str, Any] = {"at": 0.0, "value": None}
 
 
 def account_direct() -> dict[str, Any] | None:
-    """The ``direct`` block (``use``, ``format``, ``user_agent``) of the account's saved setting, kept 30 seconds, or None when there is no credential, the read failed or the
-    answer has none. The account is the one source when there is a credential (the Routing page and ``/search`` write it); the local ``web.grounder.direct`` is only the fallback."""
+    """The ``direct`` block (``format``, ``user_agent``) of the account's saved setting, kept 30 seconds, or None when there is no credential, the read failed or the
+    answer has none. The account is the one source when there is a credential (the Routing page and ``/search`` write it)."""
     now = time.monotonic()
     if now - float(_direct_cache["at"]) < DIRECT_CACHE_S:
         return _direct_cache["value"]
@@ -603,11 +602,7 @@ def account_direct() -> dict[str, Any] | None:
     try:
         answer, _why = _settings_call("GET")
         block = answer.get("direct") if answer else None
-        choice = answer.get("search") if answer else None
-        mode = choice.get("mode") if isinstance(choice, dict) else None
         value = dict(block) if isinstance(block, dict) else None
-        if mode in MODES:
-            value = {**(value or {}), "use": direct_dev.ONLY if mode == DIRECT_MODE else direct_dev.OFF}
     except ProviderNotSignedIn:
         value = None
     _direct_cache.update(at=now, value=value)
@@ -615,11 +610,8 @@ def account_direct() -> dict[str, Any] | None:
 
 
 def save_direct(change: dict[str, Any]) -> bool | None:
-    """Write the search choice as search.mode and page settings as direct.format or direct.user_agent."""
+    """Write the page settings as direct.format or direct.user_agent."""
     body: dict[str, Any] = {}
-    if "use" in change:
-        mode = DIRECT_MODE if change["use"] == direct_dev.ONLY else PROVIDER_MODE
-        body["search"] = {"mode": mode}
     direct = {key: change[key] for key in ("format", "user_agent") if key in change}
     if direct:
         body["direct"] = direct
@@ -639,9 +631,9 @@ direct_dev.account_direct_reader = account_direct
 direct_dev.account_direct_writer = save_direct
 
 
-def direct_state() -> str:
-    """How Grounder direct is set for a search: the account's saved search mode when it has one, else this Mac's setting (``direct_dev.state`` follows the account itself)."""
-    return direct_dev.state()
+def direct_available() -> bool:
+    """Whether Grounder direct is installed and available on this Mac, which is what makes the sites only it reaches available to a search (the request's ``reader: mac``)."""
+    return direct_dev.available()
 
 
 def direct_format() -> str | None:
@@ -1323,7 +1315,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         pages = list(dict.fromkeys(asked))
         if len(pages) > MAX_PAGES:
             return _notice_pages(asked, f"Grounder direct reads at most {MAX_PAGES} pages a call.")
-        if direct_state() == direct_dev.ONLY:
+        if direct_available():
             return self._dev_extract(asked)
         refused = {page: reason for page in pages if (reason := _refusal(page))}
         pages = [page for page in pages if page not in refused]
@@ -1334,7 +1326,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
             return _notice_pages(asked, "Grounder direct needs your Safari user agent to read these pages.")
         question = self._question(pages)
         fmt = direct_formats.chosen(None, _ASKS.get(_session(), ""), direct_format())
-        body, error = _send({"query": question, "urls": pages, "mode": DIRECT_MODE, "user_agent": agent, "format": fmt})
+        body, error = _send({"query": question, "urls": pages, "user_agent": agent, "format": fmt})
         if body is None:
             if isinstance(error, _Act):
                 return _notice_pages(asked, error)
@@ -1449,7 +1441,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         agent = direct_dev.user_agent()
         if not agent:
             return _notice("Grounder direct needs your Safari user agent to read these pages.", "refused")
-        body, error = _send({"query": question, "urls": pages, "mode": DIRECT_MODE, "format": fmt, "user_agent": agent})
+        body, error = _send({"query": question, "urls": pages, "format": fmt, "user_agent": agent})
         if body is None:
             return _notice(error) if isinstance(error, _Act) else _notice(error or "Grounder returned no answer", "refused")
         found = _pages_found(pages, _results(body))
@@ -1471,7 +1463,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
             if page in found or page in shown:
                 entry = _page_row(page, found[page]) if page in found else _page_shown(page, shown[page])
                 rows.append({"title": entry["title"], "url": page, "description": entry["content"], "position": len(rows) + 1})
-        self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows), {'mode': DIRECT_MODE}), found_by=False)
+        self._remember(query[:MAX_QUERY_CHARS], rows, _summary(body, len(rows), {"urls": pages}), found_by=False)
         return {"success": True, "data": {"web": rows}}
 
     def after_tool(self, tool_name: str = "", args: Any = None, result: Any = None, session_id: str = "", turn_id: str = "", conversation_id: str = "",
@@ -1589,9 +1581,6 @@ class GrounderWebSearchProvider(WebSearchProvider):
         query = str(args.get("query") or "").strip()[:MAX_QUERY_CHARS]
         if not query:
             return _fail("Grounder search needs a query.")
-        mode = str(args.get("mode") or "").strip()
-        if mode and mode not in MODES:
-            return _fail(f"mode must be one of {', '.join(MODES)}.")
         site = _site_arg(args.get("site"))
         explicit = args.get("urls")
         pages = list(dict.fromkeys(str(url) for url in explicit)) if isinstance(explicit, list) else []
@@ -1599,36 +1588,34 @@ class GrounderWebSearchProvider(WebSearchProvider):
         why = next((reason for url in dict.fromkeys([*pages, *addresses]) if (reason := _refusal(url))), "")
         if why:
             return _notice(why, "refused")
-        if not pages and mode != PROVIDER_MODE:
+        if not pages:
             pages = addresses
         if len(pages) > MAX_PAGES:
             return _notice(f"Grounder direct reads at most {MAX_PAGES} pages a call.", "refused")
-        if mode == PROVIDER_MODE and (pages or site):
-            return _notice("Use mode grounder-direct to read pages by address or search a named site.", "refused")
         if args.get("site") and not site:
             return _fail("site must be a host such as bbc.co.uk.")
         asked_format = args.get("format")
         if asked_format and not direct_formats.valid(asked_format):
             return _fail(f"format must be one of {', '.join(direct_formats.FORMATS)}.")
-        state = direct_state()
         asks = _ASKS.get(_session(), "")
-        local = state == direct_dev.ONLY
-        reading = mode == DIRECT_MODE or (not mode and (local or bool(pages) or bool(site)))
+        local = direct_available()
+        reading = bool(pages) or bool(site)
         fmt = direct_formats.chosen(asked_format, asks or query, direct_format()) if reading else ""
         if pages:
             return self._dev_search(query, fmt, pages=pages) if local else self._read_part(query, pages, fmt)
         payload = _options(args, query)
-        payload["mode"] = DIRECT_MODE if reading else PROVIDER_MODE
+        # The program on this Mac is what makes Grounder direct available: a search that says so is offered the sites only it reaches (GRO-1150).
+        if local:
+            payload["reader"] = "mac"
         if reading:
             payload["format"] = fmt
             if site:
                 payload["site"] = site
-            if local:
-                payload["reader"] = "mac"
-            elif agent := direct_dev.user_agent():
+            if not local:
+                agent = direct_dev.user_agent()
+                if not agent:
+                    return _notice("Grounder direct needs your Safari user agent to read pages.", "refused")
                 payload["user_agent"] = agent
-            else:
-                return _notice("Grounder direct needs your Safari user agent to read pages.", "refused")
         paid: list[dict[str, Any]] = []
         sent_via: list[str] = []
         body, error = _send(payload, paid_out=paid, via_out=sent_via)
@@ -1641,7 +1628,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
         if not reading and isinstance(payload.get("top_k"), int):
             results = results[:payload["top_k"]]
         rows = [_row(row, i + 1) for i, row in enumerate(results)]
-        if local and reading:
+        if local and (reading or _candidates(body)):
             credits = {str(topic.get("id")): credit for topic in topics if (credit := _credit(topic.get("licence")))}
             found = self._read_candidates(_candidates(body), fmt, query, site, credits)
             combined = [*found, *rows]

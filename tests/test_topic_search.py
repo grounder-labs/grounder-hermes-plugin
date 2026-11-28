@@ -12,7 +12,7 @@ def calls(stub):
 
 
 def test_hermes_reads_candidates_by_topic_and_keeps_feed_rows(plugin, free, stub, reads, monkeypatch):
-    monkeypatch.setattr(plugin.direct_dev, "state", lambda: "only")
+    monkeypatch.setattr(plugin.direct_dev, "_installed", lambda: True)
     stub.search_body = {
         "results": [{"url": "https://feed.example/score", "title": "A score", "provenance": {"topic": "sports"}}],
         "topics": [
@@ -25,31 +25,30 @@ def test_hermes_reads_candidates_by_topic_and_keeps_feed_rows(plugin, free, stub
     answer = plugin.GrounderWebSearchProvider().search("news and docs and sports")
     assert [row["url"] for row in answer["data"]["web"]] == [NEWS, DOCS, "https://feed.example/score"]
     assert reads == [NEWS, DOCS]
-    assert calls(stub) == [{"query": "news and docs and sports", "top_k": 5, "mode": "grounder-direct", "reader": "mac", "format": "summary"}]
+    assert calls(stub) == [{"query": "news and docs and sports", "top_k": 5, "reader": "mac"}]
     assert "Found by a Grounder direct search" in answer["data"]["web"][0]["description"]
     assert "No search provider was called" not in answer["data"]["web"][0]["description"]
 
 
 def test_named_page_stays_on_the_mac_and_is_free(plugin, free, stub, reads, monkeypatch):
-    monkeypatch.setattr(plugin.direct_dev, "state", lambda: "only")
+    monkeypatch.setattr(plugin.direct_dev, "_installed", lambda: True)
     answer = plugin.GrounderWebSearchProvider().search(f"read {NEWS}")
     assert reads == [NEWS] and calls(stub) == []
     assert "No search provider was called" in answer["data"]["web"][0]["description"]
 
 
 def test_named_site_uses_mac_reader_instead_of_the_legacy_domain_filter(plugin, free, stub, reads, monkeypatch):
-    monkeypatch.setattr(plugin.direct_dev, "state", lambda: "only")
+    monkeypatch.setattr(plugin.direct_dev, "_installed", lambda: True)
     stub.search_body = {"results": [], "direct": {"candidates": [{"topic": "site", "url": NEWS}, {"topic": "site", "url": DOCS}]}}
     reply = json.loads(plugin.GrounderWebSearchProvider().search_tool({"query": "Latest headlines", "site": "news.example"}))
     assert [row["url"] for row in reply["data"]["web"]] == [NEWS]
     assert reads == [NEWS]
-    assert calls(stub) == [{"query": "Latest headlines", "mode": "grounder-direct", "reader": "mac", "format": "summary", "site": "news.example"}]
+    assert calls(stub) == [{"query": "Latest headlines", "reader": "mac", "format": "summary", "site": "news.example"}]
 
 
-def test_provider_mode_skips_local_reads_even_with_direct_saved(plugin, free, stub, reads, monkeypatch):
-    monkeypatch.setattr(plugin.direct_dev, "state", lambda: "only")
-    plugin.GrounderWebSearchProvider().search_tool({"query": "weather", "mode": "grounder-provider"})
-    assert calls(stub) == [{"query": "weather", "mode": "grounder-provider"}] and reads == []
+def test_with_no_program_a_search_says_no_mac_reader_and_reads_nothing_here(plugin, free, stub, reads):
+    plugin.GrounderWebSearchProvider().search_tool({"query": "weather"})
+    assert calls(stub) == [{"query": "weather"}] and reads == []
 
 
 def test_no_topic_is_a_grounder_notice_with_no_local_read_or_payment(plugin, free, stub, reads):

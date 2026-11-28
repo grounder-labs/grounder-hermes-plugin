@@ -130,7 +130,7 @@ A question that fits no topic gives a plain message with no results and no charg
 
 ## Choose how Grounder searches
 
-`/search` opens the search choice, page format and resolver menu. `/search provider` selects Grounder provider. `/search direct` selects Grounder direct, and `/search direct off` switches back. The search choice and format are saved to the Grounder account when connected, otherwise on this machine. Use `/hermes search` on Slack.
+`/search` opens the page format and resolver menu. There is no choice of how to search: Grounder routes each search by the site's stored method, and the reader installed on this Mac is what makes the sites only Grounder direct reaches available. The format is saved to the Grounder account when connected, otherwise on this machine. Use `/hermes search` on Slack.
 
 ### Grounder direct on a Mac
 
