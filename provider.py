@@ -80,7 +80,7 @@ READS_URL = f"{ORIGIN}/v1/direct/reads"  # where a read done on this Mac is told
 SETTINGS_URL = f"{ORIGIN}/v1/search/settings"  # the account's saved search setting, read and written with a key or the sign-in; the Routing page on grounder.net shows the same one
 OAUTH_ID = "grounder"  # the id of the oauth: entry in plugin.yaml
 SIGN_IN = f"hermes auth add grounder:{OAUTH_ID}"  # the plugin's key (its name), a colon, the entry's id
-USER_AGENT = "grounder-hermes/0.10.8"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
+USER_AGENT = "grounder-hermes/0.10.10"  # Grounder names these searches Hermes Agent; keep it on plugin.yaml's version
 KEY_ENV = "GROUNDER_API_KEY"
 BAD_KEY = (f"{KEY_ENV} holds a character no search key has (a space, a line break or a letter outside plain ASCII). "
            f"Set it again with `hermes config set {KEY_ENV} <key>`, or sign in with `{SIGN_IN}`.")
@@ -817,6 +817,7 @@ def _message_text(message: Any) -> str:
 def note_message(**call: Any) -> None:
     """``pre_llm_call`` hook: remember the user's latest message in this session. Injects nothing and changes nothing about the call."""
     session = str(call.get("session_id") or "")
+    _remember_words(session, call.get("user_message"))
     text = " ".join(_message_text(call.get("user_message")).split())[:MAX_QUERY_CHARS]
     if not session or not text:
         return
@@ -824,6 +825,27 @@ def note_message(**call: Any) -> None:
     _ASKS[session] = text
     while len(_ASKS) > _TURNS_KEPT:
         _ASKS.pop(next(iter(_ASKS)), None)
+
+
+# The user's latest message as they typed it, for the record of each search (GRO-1149, Harlan: "i need to record the actually prompt"): the same ``pre_llm_call`` message
+# ``_ASKS`` holds, but with its spacing kept and nothing else changed, cut only at Grounder's 2,000 characters. ``_ASKS`` folds white space for the page reads.
+_SAID: dict[str, str] = {}
+
+
+def _remember_words(session: str, message: Any) -> None:
+    text = _message_text(message).strip()[:MAX_QUERY_CHARS]
+    if not session or not text:
+        return
+    _SAID.pop(session, None)
+    _SAID[session] = text
+    while len(_SAID) > _TURNS_KEPT:
+        _SAID.pop(next(iter(_SAID)), None)
+
+
+def _words() -> str:
+    """What the user last typed in this session, or "" when Hermes gave the plugin no message (a search from a job, say): then the search says nothing of the user's
+    words and Grounder records it as a search with no user prompt, never the model's query in their place."""
+    return _SAID.get(_session(), "")
 
 
 def _session() -> str:
@@ -920,7 +942,7 @@ def _send(payload: dict[str, Any], sent_out: Optional[list[dict[str, Any]]] = No
     key = _key()
     if key and not _key_fits(key):
         return None, _act(BAD_KEY)
-    context = _context()
+    context = {**_context(), **({"prompt_content": _words()} if _words() else {})}
     if context:
         payload = {**payload, "context": {**payload.get("context", {}), **context}}
     via = "key" if key else "sign-in"
@@ -1353,7 +1375,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
             text = (direct_dev.not_read(url, page["problem"]) if page.get("problem")
                     else direct_formats.shape(direct_dev.header(page), str(page.get("text") or ""), fmt, question, str(page.get("url") or url)))
             rows.append({"title": str(page.get("title") or url), "url": str(page.get("url") or url), "description": text, "position": len(rows) + 1})
-        direct_dev.report_read(question or query, tried)  # the account's copy of a read done here, when it asks for them (GRO-989)
+        direct_dev.report_read(question or query, tried, _words())  # the account's copy of a read done here, when it asks for them (GRO-989)
         return {"success": True, "data": {"web": rows, NOTICE_KEY: "direct"}}
 
     def _read_candidates(self, results: list[dict[str, Any]], fmt: str, question: str, site: str = "", credits: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -1412,7 +1434,7 @@ class GrounderWebSearchProvider(WebSearchProvider):
                     # changed format or a fresh read is never answered with an earlier one.
                     done[url] = {"url": f"{str(page.get('url') or url).split('#')[0]}#grounder-direct", "title": str(page.get("title") or ""), "content": text, "raw_content": text}
             out.append(done[url])
-        direct_dev.report_read(question, tried)  # the account's copy of a read done here, when it asks for them (GRO-989)
+        direct_dev.report_read(question, tried, _words())  # the account's copy of a read done here, when it asks for them (GRO-989)
         return out
 
     def _read_part(self, query: str, pages: list[str], fmt: str) -> dict[str, Any]:

@@ -73,6 +73,22 @@ def test_the_body_is_cut_and_bounded(plugin):
     assert body["pages"].count("https://example.com/a/b") == 1
 
 
+def test_the_users_own_message_rides_with_the_report_when_hermes_gave_one(plugin):
+    dd = plugin.direct_dev
+    pages = ["https://example.com/a"]
+    body = dd.read_body("what is new", pages, "  what is new on https://Example.com/a?token=secret  ")
+    assert body == {"prompt": "what is new", "user_prompt": "what is new on https://example.com/a", "pages": ["https://example.com/a"]}
+    assert "user_prompt" not in dd.read_body("what is new", pages) and "user_prompt" not in dd.read_body("what is new", pages, "   ")
+
+
+def test_a_read_is_told_with_the_message_the_user_last_typed(plugin, hermes, dev_on, reads, told, monkeypatch):
+    monkeypatch.setattr(plugin.provider, "_session", lambda: "s1")
+    plugin.provider.note_message(session_id="s1", user_message="read the post on " + PAGE + " for me")
+    plugin.GrounderWebSearchProvider().search(f"what is new on {PAGE}", limit=5)
+    assert told["sent"][0]["user_prompt"] == "read the post on " + PAGE + " for me"
+    assert told["sent"][0]["prompt"] == "what is new on"
+
+
 class _Response(io.BytesIO):
     status = 200
 

@@ -144,7 +144,7 @@ A page that could not be read comes back with the reason. Grounder asks before a
 
 ## What is sent
 
-A search sends the query, relevant search options and the search credential when connected to `api.grounder.net`. Hosted page reads also send the page address. The Mac sends a locally read page's address directly to its site, with no cookies. When the Mac is signed in to your Grounder account, it also tells Grounder your question and the site and path of each page you named, never the page's text, unless your account opted out of training. Grounder receives the host name for a DNS lookup only when you choose Grounder's resolver. The summary format can send the opening of the page and your question to your active model in Hermes.
+A search sends the query, your latest message as you typed it, relevant search options and the search credential when connected to `api.grounder.net`. Hosted page reads also send the page address. The Mac sends a locally read page's address directly to its site, with no cookies. When the Mac is signed in to your Grounder account, it also tells Grounder your question and the site and path of each page you named, never the page's text, unless your account opted out of training. Grounder receives the host name for a DNS lookup only when you choose Grounder's resolver. The summary format can send the opening of the page and your question to your active model in Hermes.
 
 Usage context is off by default. For usage reporting, the optional `post_api_request` hook shares the model name and random session and prompt tokens. To enable it, set `hermes config set web.grounder.share_usage_context true` and restart Hermes. [Privacy policy.](https://grounder.net/privacy)
 

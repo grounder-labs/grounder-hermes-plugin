@@ -404,15 +404,19 @@ def read_prompt(query: str) -> str:
     return text.strip()[:MAX_READ_PROMPT]
 
 
-def read_body(query: str, addresses: list[str]) -> Optional[dict[str, Any]]:
-    """The body of ``POST /v1/direct/reads``, or None when there is nothing to send: no words, or no address left after the cut. At most 10 addresses, each once."""
+def read_body(query: str, addresses: list[str], user_prompt: str = "") -> Optional[dict[str, Any]]:
+    """The body of ``POST /v1/direct/reads``, or None when there is nothing to send: no words, or no address left after the cut. At most 10 addresses, each once.
+    ``user_prompt`` is the user's own latest message (GRO-1170), cut the same way as the words; left out when Hermes gave none, so the read is recorded as having no user prompt."""
     pages: list[str] = []
     for address in addresses:
         cut = host_path(address)
         if cut and len(cut) <= 2000 and cut not in pages:
             pages.append(cut)
     prompt = read_prompt(query)
-    return {"prompt": prompt, "pages": pages[:MAX_READ_PAGES]} if prompt and pages else None
+    if not (prompt and pages):
+        return None
+    said = read_prompt(user_prompt)
+    return {"prompt": prompt, **({"user_prompt": said} if said else {}), "pages": pages[:MAX_READ_PAGES]}
 
 
 # Set by the plugin (provider.py): whether the account asks this Mac to record its reads, and the call that tells it. Neither is set when this module runs on its own.
@@ -421,10 +425,10 @@ read_sender: Optional[Callable[[dict[str, Any], float], bool]] = None
 spawn: Callable[[Callable[[], None]], None] = lambda work: threading.Thread(target=work, daemon=True).start()  # tests run the work at once
 
 
-def report_read(query: str, addresses: list[str]) -> None:
+def report_read(query: str, addresses: list[str], user_prompt: str = "") -> None:
     """Tell the account about a read done here, in the background, when it asks for them. Never raises and never delays the read. ``addresses`` are the ones tried (not one refused)."""
     try:
-        body = read_body(query, addresses)
+        body = read_body(query, addresses, user_prompt)
         if body is None or read_sender is None:
             return
 

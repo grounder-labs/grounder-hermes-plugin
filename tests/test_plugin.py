@@ -1125,6 +1125,33 @@ def test_a_search_carries_usage_context_only_when_share_usage_context_is_on_and_
     assert plugin.provider.sharing_usage() is False and context() == [None, None]
 
 
+def test_every_search_carries_the_users_own_message_as_prompt_content_and_a_search_with_none_carries_nothing(plugin, stub, keyed, monkeypatch):
+    """GRO-1149: Grounder recorded the model's query as the user's prompt for every search a Hermes made, because the plugin sent no user words. The message Hermes's
+    pre_llm_call hook gives is sent on every search, spacing kept; with no message (a job, a session Hermes named nothing for) nothing is sent in its place."""
+    provider_module = sys.modules[plugin.GrounderWebSearchProvider.__module__]
+    monkeypatch.setenv("HERMES_SESSION_ID", "words-session")
+    provider = plugin.GrounderWebSearchProvider()
+
+    def sent():
+        out = []
+        for search in (lambda: provider.search("a model's rewritten query"), lambda: provider.search_tool({"query": "a model's rewritten query"})):
+            search()
+            out.append(json.loads(_searches(stub)[-1]["body"]))
+        return out
+
+    assert all("prompt_content" not in (body.get("context") or {}) for body in sent())  # no message yet: nothing stands in for the user's words
+    typed = "who won the  thanksgiving dog show?\nwas it a corgi"
+    provider_module.note_message(session_id="words-session", user_message=typed)
+    for body in sent():
+        assert body["context"]["prompt_content"] == typed and body["query"] == "a model's rewritten query"
+    provider_module.note_message(session_id="words-session", user_message=[{"type": "text", "text": "second "}, {"type": "text", "text": "message"}])
+    assert all(body["context"]["prompt_content"] == "second  message" for body in sent())
+    provider_module.note_message(session_id="words-session", user_message="x" * 5000)
+    assert all(len(body["context"]["prompt_content"]) == 2000 for body in sent())
+    monkeypatch.setenv("HERMES_SESSION_ID", "another-session")  # another session's words never go with this one's search
+    assert all("prompt_content" not in (body.get("context") or {}) for body in sent())
+
+
 def test_the_model_hook_is_registered_only_while_share_usage_context_is_on(plugin, tmp_path, monkeypatch):
     def hooks():
         seen = {}
